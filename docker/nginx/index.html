@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LLM Gateway Stack</title>
+  <style>
+    :root {
+      --bg-1: #f5efe3;
+      --bg-2: #d7e8df;
+      --ink: #1a2522;
+      --muted: #4f635e;
+      --card: rgba(255, 255, 255, 0.72);
+      --stroke: rgba(23, 42, 39, 0.16);
+      --accent: #0b7a75;
+      --accent-2: #c7652f;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: "IBM Plex Sans", "Avenir Next", "Segoe UI", sans-serif;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 10% 10%, #fff6dd 0%, transparent 40%),
+        radial-gradient(circle at 90% 0%, #d6f3e3 0%, transparent 44%),
+        linear-gradient(130deg, var(--bg-1), var(--bg-2));
+      display: grid;
+      place-items: center;
+      padding: 28px;
+    }
+
+    main {
+      width: min(920px, 100%);
+      background: var(--card);
+      border: 1px solid var(--stroke);
+      border-radius: 22px;
+      backdrop-filter: blur(6px);
+      box-shadow: 0 14px 48px rgba(17, 40, 34, 0.16);
+      overflow: hidden;
+    }
+
+    header {
+      padding: 34px 32px 18px;
+      border-bottom: 1px solid var(--stroke);
+    }
+
+    h1 {
+      margin: 0;
+      font-size: clamp(1.6rem, 2.2vw, 2.2rem);
+      letter-spacing: 0.01em;
+    }
+
+    p {
+      margin: 10px 0 0;
+      color: var(--muted);
+      font-size: 1rem;
+      line-height: 1.45;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 14px;
+      padding: 22px;
+    }
+
+    a.card {
+      display: block;
+      text-decoration: none;
+      color: inherit;
+      border: 1px solid var(--stroke);
+      border-radius: 14px;
+      background: rgba(255, 255, 255, 0.86);
+      padding: 16px 15px;
+      transition: transform 140ms ease, box-shadow 140ms ease, border-color 140ms ease;
+    }
+
+    a.card:hover {
+      transform: translateY(-2px);
+      border-color: rgba(11, 122, 117, 0.45);
+      box-shadow: 0 10px 24px rgba(11, 122, 117, 0.16);
+    }
+
+    .name {
+      font-weight: 700;
+      font-size: 1rem;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 5px;
+    }
+
+    .pill {
+      font-size: 0.72rem;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: white;
+      background: linear-gradient(120deg, var(--accent), var(--accent-2));
+      border-radius: 999px;
+      padding: 2px 7px;
+    }
+
+    .url {
+      color: var(--muted);
+      font-family: "JetBrains Mono", "SFMono-Regular", Menlo, monospace;
+      font-size: 0.84rem;
+    }
+
+    footer {
+      border-top: 1px solid var(--stroke);
+      padding: 14px 22px 18px;
+      color: var(--muted);
+      font-size: 0.88rem;
+    }
+  </style>
+</head>
+
+<body>
+  <main>
+    <header>
+      <h1>LLM Gateway Stack</h1>
+      <p>Launchpad for this stack. Service links follow your configured ports automatically.</p>
+    </header>
+    <section class="grid">
+      <a class="card" href="/langfuse/">
+        <div class="name">Langfuse <span class="pill">UI</span></div>
+        <div class="url">/langfuse/</div>
+      </a>
+      <a class="card" href="/litellm/">
+        <div class="name">LiteLLM <span class="pill">Proxy UI</span></div>
+        <div class="url">/litellm/</div>
+      </a>
+      <a class="card" href="/prometheus/">
+        <div class="name">Prometheus <span class="pill">Metrics</span></div>
+        <div class="url">/prometheus/</div>
+      </a>
+      <a class="card" href="/minio/">
+        <div class="name">MinIO Console <span class="pill">Storage</span></div>
+        <div class="url">/minio/</div>
+      </a>
+    </section>
+    <footer>MinIO S3 API remains direct on <code>:9092</code> by default.</footer>
+  </main>
+</body>
+
+</html>

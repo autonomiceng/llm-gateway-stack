@@ -1,0 +1,9 @@
+general_settings:
+  store_model_in_db: true
+  store_prompts_in_spend_logs: true
+
+litellm_settings:
+  success_callback: ["langfuse"]
+  failure_callback: ["langfuse"]
+  # Set to True only if you need to redact request/response message content.
+  # turn_off_message_logging: True

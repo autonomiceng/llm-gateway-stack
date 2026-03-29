@@ -1,0 +1,10 @@
+# LiteLLM metrics scraping — documented gap (see README "Prometheus and LiteLLM metrics").
+# This job assumes a Prometheus endpoint on litellm:4000; path and enablement are not verified
+# against your LiteLLM image/settings. Expect empty or failed scrapes until aligned with upstream docs.
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: "litellm"
+    static_configs:
+      - targets: ["litellm:4000"]

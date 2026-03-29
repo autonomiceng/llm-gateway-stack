@@ -1,0 +1,69 @@
+# Hostname for absolute redirects to backend ports. $http_host may include :nginx_port;
+# strip a trailing :port for typical Host: name:port (IPv4 / DNS). Bracketed IPv6 uses $host.
+map $http_host $redirect_hostname {
+    ~*^\[              $host;
+    ~*^([^:]+):\d+$   $1;
+    default            $host;
+}
+
+server {
+  listen 8080;
+  server_name _;
+  root /usr/share/nginx/html;
+  index index.html;
+
+  proxy_http_version 1.1;
+  proxy_set_header Host $host;
+  proxy_set_header X-Real-IP $remote_addr;
+  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+  proxy_set_header X-Forwarded-Proto $scheme;
+  proxy_set_header X-Forwarded-Host $host;
+
+  location = / {
+    try_files /index.html =404;
+  }
+
+  location = /langfuse {
+    return 302 $scheme://$redirect_hostname:${LANGFUSE_WEB_PORT}/;
+  }
+
+  location = /langfuse/ {
+    return 302 $scheme://$redirect_hostname:${LANGFUSE_WEB_PORT}/;
+  }
+
+  # Preserve path after /langfuse (Hub image is served at / on LANGFUSE_WEB_PORT).
+  location ~ ^/langfuse/(.+)$ {
+    return 302 $scheme://$redirect_hostname:${LANGFUSE_WEB_PORT}/$1$is_args$args;
+  }
+
+  location = /litellm {
+    return 302 $scheme://$redirect_hostname:${LITELLM_PORT}/;
+  }
+
+  location = /litellm/ {
+    return 302 $scheme://$redirect_hostname:${LITELLM_PORT}/;
+  }
+
+  location ~ ^/litellm/(.+)$ {
+    return 302 $scheme://$redirect_hostname:${LITELLM_PORT}/$1$is_args$args;
+  }
+
+  location = /prometheus {
+    return 301 /prometheus/;
+  }
+
+  location /prometheus/ {
+    proxy_pass http://prometheus:9090/prometheus/;
+  }
+
+  location = /minio {
+    return 301 /minio/;
+  }
+
+  location /minio/ {
+    proxy_set_header X-Forwarded-Prefix /minio;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_pass http://minio:9001/;
+  }
+}

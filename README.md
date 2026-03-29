@@ -5,7 +5,7 @@
 [![LiteLLM](https://img.shields.io/badge/LLM%20Gateway-LiteLLM-0f62fe)](https://github.com/BerriAI/litellm)
 [![Langfuse](https://img.shields.io/badge/Observability-Langfuse-111827)](https://langfuse.com)
 
-Reference stack for building and operating an LLM gateway with LiteLLM, Langfuse, Postgres, ClickHouse, MinIO, Redis, and Prometheus.
+Reference stack for building and operating an LLM gateway with LiteLLM, Langfuse, Postgres, ClickHouse, MinIO, Redis, Prometheus, and an Nginx reverse proxy for path-based UI routing.
 
 This repository provides a production-oriented Docker Compose baseline for teams that need a practical starting point for request routing, observability, and operational control around LLM usage.
 
@@ -22,16 +22,19 @@ This repository provides a production-oriented Docker Compose baseline for teams
 - `minio`: S3-compatible object storage for Langfuse
 - `redis`: cache and coordination backend for Langfuse
 - `prometheus`: metrics collection
-
-There is **no nginx service** in this compose file; `NGINX_IMAGE` in `.env.example` is reserved for reverse-proxy setups you add separately.
+- `nginx`: reverse proxy and stack gateway (landing page; LiteLLM under `/litellm/`; Langfuse shortcut `/langfuse/` redirects to the published Langfuse port; Prometheus and MinIO console under `/prometheus/` and `/minio/`)
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-  U[Users / Applications] --> L[LiteLLM]
+  U[Users / Applications] --> N[nginx]
+  N --> L[LiteLLM]
+  N --> LF[Langfuse Web]
+  N --> PR[Prometheus]
+  N --> MC[MinIO Console]
   L --> P[(Postgres)]
-  L --> LF[Langfuse Web]
+  L --> LF
   LF --> P
   LF --> CH[(ClickHouse)]
   LF --> M[(MinIO)]
@@ -40,7 +43,7 @@ flowchart LR
   W --> CH
   W --> M
   W --> R
-  PR[Prometheus] --> L
+  PR --> L
 ```
 
 ## Quick Start
@@ -52,14 +55,10 @@ flowchart LR
    ./scripts/init_env.py --force
    ```
 
-2. Generate Langfuse API keys (required for LiteLLM callbacks):
-   - Start stack once: `docker compose up -d`
-   - Open `http://localhost:3000`
-   - Go to project settings -> API Keys -> Create API Key
-   - Copy values into `.env`:
-     - `LANGFUSE_PUBLIC_KEY=pk-lf-...`
-     - `LANGFUSE_SECRET_KEY=sk-lf-...`
-   - Keep `LANGFUSE_HOST` as `http://langfuse-web:3000` for container-to-container traffic.
+2. Langfuse bootstrap API keys are generated automatically:
+   - `scripts/init_env.py` generates `LANGFUSE_INIT_PROJECT_PUBLIC_KEY` and `LANGFUSE_INIT_PROJECT_SECRET_KEY`.
+   - LiteLLM callback keys use the same generated material as the bootstrap project: `.env.example` repeats the `pk-lf-__…__` / `sk-lf-__…__` placeholders on `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY`, so `init_env.py` fills them to match `LANGFUSE_INIT_PROJECT_*` (override those keys in `.env` if you rotate or replace them).
+   - Keep `LANGFUSE_HOST` as `http://langfuse-web:${LANGFUSE_WEB_INTERNAL_PORT}` for container-to-container traffic (public Hub image; root path).
 
 3. (Optional) adjust bind IPs, ports, and image pins at the top of `.env`.
 
@@ -70,10 +69,12 @@ flowchart LR
    ```
 
 5. Open:
-   - LiteLLM: `http://localhost:4123`
-   - Langfuse: `http://localhost:3000`
-   - Prometheus: `http://localhost:9090`
-   - MinIO API: `http://localhost:9092`
+   - Nginx gateway: `http://localhost/` (port from `NGINX_PORT`, default 80)
+   - LiteLLM (gateway link): `http://localhost/litellm/`
+   - Langfuse (gateway link): `http://localhost/langfuse/`
+   - Prometheus: `http://localhost/prometheus/`
+   - MinIO console: `http://localhost/minio/`
+   - MinIO API (direct): `http://localhost:9092`
 
 ## Pinned images (tested defaults)
 
@@ -83,7 +84,7 @@ Image references are **environment-driven** (`docker-compose.yml` uses `${VAR:-d
 |-------------------|---------------|----------------|
 | `litellm` | `docker.litellm.ai/berriai/litellm:main-v1.81.14-stable` | OK |
 | `postgres` | `docker.io/library/postgres:17.9` | OK |
-| _(optional / future)_ | `docker.io/library/nginx:1.27.5-alpine` (`NGINX_IMAGE`) | OK |
+| `nginx` | `docker.io/library/nginx:1.27.5-alpine` (`NGINX_IMAGE`) | OK |
 | `langfuse-web` | `docker.io/langfuse/langfuse:3.153.0` | OK |
 | `langfuse-worker` | `docker.io/langfuse/langfuse-worker:3.153.0` | OK |
 | `redis` | `docker.io/library/redis:7.4.7` | OK |
@@ -136,13 +137,14 @@ docker compose pull
 
 LiteLLM is **pulled as a prebuilt image only**. There is no `Dockerfile` or `docker compose build` path for `litellm` in this repository.
 
-Langfuse services inherit `TELEMETRY_ENABLED` from the compose anchor (default `true` in `docker-compose.yml`). Set it to `false` in `.env` if you need self-hosted deployments without product telemetry.
+Langfuse containers receive `TELEMETRY_ENABLED` from the compose anchor. That value is taken from the **`.env` / shell variable** `LANGFUSE_TELEMETRY_ENABLED` (default `true` in `docker-compose.yml`—see `TELEMETRY_ENABLED: ${LANGFUSE_TELEMETRY_ENABLED:-true}`). Set `LANGFUSE_TELEMETRY_ENABLED=false` in `.env` to disable Langfuse product telemetry. Do **not** rely on a variable named `TELEMETRY_ENABLED` in `.env` for this stack; Compose does not wire that name into Langfuse.
 
 ### Bind behavior
 
 - `PUBLIC_BIND_IP` controls externally reachable services.
 - `LOCAL_BIND_IP` controls localhost-only services.
 - Set `PUBLIC_BIND_IP=127.0.0.1` to keep all public-mapped services local only.
+- `NGINX_PORT` controls the reverse proxy listener (`http://localhost:${NGINX_PORT}` by default).
 
 ### Shared Postgres and data directory
 
@@ -158,15 +160,19 @@ Important: DB/user bootstrap scripts in `/docker-entrypoint-initdb.d` run only w
 
 ### Langfuse API Keys For LiteLLM Callbacks
 
-Generate keys in the Langfuse UI (project -> Settings -> API Keys), then set:
+Default behavior:
 
-- `LANGFUSE_PUBLIC_KEY=pk-lf-...`
-- `LANGFUSE_SECRET_KEY=sk-lf-...`
+- `scripts/init_env.py` generates bootstrap project keys.
+- `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` use the same `init_env.py` placeholders as `LANGFUSE_INIT_PROJECT_*`, so they match after generation.
+
+Optional override:
+
+- You can still create additional keys in the Langfuse UI and set them manually if needed.
 
 Notes:
 
 - LiteLLM uses `LANGFUSE_HOST` (internal URL): `http://langfuse-web:3000`
-- If you also want an external/base URL for humans or SDKs, use `http://localhost:3000`
+- For humans or SDKs, use `http://localhost:${LANGFUSE_WEB_PORT}` (the gateway path `/langfuse/` is a redirect to that URL when using the public image)
 
 ## Known Issues & Automated Fixes
 
@@ -198,7 +204,7 @@ The migrate service uses `CLICKHOUSE_IMAGE` (same as the `clickhouse` service) a
 ## Security Notes
 
 - Never commit `.env` with real secrets; commit `.env.example` only (see `.gitignore`).
-- Default `PUBLIC_BIND_IP=0.0.0.0` in `.env.example` exposes LiteLLM, Langfuse web, Prometheus, and MinIO API on all interfaces if the host firewall allows it. Restrict inbound rules and use `127.0.0.1` when the stack should be local-only.
+- Default `PUBLIC_BIND_IP=0.0.0.0` in `.env.example` exposes LiteLLM, Langfuse web, the nginx gateway, Prometheus, and MinIO API on all interfaces if the host firewall allows it. Restrict inbound rules and use `127.0.0.1` when the stack should be local-only.
 - Optional Langfuse bootstrap credentials in env (`LANGFUSE_INIT_USER_PASSWORD`, etc.) are convenient for first run; **rotate or clear** them after bootstrap in sensitive environments.
 - Redis uses `requirepass`; the healthcheck passes the password to `redis-cli`. This is normal for Redis; keep `REDIS_AUTH` secret.
 - For production, rotate any secret that may have been exposed and follow [SECURITY.md](SECURITY.md) for reporting issues.
@@ -219,7 +225,7 @@ cp .env.example .env
 docker compose up -d
 ```
 
-After you create Langfuse API keys in the UI, add `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY` to `.env`, then run `docker compose restart litellm` (or `docker compose up -d`) so LiteLLM picks them up.
+Bootstrap Langfuse API keys and LiteLLM callback wiring are generated by `init_env.py`. Open the gateway at `http://localhost/` (see `NGINX_PORT`). If you override keys in `.env`, run `docker compose restart litellm` (or `docker compose up -d`) so LiteLLM picks them up.
 
 ## Contributing & agents
 

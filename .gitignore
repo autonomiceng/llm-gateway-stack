@@ -1,0 +1,7 @@
+# Local environment files with secrets
+.env
+.env.local
+.env.*.local
+
+# Keep the template in version control
+!.env.example
