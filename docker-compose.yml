@@ -136,7 +136,7 @@ services:
       LANGFUSE_INIT_USER_PASSWORD: ${LANGFUSE_INIT_USER_PASSWORD:-}
 
   clickhouse:
-    image: ${CLICKHOUSE_IMAGE:-docker.io/clickhouse/clickhouse-server:22.4}
+    image: ${CLICKHOUSE_IMAGE:-docker.io/clickhouse/clickhouse-server:23.8}
     restart: always
     user: "101:101"
     environment:
@@ -160,7 +160,7 @@ services:
   migrate-langfuse-events:
     profiles:
       - migrate
-    image: ${CLICKHOUSE_IMAGE:-docker.io/clickhouse/clickhouse-server:22.4}
+    image: ${CLICKHOUSE_IMAGE:-docker.io/clickhouse/clickhouse-server:23.8}
     restart: "no"
     entrypoint:
       - /bin/sh

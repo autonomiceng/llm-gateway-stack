@@ -88,7 +88,7 @@ Image references are **environment-driven** (`docker-compose.yml` uses `${VAR:-d
 | `langfuse-web` | `docker.io/langfuse/langfuse:3.153.0` | OK |
 | `langfuse-worker` | `docker.io/langfuse/langfuse-worker:3.153.0` | OK |
 | `redis` | `docker.io/library/redis:7.4.7` | OK |
-| `clickhouse` | `docker.io/clickhouse/clickhouse-server:22.4` | OK (`22.4`); **`clickhouse/clickhouse-server:22.04` is not a published tag** on Docker Hub |
+| `clickhouse` | `docker.io/clickhouse/clickhouse-server:23.8` | OK |
 | `prometheus` | `docker.io/prom/prometheus:v3.9.1` | OK |
 | `minio` | `cgr.dev/chainguard/minio:latest` | OK; tag `DEVELOPMENT.2025-10-15T17-29-55Z` returned **MANIFEST_UNKNOWN** when checked |
 
