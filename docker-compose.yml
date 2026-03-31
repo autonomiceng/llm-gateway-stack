@@ -182,7 +182,7 @@ services:
         echo 'Migration complete!'
 
   minio:
-    image: ${MINIO_IMAGE:-cgr.dev/chainguard/minio:latest}
+    image: ${MINIO_IMAGE:-docker.io/minio/minio:RELEASE.2025-09-07T16-13-09Z}
     restart: always
     entrypoint: sh
     command: -c 'mkdir -p /data/langfuse && minio server --address ":9000" --console-address ":9001" /data'

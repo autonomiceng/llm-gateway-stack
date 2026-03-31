@@ -90,7 +90,7 @@ Image references are **environment-driven** (`docker-compose.yml` uses `${VAR:-d
 | `redis` | `docker.io/library/redis:7.4.7` | OK |
 | `clickhouse` | `docker.io/clickhouse/clickhouse-server:23.8` | OK |
 | `prometheus` | `docker.io/prom/prometheus:v3.9.1` | OK |
-| `minio` | `cgr.dev/chainguard/minio:latest` | OK; tag `DEVELOPMENT.2025-10-15T17-29-55Z` returned **MANIFEST_UNKNOWN** when checked |
+| `minio` | `docker.io/minio/minio:RELEASE.2025-09-07T16-13-09Z` | OK |
 
 Override any pin by setting the corresponding `*_IMAGE` variable in `.env`.
 
