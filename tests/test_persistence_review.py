@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import signal
 import subprocess
 import sys
 import tarfile
@@ -177,6 +178,8 @@ class PersistenceReviewTests(unittest.TestCase):
                         return 'caddy litellm langfuse-web langfuse-worker valkey postgres clickhouse rustfs'
                     if args[0] == 'start':
                         events.append('resume')
+                        for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
+                            self.assertEqual(signal.getsignal(sig), signal.SIG_IGN)
                         self.assertEqual(kwargs['label'], 'fence-resume')
                         self.assertEqual(args[1:], ('valkey', 'langfuse-worker', 'langfuse-web', 'litellm', 'caddy'))
                         if mode in ('resume', 'both'):
@@ -219,6 +222,19 @@ class PersistenceReviewTests(unittest.TestCase):
                     metrics = (self.root / 'data/console/metrics.txt').read_text()
                     self.assertIn(f'lg_checkpoint_success {int(mode == "success")}', metrics)
                     self.assertIn('lg_checkpoint_timestamp_seconds 456', metrics)
+
+    def test_resume_retries_transient_status_and_delayed_stop(self):
+        stack = Mock()
+        healthy = json.dumps([{'Service': 'langfuse-worker', 'State': 'running', 'Health': 'healthy'}])
+        stack.dc.side_effect = [RuntimeError('temporary daemon error'), '[]', '', healthy]
+        with patch.object(checkpoint.time, 'sleep'), patch.object(checkpoint.time, 'monotonic', return_value=0):
+            checkpoint.wait_healthy(stack, ['langfuse-worker'])
+        self.assertEqual([call.args[0] for call in stack.dc.call_args_list], ['ps', 'ps', 'start', 'ps'])
+
+    def test_command_child_has_separate_session(self):
+        result = checkpoint.run([sys.executable, '-c', 'import os; print(os.getsid(0))'])
+        self.assertEqual(result.returncode, 0)
+        self.assertNotEqual(int(result.stdout), os.getsid(0))
 
     def test_media_sidecar_tracks_only_synced_files(self):
         objects = self.root / 'set/objects'

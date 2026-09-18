@@ -186,7 +186,12 @@ rerun over partial data. Retain the source Checkpoint until recovery is verified
 **RPO is the Checkpoint interval; the WAL archive supports manual point-in-time recovery by an expert.**
 With daily successful off-host Checkpoints, the whole-stack target is at most 24 hours.
 A failed/missing backup or missing off-host copy invalidates that bound.
-`archive_timeout=60s` bounds segment switching during write activity. Manual Postgres
+Postgres keeps its default `archive_timeout=0`: completed WAL segments archive normally,
+and Checkpoint capture explicitly switches WAL before waiting for its restore point.
+This avoids a mostly empty 16 MiB segment every minute under light write activity,
+which can otherwise approach 22.5 GiB/day. It provides no timed database-only archival
+bound between Checkpoints. Operators needing one must budget archive capacity and
+configure an explicit timeout in their Compose override. Manual Postgres
 PITR requires a usable base backup, every subsequent WAL segment and reconciliation
 with ClickHouse, objects and Valkey. The restore command stops at the Checkpoint's named
 end point; it has no `--target-time` option.
@@ -311,3 +316,20 @@ lg_checkpoint_success{job="llm-gateway-checkpoints"}
 An idle server can have old archive progress; investigate stale progress during writes.
 `pg_isready` health does not prove archiving or disk writability. Verify the scrape jobs,
 alerts and a real notification receiver in the observability stack before production.
+
+### WAL growth and archive failures
+
+Use durable storage for `LG_BACKUP_DIR`; a RAM-backed `/tmp` or tmpfs mount is only
+suitable for a disposable drill. Filesystem separation alone does not prove durability.
+Monitor `pg_stat_archiver`, archive filesystem free space and live `pg_wal` size.
+Failed archiving retains WAL regardless of `max_wal_size`; lowering that setting
+cannot release unarchived segments. Check `pg_replication_slots` separately.
+
+Repair archive availability and permissions while preserving existing archives and
+the cluster. After required segments archive successfully, PostgreSQL checkpoints
+can recycle eligible WAL. Never delete files from live `pg_wal`, use `pg_resetwal`
+to reclaim space, or make the archive command report success without saving data.
+When moving an archive, preserve its timeline history and all retained Checkpoint
+requirements; ensure the destination can hold the pending WAL before resuming.
+
+See [PostgreSQL archiving settings](https://www.postgresql.org/docs/18/runtime-config-wal.html#RUNTIME-CONFIG-WAL-ARCHIVING).

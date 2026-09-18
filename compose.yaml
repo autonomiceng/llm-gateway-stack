@@ -347,8 +347,6 @@ services:
       - -c
       - archive_mode=on
       - -c
-      - archive_timeout=60s
-      - -c
       - archive_command=/bin/sh /opt/backup/archive.sh %p %f
     environment:
       POSTGRES_USER: postgres

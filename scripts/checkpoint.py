@@ -25,7 +25,7 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 def run(argv):
-    return subprocess.run(argv, text=True, capture_output=True, check=False)
+    return subprocess.run(argv, text=True, capture_output=True, check=False, start_new_session=True)
 
 
 def checked(argv, runner=run, *, diagnostics, label='command'):
@@ -284,8 +284,7 @@ class Stack:
         return checked(self.command + list(args), self.runner,
                        diagnostics=self.backups / '.diagnostics', label=label)
 
-    # Services that hold unflushed data must finish their shutdown. The front services
-    # must finish buffered spend/trace writes. Langfuse web waits out its stop timeout and is
+    # LiteLLM must finish buffered spend/trace writes and Valkey must flush its AOF. Langfuse web waits out its stop timeout and is
     # killed (exit 137), which loses nothing once Caddy is stopped. The Langfuse worker
     # flushes its ClickHouse writer and logs completion, then the node process hangs
     # and is killed too; the log line is the evidence that the flush happened.
@@ -309,7 +308,7 @@ class Stack:
             raise RuntimeError(f'service {service} did not stop cleanly (exit unknown)')
         for container in containers:
             code = container.get('ExitCode')
-            if code != 0:
+            if container.get('State') != 'exited' or code != 0:
                 raise RuntimeError(f'service {service} did not stop cleanly (exit {code})')
 
     def mount(self, service, target):
@@ -538,14 +537,13 @@ def backup(stack, no_fence, timeout, stop_timeout=60):
         capture_error = error
         raise
     finally:
-        handlers = {sig: signal.signal(sig, signal.SIG_IGN) for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT)}
+        handlers = {}
         try:
-            if paused:
-                stack.dc('unpause', 'valkey', label='fence-resume')
-            if stopped:
-                stack.dc('start', *reversed(stopped), label='fence-resume')
-                wait_healthy(stack, stopped)
-            health(stack)
+            try:
+                for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
+                    handlers[sig] = signal.signal(sig, signal.SIG_IGN)
+            finally:
+                resume(stack, stopped, paused)
         except BaseException as resume_error:
             if capture_error is not None:
                 raise RuntimeError(f'capture failed: {capture_error}; '
@@ -556,18 +554,34 @@ def backup(stack, no_fence, timeout, stop_timeout=60):
                 signal.signal(sig, handler)
 
 
+def resume(stack, stopped, paused):
+    if paused:
+        stack.dc('unpause', 'valkey', label='fence-resume')
+    if stopped:
+        stack.dc('start', *reversed(stopped), label='fence-resume')
+        wait_healthy(stack, stopped)
+    health(stack)
+
+
 def wait_healthy(stack, services, timeout=300):
     deadline = time.monotonic() + timeout
+    last_error = None
     while True:
-        output = stack.dc('ps', '--format', 'json', *services, label='fence-health')
-        containers = (json.loads(output) if output.lstrip().startswith('[')
-                      else [json.loads(line) for line in output.splitlines() if line.strip()])
-        if (len(containers) == len(services)
-                and {row.get('Service') for row in containers} == set(services)
-                and all(row.get('State') == 'running' and row.get('Health') == 'healthy' for row in containers)):
-            return
+        try:
+            output = stack.dc('ps', '--format', 'json', *services, label='fence-health')
+            containers = (json.loads(output) if output.lstrip().startswith('[')
+                          else [json.loads(line) for line in output.splitlines() if line.strip()])
+            running = {row.get('Service') for row in containers if row.get('State') == 'running'}
+            if (len(containers) == len(services) and running == set(services)
+                    and all(row.get('Health') == 'healthy' for row in containers)):
+                return
+            # An interrupted stop can finish after the initial start request.
+            if running != set(services):
+                stack.dc('start', *reversed(services), label='fence-resume')
+        except RuntimeError as error:
+            last_error = error
         if time.monotonic() >= deadline:
-            raise RuntimeError('resumed services did not become healthy')
+            raise RuntimeError('resumed services did not become healthy') from last_error
         time.sleep(2)
 
 
@@ -763,11 +777,15 @@ def main():
             write_metrics(True)
 
 
+def interrupted(signum, frame):
+    for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
+        signal.signal(sig, signal.SIG_IGN)
+    raise RuntimeError('interrupted; resuming fenced services')
+
+
 if __name__ == '__main__':
-    def interrupted(signum, frame):
-        raise RuntimeError('interrupted; resuming fenced services')
-    signal.signal(signal.SIGTERM, interrupted)
-    signal.signal(signal.SIGHUP, interrupted)
+    for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
+        signal.signal(sig, interrupted)
     try:
         main()
     except (bootstrap.Refused, RuntimeError, OSError, ValueError, KeyError, StopIteration, KeyboardInterrupt) as error:

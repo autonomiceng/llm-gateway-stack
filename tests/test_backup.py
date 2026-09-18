@@ -284,7 +284,7 @@ class BackupTests(unittest.TestCase):
                         output = ' '.join((*services, 'postgres', 'clickhouse', 'rustfs'))
                     elif args[:2] == ['ps', '-a']:
                         service = args[-1]
-                        output = json.dumps({'Service': service, 'ExitCode': 137 if service == failed else 0})
+                        output = json.dumps({'Service': service, 'State': 'exited', 'ExitCode': 137 if service == failed else 0})
                     elif args[:1] == ['logs']:
                         output = backup.Stack.WORKER_DONE
                     elif argv[-1] == 'SHOW archive_mode':
