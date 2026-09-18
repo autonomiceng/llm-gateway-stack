@@ -163,9 +163,9 @@ services:
         aliases: [lg-litellm]
 
   langfuse-web:
+    image: langfuse/langfuse:4.37.0@sha256:06c0eaaef81035e06a9f6ed5fe343e187c1dde970b722c9a20269612742e4f68
     # Upstream waits 110s before closing its backend connections.
     stop_grace_period: 120s
-    image: langfuse/langfuse:4.37.0@sha256:06c0eaaef81035e06a9f6ed5fe343e187c1dde970b722c9a20269612742e4f68
     restart: unless-stopped
     logging: *logging
     pids_limit: 1024
