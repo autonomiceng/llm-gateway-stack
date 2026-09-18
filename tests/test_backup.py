@@ -299,7 +299,7 @@ class BackupTests(unittest.TestCase):
                         backup.backup(stack, False, 300)
                 self.assertFalse(list(stack.backups.rglob('manifest.json')))
                 stopped = services[:services.index(failed) + 1]
-                self.assertEqual(calls[-1], ['docker', 'compose', 'start', '--wait', '--wait-timeout', '300', *reversed(stopped)])
+                self.assertEqual(calls[-1], ['docker', 'compose', 'start', *reversed(stopped)])
                 self.assertFalse(any('pg_basebackup' in call for call in calls))
 
     def test_failed_command_retains_private_diagnostics_without_argv_in_name(self):

@@ -174,7 +174,7 @@ class PersistenceReviewTests(unittest.TestCase):
                     if args[0] == 'start':
                         events.append('resume')
                         self.assertEqual(kwargs['label'], 'fence-resume')
-                        self.assertEqual(args[1:4], ('--wait', '--wait-timeout', '300'))
+                        self.assertEqual(args[1:], ('valkey', 'langfuse-worker', 'langfuse-web', 'litellm', 'caddy'))
                         if mode in ('resume', 'both'):
                             raise RuntimeError('fence-resume failed')
                     return ''
