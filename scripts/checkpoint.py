@@ -284,20 +284,21 @@ class Stack:
         return checked(self.command + list(args), self.runner,
                        diagnostics=self.backups / '.diagnostics', label=label)
 
-    # LiteLLM must finish buffered spend/trace writes and Valkey must flush its AOF. Langfuse web waits out its stop timeout and is
-    # killed (exit 137), which loses nothing once Caddy is stopped. The Langfuse worker
-    # flushes its ClickHouse writer and logs completion, then the node process hangs
-    # and is killed too; the log line is the evidence that the flush happened.
-    CLEAN_EXIT_REQUIRED = ('litellm', 'valkey')
+    # Langfuse's pinned web shutdown waits 110s and leaves process exit to its supervisor.
+    # Require its backend-close marker, and the worker's writer-flush marker, before capture.
+    CLEAN_EXIT_REQUIRED = ('caddy', 'litellm', 'valkey')
     WORKER_DONE = 'Shutdown complete, exiting process'
+    WEB_DONE = 'Shutdown complete'
 
     def stop(self, service, timeout):
         started = datetime.now(timezone.utc).isoformat()
         self.dc('stop', '-t', str(timeout), service, label='fence-stop')
-        if service == 'langfuse-worker':
+        if service in ('langfuse-web', 'langfuse-worker'):
             logs = self.dc('logs', '--since', started, '--no-log-prefix', service, label='fence-worker-log')
-            if self.WORKER_DONE not in logs:
-                raise RuntimeError('langfuse-worker did not finish its shutdown flush; retry backup')
+            complete = (self.WORKER_DONE in logs if service == 'langfuse-worker' else
+                        self.WEB_DONE in logs and 'Prisma connection has been closed.' in logs)
+            if not complete:
+                raise RuntimeError(f'{service} did not finish its shutdown flush; retry backup')
             return
         if service not in self.CLEAN_EXIT_REQUIRED:
             return
@@ -434,7 +435,7 @@ class Stack:
                 aws('\n'.join(commands[offset:offset + 100]))
 
 
-def backup(stack, no_fence, timeout, stop_timeout=60):
+def backup(stack, no_fence, timeout, stop_timeout=120):
     stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')
     dest = stack.backups / stamp
     point = 'checkpoint_' + stamp
@@ -730,7 +731,7 @@ def main():
     backup_parser = commands.add_parser('backup')
     backup_parser.add_argument('--no-fence', action='store_true')
     backup_parser.add_argument('--fence-timeout', type=int, default=300)
-    backup_parser.add_argument('--stop-timeout', type=int, default=60)
+    backup_parser.add_argument('--stop-timeout', type=int, default=120)
     restore_parser = commands.add_parser('restore')
     restore_parser.add_argument('checkpoint', type=Path)
     restore_parser.add_argument('--allow-unfenced', action='store_true')

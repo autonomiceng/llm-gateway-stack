@@ -103,7 +103,7 @@ refuses drift, including changed volume prefixes or Postgres paths. Take the Che
 from the checkout and settings that started the running installation, before updating
 its pins or storage settings. Stop and remove leftover one-off project containers first.
 
-The default fence stops Caddy, LiteLLM and Langfuse web in that order with a 60-second
+The default fence stops Caddy, LiteLLM and Langfuse web in that order with a 120-second
 shutdown grace per service. The worker stays running until three consecutive two-second
 polls report no ready or active BullMQ work. Polling requires worker `/api/health` to
 succeed and scans `bull:*` in Valkey: `LLEN` for `wait`, `active`, `paused`, `ZCARD` for
@@ -121,10 +121,13 @@ Default drain timeout is 300 seconds;
 `--fence-timeout SECONDS` changes it. A fenced Checkpoint requires the Langfuse
 worker to log `Shutdown complete, exiting process` (its ClickHouse writer flush is done;
 the node process then hangs and is killed at the timeout, which is an upstream quirk) and
-LiteLLM and Valkey to exit 0 so buffered spend, trace and queue writes finish. Caddy and Langfuse web may
-be killed at the stop timeout without loss once Caddy is down. A worker that never logs
-completion or an unclean LiteLLM or Valkey stop aborts capture without a completed manifest. Rerun the backup; if unclean stops repeat, raise the shutdown grace with
-`--stop-timeout SECONDS` (default 60). A forced kill of the backup process or host failure
+Caddy, LiteLLM and Valkey to exit 0 so ingress drains and buffered spend, trace and queue writes finish.
+Langfuse web waits 110 seconds before closing backend connections; capture requires
+both its `Prisma connection has been closed.` and `Shutdown complete` messages from
+this stop attempt. Its supervisor may then kill the remaining process. Missing web
+or worker completion evidence, or an unclean Caddy, LiteLLM or Valkey stop, aborts
+capture without a completed manifest. Rerun the backup; if unclean stops repeat, raise the shutdown grace with
+`--stop-timeout SECONDS` (default 120). A forced kill of the backup process or host failure
 cannot execute cleanup: inspect the incomplete directory and start the fenced services manually.
 Direct database/object writers must also be quiesced by the operator.
 
@@ -333,3 +336,7 @@ When moving an archive, preserve its timeline history and all retained Checkpoin
 requirements; ensure the destination can hold the pending WAL before resuming.
 
 See [PostgreSQL archiving settings](https://www.postgresql.org/docs/18/runtime-config-wal.html#RUNTIME-CONFIG-WAL-ARCHIVING).
+
+The web drain check follows the [pinned Langfuse shutdown implementation](https://github.com/langfuse/langfuse/blob/v4.37.0/web/src/utils/shutdown.ts).
+It covers the upstream drain boundary; clients must retry requests without a successful
+response, and direct writers must remain quiesced throughout capture.
