@@ -42,7 +42,15 @@ def checked(argv, runner=run, *, diagnostics, label='command'):
                 handle.write(result.stdout + result.stderr)
         except OSError as error:
             raise RuntimeError(f'{label} failed (exit {result.returncode}); diagnostics unavailable') from error
-        raise RuntimeError(f'{label} failed (exit {result.returncode}); diagnostics: {path}')
+        # Emit only fixed classifications; raw command output remains private.
+        reason = next((name for pattern, name in (
+            ('unknown flag', 'unsupported_compose_flag'),
+            ('is unhealthy', 'container_unhealthy'),
+            ('no space left on device', 'filesystem_full'),
+            ('dependency failed', 'dependency_failed'),
+            ('did not complete successfully', 'dependency_incomplete'),
+        ) if pattern in (result.stdout + result.stderr).lower()), 'command_failed')
+        raise RuntimeError(f'{label} failed (exit {result.returncode}, {reason}); diagnostics: {path}')
     return result.stdout.strip()
 
 
