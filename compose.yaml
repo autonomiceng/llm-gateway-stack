@@ -1,0 +1,453 @@
+# LLM Gateway Stack (ADR-0014). One file, no profiles needed for a full install.
+# Images are pinned as tag plus digest; Renovate raises bumps, humans merge them.
+# Every published port belongs to Caddy. Everything else is private to this project
+# or, for ingress and metrics targets, reachable on the shared `platform`
+# network under an lg- prefixed alias.
+name: llm-gateway-stack
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+x-langfuse-env: &langfuse-env
+  # Docker sets HOSTNAME to the container id and Next.js binds to it; bind everywhere
+  # so the healthcheck can reach localhost.
+  HOSTNAME: 0.0.0.0
+  NEXTAUTH_URL: ${LG_SCHEME:-http}://langfuse.${LG_PUBLIC_DOMAIN:-localhost}${LG_PUBLIC_PORT_SUFFIX:-}
+  NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:?run scripts/bootstrap.py to generate secrets}
+  SALT: ${LANGFUSE_SALT:?run scripts/bootstrap.py to generate secrets}
+  ENCRYPTION_KEY: ${LANGFUSE_ENCRYPTION_KEY:?run scripts/bootstrap.py to generate secrets}
+  DATABASE_URL: postgresql://langfuse:${LANGFUSE_DB_PASSWORD:?run scripts/bootstrap.py to generate secrets}@postgres:5432/langfuse
+  CLICKHOUSE_MIGRATION_URL: clickhouse://clickhouse:9000
+  CLICKHOUSE_URL: http://clickhouse:8123
+  CLICKHOUSE_USER: clickhouse
+  CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?run scripts/bootstrap.py to generate secrets}
+  CLICKHOUSE_CLUSTER_ENABLED: "false"
+  REDIS_HOST: valkey
+  REDIS_PORT: "6379"
+  REDIS_AUTH: ${VALKEY_PASSWORD:?run scripts/bootstrap.py to generate secrets}
+  LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse
+  LANGFUSE_S3_EVENT_UPLOAD_REGION: auto
+  LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://rustfs:9000
+  LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: ${RUSTFS_ACCESS_KEY:?run scripts/bootstrap.py to generate secrets}
+  LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: ${RUSTFS_SECRET_KEY:?run scripts/bootstrap.py to generate secrets}
+  LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+  LANGFUSE_S3_EVENT_UPLOAD_PREFIX: events/
+  LANGFUSE_S3_MEDIA_UPLOAD_BUCKET: langfuse
+  LANGFUSE_S3_MEDIA_UPLOAD_REGION: auto
+  # Browsers use presigned URLs, so the media endpoint is the public S3 hostname.
+  LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: ${LG_SCHEME:-http}://s3.${LG_PUBLIC_DOMAIN:-localhost}${LG_PUBLIC_PORT_SUFFIX:-}
+  LANGFUSE_S3_MEDIA_UPLOAD_INTERNAL_ENDPOINT: http://rustfs:9000
+  LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID: ${RUSTFS_ACCESS_KEY}
+  LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY: ${RUSTFS_SECRET_KEY}
+  LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE: "true"
+  LANGFUSE_S3_MEDIA_UPLOAD_PREFIX: media/
+  LANGFUSE_S3_BATCH_EXPORT_ENABLED: "true"
+  LANGFUSE_S3_BATCH_EXPORT_BUCKET: langfuse
+  LANGFUSE_S3_BATCH_EXPORT_REGION: auto
+  LANGFUSE_S3_BATCH_EXPORT_ENDPOINT: http://rustfs:9000
+  LANGFUSE_S3_BATCH_EXPORT_EXTERNAL_ENDPOINT: ${LG_SCHEME:-http}://s3.${LG_PUBLIC_DOMAIN:-localhost}${LG_PUBLIC_PORT_SUFFIX:-}
+  LANGFUSE_S3_BATCH_EXPORT_ACCESS_KEY_ID: ${RUSTFS_ACCESS_KEY}
+  LANGFUSE_S3_BATCH_EXPORT_SECRET_ACCESS_KEY: ${RUSTFS_SECRET_KEY}
+  LANGFUSE_S3_BATCH_EXPORT_FORCE_PATH_STYLE: "true"
+  LANGFUSE_S3_BATCH_EXPORT_PREFIX: exports/
+  TELEMETRY_ENABLED: "false"
+  LANGFUSE_ENABLE_EXPERIMENTAL_FEATURES: "false"
+  # events_only is the v4 default for fresh installs. A migration from v3 sets `dual`
+  # in .env for the backfill window (docs/operations/migrating-pre-2026-installs.md).
+  LANGFUSE_MIGRATION_V4_WRITE_MODE: ${LANGFUSE_MIGRATION_V4_WRITE_MODE:-events_only}
+
+x-langfuse-depends: &langfuse-depends
+  postgres:
+    condition: service_healthy
+  clickhouse:
+    condition: service_healthy
+  valkey:
+    condition: service_healthy
+  rustfs-init:
+    condition: service_completed_successfully
+
+services:
+  caddy:
+    image: caddy:2.11.4@sha256:13ba145cba2f3e28fa801994876e4c086d1b95d5aa2a520a734765ffb6b12017
+    restart: unless-stopped
+    logging: *logging
+    pids_limit: 512
+    mem_limit: 128m
+    mem_reservation: 32m
+    ports:
+      - "${LG_BIND_HOST:-127.0.0.1}:${LG_HTTP_PORT:-80}:80"
+      - "${LG_BIND_HOST:-127.0.0.1}:${LG_HTTPS_PORT:-443}:443"
+    environment:
+      LG_TRUSTED_PROXIES: ${LG_TRUSTED_PROXIES:-}
+      LG_OPERATOR_ALLOW: ${LG_OPERATOR_ALLOW:-127.0.0.0/8 ::1}
+      LG_RUSTFS_CONSOLE: ${LG_RUSTFS_CONSOLE:-off}
+      LG_SCHEME: ${LG_SCHEME:-http}
+      LG_PUBLIC_DOMAIN: ${LG_PUBLIC_DOMAIN:-localhost}
+      LG_TLS_ISSUER: ${LG_TLS_ISSUER:-none}
+      # Scheme Caddy listens on. Behind platform-edge the public scheme is https
+      # while this Caddy listens on plain http; set LG_LISTEN_SCHEME=http there.
+      LG_LISTEN_SCHEME: ${LG_LISTEN_SCHEME:-${LG_SCHEME:-http}}
+    volumes:
+      - ./docker/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./docker/caddy/console:/srv/console:ro
+      - ./data/console:/srv/state:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8081/versions.json >/dev/null"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    # service_started, not healthy: the console stays up while an app is down.
+    depends_on:
+      litellm:
+        condition: service_started
+      langfuse-web:
+        condition: service_started
+    networks:
+      default:
+      platform:
+        aliases: [lg-gateway]
+
+  litellm:
+    image: ghcr.io/berriai/litellm:v1.101.0@sha256:d295634e09c648dcdb72c4cc2dd226f5fb87823a73e88cbbed6f205e4deb044b
+    restart: unless-stopped
+    logging: *logging
+    pids_limit: 1024
+    mem_limit: 2g
+    mem_reservation: 512m
+    cpus: 2.0
+    command: ["--config=/app/config.yaml"]
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - ./docker/litellm/cache_namespace_policy.py:/app/cache_namespace_policy.py:ro
+    environment:
+      DATABASE_URL: postgresql://litellm:${LITELLM_DB_PASSWORD:?run scripts/bootstrap.py to generate secrets}@postgres:5432/litellm
+      UI_USERNAME: ${UI_USERNAME:-admin}
+      UI_PASSWORD: ${UI_PASSWORD:?run scripts/bootstrap.py to generate secrets}
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:?run scripts/bootstrap.py to generate secrets}
+      LITELLM_SALT_KEY: ${LITELLM_SALT_KEY:?run scripts/bootstrap.py to generate secrets}
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_INIT_PROJECT_PUBLIC_KEY:?run scripts/bootstrap.py to generate secrets}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_INIT_PROJECT_SECRET_KEY:?run scripts/bootstrap.py to generate secrets}
+      LANGFUSE_HOST: http://langfuse-web:3000
+      # Prompts and responses go on the spans; Langfuse is the payload store.
+      OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT: span_and_event
+      REDIS_HOST: valkey
+      REDIS_PORT: "6379"
+      REDIS_PASSWORD: ${VALKEY_PASSWORD}
+      # Provider credentials. Empty keeps the mock model usable on a fresh install.
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      AZURE_API_KEY: ${AZURE_API_KEY:-}
+      AZURE_API_BASE: ${AZURE_API_BASE:-}
+      AZURE_API_VERSION: ${AZURE_API_VERSION:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import json, urllib.request; assert json.load(urllib.request.urlopen('http://localhost:4000/health/readiness'))['db'] == 'connected'\""]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    networks:
+      default:
+      platform:
+        aliases: [lg-litellm]
+
+  langfuse-web:
+    image: langfuse/langfuse:4.37.0@sha256:06c0eaaef81035e06a9f6ed5fe343e187c1dde970b722c9a20269612742e4f68
+    restart: unless-stopped
+    logging: *logging
+    pids_limit: 1024
+    mem_limit: 2g
+    mem_reservation: 1g
+    depends_on: *langfuse-depends
+    environment:
+      <<: *langfuse-env
+      AUTH_DISABLE_SIGNUP: "true"
+      LANGFUSE_INIT_ORG_ID: ${LANGFUSE_INIT_ORG_ID:-org-default}
+      LANGFUSE_INIT_ORG_NAME: ${LANGFUSE_INIT_ORG_NAME:-Default}
+      LANGFUSE_INIT_PROJECT_ID: ${LANGFUSE_INIT_PROJECT_ID:-project-default}
+      LANGFUSE_INIT_PROJECT_NAME: ${LANGFUSE_INIT_PROJECT_NAME:-Default}
+      LANGFUSE_INIT_PROJECT_PUBLIC_KEY: ${LANGFUSE_INIT_PROJECT_PUBLIC_KEY}
+      LANGFUSE_INIT_PROJECT_SECRET_KEY: ${LANGFUSE_INIT_PROJECT_SECRET_KEY}
+      LANGFUSE_INIT_USER_EMAIL: ${LANGFUSE_INIT_USER_EMAIL:?set the first Langfuse login}
+      LANGFUSE_INIT_USER_NAME: ${LANGFUSE_INIT_USER_NAME:-admin}
+      LANGFUSE_INIT_USER_PASSWORD: ${LANGFUSE_INIT_USER_PASSWORD:?run scripts/bootstrap.py to generate secrets}
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/api/public/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 90s
+
+  langfuse-worker:
+    image: langfuse/langfuse-worker:4.37.0@sha256:f1a9806779c4e5ca9414d2f5337405aed4516fa4b830cfe676f2fd887cc4ceae
+    restart: unless-stopped
+    logging: *logging
+    pids_limit: 1024
+    mem_limit: 2g
+    mem_reservation: 1g
+    depends_on: *langfuse-depends
+    environment: *langfuse-env
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3030/api/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 90s
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:26.8.6.5@sha256:a73b5c0fb6f88e02357aead0906ad53882b07e4d202327489798844ba745e64d
+    restart: unless-stopped
+    logging: *logging
+    pids_limit: 4096
+    mem_limit: 8g
+    mem_reservation: 1g
+    cpus: 4.0
+    user: "101:101"
+    environment:
+      CLICKHOUSE_DB: default
+      CLICKHOUSE_USER: clickhouse
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+      - clickhouse-logs:/var/log/clickhouse-server
+      - ./docker/clickhouse/backups.xml:/etc/clickhouse-server/config.d/backups.xml:ro
+      - type: bind
+        source: ${LG_BACKUP_DIR:?set LG_BACKUP_DIR to a separate mounted filesystem}
+        target: /backup
+        bind:
+          create_host_path: false
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8123/ping || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  rustfs:
+    image: rustfs/rustfs:1.0.0@sha256:8cc9801755448b71a786705ce76692c77e14936cccd87cf2fc31842e58f4d1ff
+    restart: unless-stopped
+    logging: *logging
+    pids_limit: 512
+    mem_limit: 1g
+    mem_reservation: 256m
+    # Translate the stack's on/off switch to RustFS's boolean, preserving its entrypoint.
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        case "$$LG_RUSTFS_CONSOLE" in
+          on) export RUSTFS_CONSOLE_ENABLE=true ;;
+          off) export RUSTFS_CONSOLE_ENABLE=false ;;
+          *) echo 'LG_RUSTFS_CONSOLE must be on or off' >&2; exit 1 ;;
+        esac
+        exec /entrypoint.sh "$$@"
+      - sh
+    command: ["/data"]
+    environment:
+      RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY}
+      RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY}
+      RUSTFS_ADDRESS: ":9000"
+      LG_RUSTFS_CONSOLE: ${LG_RUSTFS_CONSOLE:-off}
+      RUSTFS_CONSOLE_ENABLE: "false"
+      RUSTFS_CONSOLE_ADDRESS: ":9001"
+      # Browsers PUT and GET media through presigned URLs on s3.<domain>.
+      RUSTFS_CORS_ALLOWED_ORIGINS: ${LG_SCHEME:-http}://langfuse.${LG_PUBLIC_DOMAIN:-localhost}${LG_PUBLIC_PORT_SUFFIX:-}
+    volumes:
+      - rustfs-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9000/health || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  # Creates the langfuse bucket once RustFS answers. Idempotent.
+  rustfs-init:
+    image: amazon/aws-cli:2.32.0@sha256:bb82c6ce5c78cd8aad48d0003ab097c858cda14f9ce389c2345c50cce0104efd
+    restart: "no"
+    logging: *logging
+    pids_limit: 512
+    mem_limit: 2g
+    mem_reservation: 128m
+    depends_on:
+      rustfs:
+        condition: service_healthy
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: ["/tmp", "/root/.aws"]
+    environment:
+      AWS_ACCESS_KEY_ID: ${RUSTFS_ACCESS_KEY}
+      AWS_SECRET_ACCESS_KEY: ${RUSTFS_SECRET_KEY}
+      AWS_DEFAULT_REGION: us-east-1
+      AWS_EC2_METADATA_DISABLED: "true"
+      AWS_PAGER: ""
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        aws configure set default.s3.addressing_style path
+        for i in $(seq 1 60); do
+          aws --endpoint-url http://rustfs:9000 s3api head-bucket --bucket langfuse >/dev/null 2>&1 && exit 0
+          aws --endpoint-url http://rustfs:9000 s3api create-bucket --bucket langfuse >/dev/null 2>&1 && exit 0
+          sleep 2
+        done
+        echo "rustfs did not accept a bucket in 120s" >&2; exit 1
+
+  valkey:
+    image: valkey/valkey:9.1.2@sha256:c123e3715db63d06d4ad6964884037aa0d5d4d703939b9929954112889708e1d
+    restart: unless-stopped
+    logging: *logging
+    pids_limit: 512
+    mem_limit: ${LG_VALKEY_MEM_LIMIT:-2g}
+    mem_reservation: 128m
+    # Langfuse uses this as a durable queue: noeviction, AOF, bounded memory.
+    command:
+      - valkey-server
+      - --requirepass
+      - ${VALKEY_PASSWORD}
+      - --maxmemory
+      - ${LG_VALKEY_MAXMEMORY:-1gb}
+      - --maxmemory-policy
+      - noeviction
+      - --appendonly
+      - "yes"
+      - --appendfsync
+      - everysec
+    volumes:
+      - valkey-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "valkey-cli -a \"$$VALKEY_PASSWORD\" --no-auth-warning ping | grep -q PONG"]
+      interval: 3s
+      timeout: 5s
+      retries: 10
+    environment:
+      VALKEY_PASSWORD: ${VALKEY_PASSWORD}
+
+  postgres:
+    image: postgres:18.6@sha256:4ef4dbc939d61acea57712655ddb4b4ab27419c913f94cca0cd57cb3ea3c2280
+    restart: unless-stopped
+    logging: *logging
+    pids_limit: 512
+    mem_limit: 2g
+    mem_reservation: 256m
+    entrypoint: ["/bin/sh", "/opt/backup/backup-entrypoint.sh"]
+    command:
+      - postgres
+      - -c
+      - archive_mode=on
+      - -c
+      - archive_timeout=60s
+      - -c
+      - archive_command=/bin/sh /opt/backup/archive.sh %p %f
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?run scripts/bootstrap.py to generate secrets}
+      POSTGRES_DB: postgres
+      LG_POSTGRES_EXPORTER_PASSWORD: ${LG_POSTGRES_EXPORTER_PASSWORD:?run scripts/bootstrap.py to generate secrets}
+      TZ: UTC
+      PGTZ: UTC
+      LITELLM_DB_PASSWORD: ${LITELLM_DB_PASSWORD}
+      LANGFUSE_DB_PASSWORD: ${LANGFUSE_DB_PASSWORD}
+    volumes:
+      # Host path on purpose (ADR-0014): the operator chooses the disk. Postgres 18
+      # keeps its cluster under /var/lib/postgresql/18/docker inside this mount.
+      - type: bind
+        source: ${LG_POSTGRES_DATA_DIR:-./data/postgres}
+        target: /var/lib/postgresql
+        bind:
+          create_host_path: false
+      - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
+      - ./docker/postgres/archive.sh:/opt/backup/archive.sh:ro
+      - ./docker/postgres/backup-entrypoint.sh:/opt/backup/backup-entrypoint.sh:ro
+      - type: bind
+        source: ${LG_BACKUP_DIR:?set LG_BACKUP_DIR to a separate mounted filesystem}
+        target: /backup
+        bind:
+          create_host_path: false
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d langfuse && pg_isready -U postgres -d litellm"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  valkey-exporter:
+    image: oliver006/redis_exporter:v1.80.1@sha256:bac9872da2b48e6eebbffb11517a5dcda59958eda51e1e4231eeb5dd516b4a5f
+    restart: unless-stopped
+    logging: *logging
+    pids_limit: 512
+    mem_limit: 128m
+    mem_reservation: 32m
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      REDIS_ADDR: redis://valkey:6379
+      REDIS_PASSWORD: ${VALKEY_PASSWORD}
+    depends_on:
+      valkey:
+        condition: service_healthy
+    networks:
+      default:
+      platform:
+        aliases: [lg-valkey-exporter]
+
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:v0.19.0@sha256:e8a170b85eab07c75c2b0f3aa2806be5c2fe5bba46fd0336914e1f36572cde08
+    restart: unless-stopped
+    logging: *logging
+    pids_limit: 512
+    mem_limit: 128m
+    mem_reservation: 32m
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      DATA_SOURCE_URI: postgres:5432/postgres?sslmode=disable
+      DATA_SOURCE_USER: lg_monitor
+      DATA_SOURCE_PASS: ${LG_POSTGRES_EXPORTER_PASSWORD}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      default:
+      platform:
+        aliases: [lg-postgres-exporter]
+
+volumes:
+  caddy-data:
+    external: true
+    name: ${LG_VOLUME_PREFIX:-llm-gateway-stack}-caddy-data
+  caddy-config:
+    external: true
+    name: ${LG_VOLUME_PREFIX:-llm-gateway-stack}-caddy-config
+  clickhouse-data:
+    external: true
+    name: ${LG_VOLUME_PREFIX:-llm-gateway-stack}-clickhouse-data
+  clickhouse-logs:
+    external: true
+    name: ${LG_VOLUME_PREFIX:-llm-gateway-stack}-clickhouse-logs
+  rustfs-data:
+    external: true
+    name: ${LG_VOLUME_PREFIX:-llm-gateway-stack}-rustfs-data
+  valkey-data:
+    external: true
+    name: ${LG_VOLUME_PREFIX:-llm-gateway-stack}-valkey-data
+
+networks:
+  default:
+  # Shared with the other stacks on this host. Bootstrap creates it. A disposable
+  # project (smoke, drill) sets LG_PLATFORM_NETWORK to its own name so its aliases
+  # never shadow the installed stack's.
+  platform:
+    name: ${LG_PLATFORM_NETWORK:-platform}
+    external: true

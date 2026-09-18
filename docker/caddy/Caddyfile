@@ -1,0 +1,159 @@
+# Stack Gateway. One Caddyfile for Local Mode and Public Mode (ADR-0014).
+# Local:  LG_SCHEME=http  LG_PUBLIC_DOMAIN=localhost      -> http://litellm.localhost
+# Public: LG_SCHEME=https LG_PUBLIC_DOMAIN=example.com    -> https://litellm.example.com
+# Behind platform-edge: LG_SCHEME=https, LG_LISTEN_SCHEME=http, LG_TLS_ISSUER=none
+# Static config only: no Docker socket, no caddy-docker-proxy.
+{
+	admin off
+	skip_install_trust
+	# Empty standalone; set to the platform subnet only when behind platform-edge.
+	servers {
+		trusted_proxies static {$LG_TRUSTED_PROXIES}
+	}
+}
+
+(ca-none) {
+}
+
+(ca-acme) {
+	tls {
+		issuer acme
+	}
+}
+
+(ca-internal) {
+	tls internal
+}
+
+(status-only) {
+	reverse_proxy {args[0]} {
+		handle_response {
+			respond "" {rp.status_code}
+		}
+	}
+}
+
+(health) {
+	rewrite * {args[1]}
+	@operator remote_ip {$LG_OPERATOR_ALLOW:127.0.0.0/8 ::1}
+	handle @operator {
+		reverse_proxy {args[0]}
+	}
+	handle {
+		import status-only {args[0]}
+	}
+}
+
+(app) {
+	encode zstd gzip
+	route {
+		# Operator surfaces stay on the Docker network; never through the gateway.
+		@operator path_regexp (?i)^/+metrics(/|$)
+		respond @operator 404
+		@public_health {
+			path /health /health/* /api/public/health /api/public/ready
+			not remote_ip {$LG_OPERATOR_ALLOW:127.0.0.0/8 ::1}
+		}
+		handle @public_health {
+			import status-only {args[0]}
+		}
+		handle {
+			reverse_proxy {args[0]}
+		}
+	}
+}
+
+# Stack Console and the health paths it polls. Health answers carry no secrets.
+{$LG_LISTEN_SCHEME}://{$LG_PUBLIC_DOMAIN} {
+	import ca-{$LG_TLS_ISSUER}
+	handle /health/litellm {
+		import health litellm:4000 /health/readiness
+	}
+	handle /health/langfuse {
+		import health langfuse-web:3000 /api/public/health
+	}
+	handle /health/rustfs {
+		import health rustfs:9000 /health/live
+	}
+	handle /health/backplane {
+		import health bp-server:3000 /health/ready
+	}
+	handle /health/grafana {
+		import health ob-grafana:3000 /api/health
+	}
+	@metrics path_regexp (?i)^/+metrics(/|$)
+	handle @metrics {
+		respond 404
+	}
+	# Written by bootstrap: pinned versions, no secrets.
+	handle /versions.json {
+		@operator remote_ip {$LG_OPERATOR_ALLOW:127.0.0.0/8 ::1}
+		handle @operator {
+			root * /srv/state
+			file_server
+		}
+		respond 404
+	}
+	handle {
+		root * /srv/console
+		file_server
+	}
+}
+
+{$LG_LISTEN_SCHEME}://litellm.{$LG_PUBLIC_DOMAIN} {
+	import ca-{$LG_TLS_ISSUER}
+	route {
+		@ui {
+			path_regexp (?i)^/+(ui.*|openapi\.json)$
+			not remote_ip {$LG_OPERATOR_ALLOW:127.0.0.0/8 ::1}
+		}
+		respond @ui 404
+		import app litellm:4000
+	}
+}
+
+{$LG_LISTEN_SCHEME}://langfuse.{$LG_PUBLIC_DOMAIN} {
+	import ca-{$LG_TLS_ISSUER}
+	import app langfuse-web:3000
+}
+
+# S3 API: browsers fetch presigned media and export URLs here.
+{$LG_LISTEN_SCHEME}://s3.{$LG_PUBLIC_DOMAIN} {
+	import ca-{$LG_TLS_ISSUER}
+	reverse_proxy rustfs:9000
+}
+
+(rustfs-off) {
+}
+
+(rustfs-on) {
+	{$LG_LISTEN_SCHEME}://rustfs.{$LG_PUBLIC_DOMAIN} {
+		import ca-{$LG_TLS_ISSUER}
+		route {
+			@denied not remote_ip {$LG_OPERATOR_ALLOW:127.0.0.0/8 ::1}
+			respond @denied 404
+			import app rustfs:9001
+		}
+	}
+}
+
+import rustfs-{$LG_RUSTFS_CONSOLE:off}
+
+# Unpublished listener: healthcheck via loopback, checkpoint scrape via lg-gateway:8081.
+http://:8081 {
+	route {
+		@denied not remote_ip {$LG_OPERATOR_ALLOW:127.0.0.0/8 ::1}
+		respond @denied 404
+		handle /metrics {
+			header Content-Type "text/plain; version=0.0.4"
+			rewrite * /metrics.txt
+			root * /srv/state
+			file_server
+		}
+		handle /versions.json {
+			root * /srv/state
+			file_server
+		}
+		respond 404
+	}
+}

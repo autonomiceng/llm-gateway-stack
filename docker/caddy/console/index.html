@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>LLM Gateway</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header>
+    <a href="/" class="brand">LLM Gateway</a>
+    <nav aria-label="Stack">
+      <a href="https://github.com/autonomiceng/llm-gateway-stack">Source</a>
+    </nav>
+  </header>
+
+  <main>
+    <section aria-labelledby="apps">
+      <h1 id="apps">Applications</h1>
+      <ol class="cards">
+        <li data-service="litellm" data-host="litellm">
+          <div class="row">
+            <h2><a data-link="litellm">LiteLLM</a></h2>
+            <span class="badge" data-badge>checking</span>
+          </div>
+          <p>OpenAI-compatible API, virtual keys, budgets, routing.</p>
+          <dl>
+            <dt>API</dt><dd><code data-url="litellm">…</code></dd>
+            <dt>Admin</dt><dd><a data-link="litellm" data-path="/ui/">/ui/</a></dd>
+            <dt>Version</dt><dd data-version="litellm">…</dd>
+          </dl>
+        </li>
+        <li data-service="langfuse" data-host="langfuse">
+          <div class="row">
+            <h2><a data-link="langfuse">Langfuse</a></h2>
+            <span class="badge" data-badge>checking</span>
+          </div>
+          <p>Traces, evals, prompts, cost per user and session.</p>
+          <dl>
+            <dt>OTLP</dt><dd><code data-url="langfuse" data-path="/api/public/otel">…</code></dd>
+            <dt>Version</dt><dd data-version="langfuse">…</dd>
+          </dl>
+        </li>
+        <li data-service="rustfs" data-host="rustfs">
+          <div class="row">
+            <h2>Object storage</h2>
+            <span class="badge" data-badge>checking</span>
+          </div>
+          <p>RustFS holds Langfuse events, media and exports.</p>
+          <dl>
+            <dt>Console</dt><dd>not enabled by default</dd>
+            <dt>S3</dt><dd><code data-url="s3">…</code></dd>
+            <dt>Version</dt><dd data-version="rustfs">…</dd>
+          </dl>
+        </li>
+      </ol>
+    </section>
+
+    <section aria-labelledby="platform">
+      <h1 id="platform">On this host</h1>
+      <p class="muted">Other stacks on the shared platform network. Absent ones show as not installed.</p>
+      <ol class="cards">
+        <li data-service="backplane" data-host="backplane" data-optional>
+          <div class="row">
+            <h2><a data-link="backplane">Agent Backplane</a></h2>
+            <span class="badge" data-badge>checking</span>
+          </div>
+          <p>Shared state, queues and approvals for agents.</p>
+        </li>
+        <li data-service="grafana" data-host="grafana" data-optional>
+          <div class="row">
+            <h2><a data-link="grafana">Grafana</a></h2>
+            <span class="badge" data-badge>checking</span>
+          </div>
+          <p>Logs, metrics and alerts for every stack.</p>
+        </li>
+      </ol>
+    </section>
+
+    <section aria-labelledby="datastores">
+      <h1 id="datastores">Datastores</h1>
+      <p class="muted">Private to the Docker network. Versions are the pinned images, not a live probe.</p>
+      <table>
+        <tbody>
+          <tr><th scope="row">PostgreSQL</th><td data-version="postgres">…</td></tr>
+          <tr><th scope="row">ClickHouse</th><td data-version="clickhouse">…</td></tr>
+          <tr><th scope="row">Valkey</th><td data-version="valkey">…</td></tr>
+          <tr><th scope="row">Caddy</th><td data-version="caddy">…</td></tr>
+        </tbody>
+      </table>
+    </section>
+  </main>
+
+  <footer>
+    <span data-checked>Health not checked yet.</span>
+    <span>Pinned <time data-pinned>…</time></span>
+  </footer>
+
+  <script src="/console.js" defer></script>
+</body>
+</html>

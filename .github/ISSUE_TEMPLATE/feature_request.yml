@@ -1,0 +1,14 @@
+name: Feature request
+description: A change to what the stack does or how it is operated.
+labels: [enhancement]
+body:
+  - type: textarea
+    attributes:
+      label: Problem
+      description: What you cannot do today.
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Proposal
+      description: What should change, and what it would cost an operator.

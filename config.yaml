@@ -1,0 +1,44 @@
+# LiteLLM proxy configuration. Secrets come from the environment, never from here.
+
+model_list:
+  # Built-in mock model: a fresh install answers requests without provider credentials.
+  - model_name: gateway-mock
+    litellm_params:
+      model: openai/gateway-mock
+      mock_response: "The gateway is up."
+  # Add real deployments below. Credentials are the provider env vars in compose.yaml.
+  # - model_name: gpt-5-mini
+  #   litellm_params:
+  #     model: openai/gpt-5-mini
+
+general_settings:
+  store_model_in_db: true
+  # Payloads live in Langfuse; do not duplicate them into spend logs.
+  store_prompts_in_spend_logs: false
+  user_api_key_cache_ttl: 60
+
+litellm_settings:
+  # Traces go to Langfuse over OTLP (Langfuse 4 has no legacy ingestion API).
+  # Metrics are exposed on /metrics for the observability stack.
+  callbacks:
+    - langfuse_otel
+    - prometheus
+    - cache_namespace_policy.cache_namespace_policy
+    - batch_redis_requests
+  # /metrics is reachable only on the Docker networks; the observability stack scrapes it.
+  require_auth_for_metrics_endpoint: false
+  # Operational cache on Valkey. LLM response reuse stays opt-in per request (ADR-0011).
+  cache: true
+  enable_caching_on_provider_specific_optional_params: true
+  cache_params:
+    type: redis
+    host: os.environ/REDIS_HOST
+    port: os.environ/REDIS_PORT
+    password: os.environ/REDIS_PASSWORD
+    namespace: litellm
+    mode: default_off
+    ttl: 300
+
+  # Optional proxy-wide budget:
+  # max_budget: 100
+  # budget_duration: 30d

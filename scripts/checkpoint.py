@@ -1,0 +1,621 @@
+#!/usr/bin/env python3
+"""Take or restore a whole-stack Checkpoint."""
+from __future__ import annotations
+
+import argparse
+import fcntl
+import hashlib
+import json
+import os
+import re
+import signal
+import shlex
+import shutil
+import subprocess
+import sys
+import tarfile
+import time
+import urllib.request
+from datetime import datetime, timezone
+from pathlib import Path
+
+import bootstrap
+
+ROOT = Path(__file__).resolve().parent.parent
+
+
+def run(argv):
+    return subprocess.run(argv, text=True, capture_output=True, check=False)
+
+
+def checked(argv, runner=run, *, diagnostics, label='command'):
+    result = runner(argv)
+    if result.returncode:
+        # Output can contain credentials. Labels are supplied by callers, never argv.
+        diagnostics.mkdir(parents=True, exist_ok=True, mode=0o700)
+        os.chmod(diagnostics, 0o700)
+        stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')
+        path = diagnostics / f'{stamp}-{label}.log'
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, 'w') as handle:
+            handle.write(result.stdout + result.stderr)
+        raise RuntimeError(f'{label} failed (exit {result.returncode}); diagnostics: {path}')
+    return result.stdout.strip()
+
+
+def image_refs(compose):
+    refs = {}
+    service = ''
+    for line in compose.read_text().splitlines():
+        match = re.match(r'^  ([a-z][a-z0-9-]*):\s*$', line)
+        if match:
+            service = match[1]
+        match = re.match(r'^    image:\s+(\S+)\s*$', line)
+        if match:
+            refs[service] = match[1]
+    return refs
+
+
+def inventory(directory):
+    out = {}
+    for path in sorted(directory.rglob('*')):
+        if path.is_symlink():
+            raise RuntimeError('Checkpoint must not contain symlinks')
+        if not path.is_file() or path.name == 'manifest.json' and path.parent == directory:
+            continue
+        digest = hashlib.sha256()
+        with path.open('rb') as handle:
+            for block in iter(lambda: handle.read(1024 * 1024), b''):
+                digest.update(block)
+        out[path.relative_to(directory).as_posix()] = {
+            'size': path.stat().st_size, 'sha256': digest.hexdigest(),
+        }
+    return out
+
+
+def manifest(directory, compose, env_file, commit, timestamp, fenced, restore_point, timeline_id):
+    # Record names only. Never serialize the resolved Compose environment.
+    keys = sorted(set(re.findall(r'^([A-Z][A-Z0-9_]*)=', env_file.read_text(), re.M)))
+    return {
+        'version': 1, 'timestamp': timestamp, 'git_commit': commit,
+        'images': image_refs(compose), 'env_keys': keys, 'fenced': fenced,
+        'postgres_restore_point': restore_point, 'postgres_timeline_id': timeline_id,
+        'clickhouse_database': 'default',
+        'artifacts': inventory(directory),
+    }
+
+
+def wait_idle(poller, timeout=300, interval=2, clock=time.monotonic, sleep=time.sleep):
+    deadline = clock() + timeout
+    quiet = 0
+    while clock() < deadline:
+        quiet = quiet + 1 if poller() == 0 else 0
+        if quiet == 3:
+            return
+        sleep(interval)
+    raise RuntimeError('worker did not become idle before the fence timeout')
+
+
+def check_empty(data_dir, project, image, runner=run, *, diagnostics, volumes=()):
+    running = checked(['docker', 'ps', '-q', '--filter',
+                       f'label=com.docker.compose.project={project}'], runner,
+                      diagnostics=diagnostics, label='restore-containers')
+    if running:
+        raise RuntimeError('restore requires every project container stopped')
+    if not data_dir.is_dir():
+        raise RuntimeError('restore requires a Postgres data directory')
+    mounts = [('bind', str(data_dir))]
+    names = checked(['docker', 'volume', 'ls', '--format', '{{.Name}}'], runner,
+                    diagnostics=diagnostics, label='restore-volumes').split()
+    labelled = checked(['docker', 'volume', 'ls', '--filter',
+                        f'label=com.docker.compose.project={project}', '--format', '{{.Name}}'], runner,
+                       diagnostics=diagnostics, label='restore-project-volumes').split()
+    mounts += [('volume', name) for name in sorted(set(labelled) | {
+        name for name in names if name.startswith(project + '_') or name in volumes})]
+    for kind, source in mounts:
+        result = runner(['docker', 'run', '--rm', '--network', 'none', '--user', '0',
+                         '--mount', f'type={kind},src={source},dst=/target,readonly',
+                         '--entrypoint', 'sh', image, '-ec',
+                         'entries=$(ls -A /target); test -z "$entries"'])
+        if result.returncode:
+            raise RuntimeError(f'restore refused: non-empty or unreadable target {source}')
+
+
+def retention_plan(backups, keep, archive, segment_size):
+    if keep < 1:
+        raise ValueError('LG_BACKUP_KEEP must be at least 1')
+    complete = sorted(p for p in backups.iterdir()
+                      if re.fullmatch(r'\d{8}T\d{12}Z', p.name)
+                      and p.is_dir() and not p.is_symlink() and (p / 'manifest.json').is_file())
+    if len(complete) < 2:
+        return [], []
+    retained = complete[-keep:]
+    starts = []
+    for path in retained:
+        doc = json.loads((path / 'postgres/backup_manifest').read_text())
+        if not doc['WAL-Ranges']:
+            raise RuntimeError('retained base backup has no start WAL')
+        for wal_range in doc['WAL-Ranges']:
+            if not re.fullmatch(r'[0-9A-F]{1,8}/[0-9A-F]{1,8}', wal_range['Start-LSN']):
+                raise RuntimeError('invalid base backup start LSN')
+            high, low = (int(part, 16) for part in wal_range['Start-LSN'].split('/'))
+            segment = ((high << 32) + low) // segment_size
+            per_log = (1 << 32) // segment_size
+            starts.append(f'{segment // per_log:08X}{segment % per_log:08X}')
+    if not starts:
+        raise RuntimeError('retained base backups have no start WAL')
+    # pg_archivecleanup ignores timeline IDs; history files must survive PITR.
+    boundary = min(starts)
+    wal = [name for name in archive
+           if re.fullmatch(r'[0-9A-F]{24}(?:\.partial|\.[0-9A-F]{8}\.backup)?', name)
+           and name[8:24] < boundary]
+    return [p.name for p in complete[:-keep]], sorted(wal)
+
+
+def prune(stack):
+    archive = stack.helper('postgres',
+        'find /backup/archive -maxdepth 1 -type f -printf "%f\\n"').splitlines()
+    size = int(stack.pg("SELECT pg_size_bytes(current_setting('wal_segment_size'))"))
+    old, wal = retention_plan(stack.backups, stack.keep, archive, size)
+    # The postgres helper can remove archive files and ClickHouse-owned artifacts.
+    for name in old:
+        stack.helper('postgres', 'rm -rf -- "$1"', f'/backup/{name}')
+    for offset in range(0, len(wal), 256):
+        stack.helper('postgres', 'rm -f -- "$@"',
+                     *(f'/backup/archive/{name}' for name in wal[offset:offset + 256]))
+
+
+def write_metrics(success):
+    console = ROOT / 'data/console'
+    console.mkdir(parents=True, exist_ok=True)
+    path = console / 'metrics.txt'
+    previous = path.read_text() if path.exists() else ''
+    match = re.search(r'^lg_checkpoint_timestamp_seconds ([0-9.]+)$', previous, re.M)
+    timestamp = time.time() if success else float(match[1]) if match else 0
+    temporary = path.with_suffix('.tmp')
+    temporary.write_text(
+        '# HELP lg_checkpoint_timestamp_seconds Last successful Checkpoint Unix timestamp.\n'
+        '# TYPE lg_checkpoint_timestamp_seconds gauge\n'
+        f'lg_checkpoint_timestamp_seconds {timestamp:.0f}\n'
+        '# HELP lg_checkpoint_success Whether the latest Checkpoint attempt succeeded.\n'
+        '# TYPE lg_checkpoint_success gauge\n'
+        f'lg_checkpoint_success {int(success)}\n')
+    os.chmod(temporary, 0o644)
+    os.replace(temporary, path)
+
+
+# BullMQ ready/active work, including priorities and paused jobs. Ingestion delays
+# must drain too; future recurring maintenance jobs remain in the saved AOF.
+# ARGV[2] == 'active' counts only in-flight jobs: after the worker has stopped,
+# recurring maintenance jobs keep coming due in `delayed` and are not work lost.
+QUEUE_LUA = '''
+local cursor = '0'
+local count = 0
+local only_active = ARGV[2] == 'active'
+repeat
+  local page = redis.call('SCAN', cursor, 'MATCH', 'bull:*', 'COUNT', 1000)
+  cursor = page[1]
+  for _, key in ipairs(page[2]) do
+    local suffix = string.match(key, ':([^:]+)$')
+    if only_active then
+      if suffix == 'active' then
+        count = count + redis.call('LLEN', key)
+      end
+    elseif suffix == 'wait' or suffix == 'active' or suffix == 'paused' then
+      count = count + redis.call('LLEN', key)
+    elseif suffix == 'prioritized' then
+      count = count + redis.call('ZCARD', key)
+    elseif suffix == 'delayed' then
+      if string.find(key, 'ingestion') then
+        count = count + redis.call('ZCARD', key)
+      else
+        count = count + redis.call('ZCOUNT', key, '-inf', ARGV[1])
+      end
+    end
+  end
+until cursor == '0'
+return count
+'''
+
+
+class Stack:
+    def __init__(self, env_file, runner=run):
+        self.runner = runner
+        self.env_file = env_file.resolve()
+        if not self.env_file.is_file():
+            raise RuntimeError('the original .env is required')
+        settings = {m.group('key'): bootstrap.unquote(m.group('value'))
+                    for m in map(bootstrap.ENV_LINE.match, self.env_file.read_text().splitlines()) if m}
+        backup_dir = os.environ.get('LG_BACKUP_DIR', settings.get('LG_BACKUP_DIR', ''))
+        if not backup_dir:
+            raise RuntimeError('LG_BACKUP_DIR is required')
+        self.backups = ROOT / backup_dir
+        self.command = ['docker', 'compose', '-f', str(ROOT / 'compose.yaml'), '--project-directory', str(ROOT),
+                        '--env-file', str(self.env_file)]
+        self.config = json.loads(self.dc('config', '--format', 'json'))
+        self.images = image_refs(ROOT / 'compose.yaml')
+        if {k: v['image'] for k, v in self.config['services'].items()} != self.images:
+            raise RuntimeError('resolved images differ from compose.yaml; remove overrides')
+        self.project = self.config['name']
+        self.volumes = [v['name'] for v in self.config['volumes'].values()]
+        self.prefix = os.environ.get('LG_VOLUME_PREFIX', settings.get('LG_VOLUME_PREFIX')) or bootstrap.PROJECT
+        self.keep = int(os.environ.get('LG_BACKUP_KEEP') or settings.get('LG_BACKUP_KEEP') or '7')
+        if self.keep < 1:
+            raise ValueError('LG_BACKUP_KEEP must be at least 1')
+        self.backups = self.mount('postgres', '/backup')
+        self.data = self.mount('postgres', '/var/lib/postgresql')
+        if not self.backups.is_dir():
+            raise RuntimeError('LG_BACKUP_DIR must exist and its storage must be mounted')
+
+    def dc(self, *args, label='compose'):
+        return checked(self.command + list(args), self.runner,
+                       diagnostics=self.backups / '.diagnostics', label=label)
+
+    # Services that hold unflushed data must finish their shutdown. The front services
+    # are stateless request handlers; Langfuse web waits out its stop timeout and is
+    # killed (exit 137), which loses nothing once Caddy is stopped. The Langfuse worker
+    # flushes its ClickHouse writer and logs completion, then the node process hangs
+    # and is killed too; the log line is the evidence that the flush happened.
+    CLEAN_EXIT_REQUIRED = ('valkey',)
+    WORKER_DONE = 'Shutdown complete, exiting process'
+
+    def stop(self, service, timeout):
+        started = datetime.now(timezone.utc).isoformat()
+        self.dc('stop', '-t', str(timeout), service, label='fence-stop')
+        if service == 'langfuse-worker':
+            logs = self.dc('logs', '--since', started, '--no-log-prefix', service, label='fence-worker-log')
+            if self.WORKER_DONE not in logs:
+                raise RuntimeError('langfuse-worker did not finish its shutdown flush; retry backup')
+            return
+        if service not in self.CLEAN_EXIT_REQUIRED:
+            return
+        output = self.dc('ps', '-a', '--format', 'json', service, label='fence-exit')
+        containers = (json.loads(output) if output.lstrip().startswith('[')
+                      else [json.loads(line) for line in output.splitlines() if line.strip()])
+        if not containers:
+            raise RuntimeError(f'service {service} did not stop cleanly (exit unknown)')
+        for container in containers:
+            code = container.get('ExitCode')
+            if code != 0:
+                raise RuntimeError(f'service {service} did not stop cleanly (exit {code})')
+
+    def mount(self, service, target):
+        return Path(next(v['source'] for v in self.config['services'][service]['volumes']
+                         if v['target'] == target))
+
+    def pg(self, sql):
+        return self.dc('exec', '-T', 'postgres', 'psql', '-U', 'postgres', '-d', 'postgres',
+                       '-At', '-v', 'ON_ERROR_STOP=1', '-c', sql)
+
+    def ch(self, sql):
+        return self.dc('exec', '-T', 'clickhouse', 'sh', '-ec',
+                       'exec clickhouse-client --user "$CLICKHOUSE_USER" '
+                       '--password "$CLICKHOUSE_PASSWORD" --query "$1"', 'sh', sql)
+
+    def helper(self, service, script, *args, mounts=(), user='0', env=()):
+        return self.dc('run', '--rm', '--no-deps', '-T', '--user', user,
+                       *env, *mounts, '--entrypoint', 'sh', service, '-ec', script, 'sh', *args)
+
+    def queue_depth(self):
+        self.dc('exec', '-T', 'langfuse-worker', 'wget', '-qO-',
+                'http://127.0.0.1:3030/api/health')
+        return self.queue_count()
+
+    def queue_count(self, mode='all'):
+        result = self.dc('exec', '-T', 'valkey', 'sh', '-ec',
+                         'export VALKEYCLI_AUTH="$VALKEY_PASSWORD"; '
+                         'exec valkey-cli --raw EVAL "$1" 0 "$2" "$3"',
+                         'sh', QUEUE_LUA, str(int(time.time() * 1000) * 4096 + 4095), mode)
+        return int(result)
+
+    def objects(self, direction, path):
+        local = self.backups / Path(path).relative_to('/backup')
+        sidecar = local.parent / 'objects.meta.json'
+
+        def aws(script, *args):
+            # Dropped capabilities mean root cannot read operator-owned 0700 files.
+            return self.helper('rustfs-init',
+                'aws configure set default.s3.addressing_style path; ' + script,
+                *args, mounts=('-v', f'{self.backups}:/backup'),
+                user=f'{os.getuid()}:{os.getgid()}', env=('-e', 'HOME=/tmp'))
+
+        if direction == 'backup':
+            aws('aws --endpoint-url http://rustfs:9000 s3 sync s3://langfuse "$1" --only-show-errors', path)
+            listing = json.loads(aws('aws --endpoint-url http://rustfs:9000 s3api list-objects-v2 '
+                                     '--bucket langfuse --prefix media/ --output json'))
+            keys = [item['Key'] for item in listing.get('Contents', [])]
+            parts = local.parent / 'objects.meta.parts'
+            parts.mkdir(mode=0o700)
+            (parts / 'keys').write_bytes(b''.join(
+                f'{index}\0{key}\0'.encode() for index, key in enumerate(keys)))
+            aws('''xargs -0 -r -n 2 -P 8 sh -ec '
+                aws --endpoint-url http://rustfs:9000 s3api head-object \
+                  --bucket langfuse --key "$2" --output json > "$0/$1.json"
+                ' "$1" < "$1/keys"''', str(Path(path).parent / parts.name))
+            metadata = {}
+            for index, key in enumerate(keys):
+                head = json.loads((parts / f'{index}.json').read_text())
+                metadata[key] = {field: head[field] for field in
+                    ('ContentType', 'ContentDisposition', 'ContentEncoding') if head.get(field)}
+                if 'ContentType' not in metadata[key]:
+                    metadata[key]['ContentType'] = 'application/octet-stream'
+            sidecar.write_text(json.dumps(metadata, indent=2) + '\n')
+            shutil.rmtree(parts)
+        else:
+            metadata = json.loads(sidecar.read_text())
+            media = {p.relative_to(local).as_posix() for p in (local / 'media').rglob('*') if p.is_file()}
+            if media != set(metadata):
+                raise RuntimeError('media objects and metadata sidecar differ')
+            aws('aws --endpoint-url http://rustfs:9000 s3 sync "$1" s3://langfuse '
+                '--exclude "media/*" --content-type application/json --only-show-errors', path)
+            commands = []
+            for key, head in metadata.items():
+                args = ['aws', '--endpoint-url', 'http://rustfs:9000', 's3', 'cp',
+                        str(Path(path) / key), 's3://langfuse/' + key, '--only-show-errors',
+                        '--content-type', head['ContentType']]
+                for field, flag in (('ContentDisposition', '--content-disposition'),
+                                    ('ContentEncoding', '--content-encoding')):
+                    if field in head:
+                        args += [flag, head[field]]
+                commands.append(shlex.join(args))
+            # Bound command size for buckets with many media objects.
+            for offset in range(0, len(commands), 100):
+                aws('\n'.join(commands[offset:offset + 100]))
+
+
+def backup(stack, no_fence, timeout, stop_timeout=60):
+    stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')
+    dest = stack.backups / stamp
+    point = 'checkpoint_' + stamp
+    # Require running services so the failure handler never starts an idle installation.
+    required = {'caddy', 'litellm', 'langfuse-web', 'langfuse-worker',
+                'postgres', 'clickhouse', 'rustfs', 'valkey'}
+    running = set(stack.dc('ps', '--status', 'running', '--services').split())
+    if not required <= running:
+        raise RuntimeError('backup requires the complete stack running')
+    if stack.pg("SHOW archive_mode") != 'on':
+        raise RuntimeError('Postgres must be restarted with WAL archiving enabled')
+    if stack.pg("SELECT count(*) FROM pg_tablespace WHERE spcname NOT IN ('pg_default', 'pg_global')") != '0':
+        raise RuntimeError('custom PostgreSQL tablespaces are unsupported')
+    dest.mkdir(mode=0o711)
+    os.chmod(dest, 0o711)
+    (dest / 'objects').mkdir()
+    (dest / 'clickhouse').mkdir()
+    stack.dc('exec', '-T', '--user', '0', 'postgres', 'sh', '-ec',
+             'chown "101:$2" "$1"; chmod 750 "$1"',
+             'sh', f'/backup/{stamp}/clickhouse', str(os.getgid()))
+    stopped = []
+    paused = False
+    try:
+        if not no_fence:
+            for service in ('caddy', 'litellm', 'langfuse-web'):
+                stopped.append(service)
+                stack.stop(service, stop_timeout)
+            wait_idle(stack.queue_depth, timeout)
+            stopped.append('langfuse-worker')
+            stack.stop('langfuse-worker', stop_timeout)
+            if stack.queue_count('active'):
+                raise RuntimeError('worker still had jobs in flight after stopping; retry backup')
+            stopped.append('valkey')
+            stack.stop('valkey', stop_timeout)
+        else:
+            # Freeze AOF rotation for the copy. The unfenced stores can diverge.
+            paused = True
+            stack.dc('pause', 'valkey')
+        try:
+            stack.helper('valkey', 'umask 077; tar -C /data -cf "$1" appendonlydir',
+                         f'/backup/{stamp}/valkey.tar', mounts=('-v', f'{stack.backups}:/backup'))
+        finally:
+            if paused:
+                stack.dc('unpause', 'valkey')
+                paused = False
+        stack.ch(f"BACKUP DATABASE default TO Disk('backups', '{stamp}/clickhouse/backup.zip')")
+        stack.dc('exec', '-T', '--user', '0', 'postgres', 'sh', '-ec',
+                 'chown "101:$2" "$1"; chmod 640 "$1"',
+                 'sh', f'/backup/{stamp}/clickhouse/backup.zip', str(os.getgid()))
+        stack.objects('backup', f'/backup/{stamp}/objects')
+        first = stack.pg('SELECT pg_walfile_name(pg_current_wal_lsn())')
+        stack.dc('exec', '-T', '--user', '0', 'postgres', 'pg_basebackup', '-U', 'postgres',
+                 '-D', f'/backup/{stamp}/postgres', '-Ft', '-X', 'stream', '--checkpoint=fast')
+        stack.pg(f"SELECT pg_create_restore_point('{point}')")
+        last = stack.pg('SELECT pg_walfile_name(pg_switch_wal())')
+        # Wait for, and retain, every segment from the base backup through the target.
+        stack.dc('exec', '-T', '--user', '0', 'postgres', 'sh', '-ec', '''
+            umask 077
+            dest=$1; first=$2; last=$3
+            mkdir "$dest/wal"
+            n=0
+            while [ ! -f "/backup/archive/$last" ]; do
+              n=$((n + 1)); [ "$n" -lt 120 ] || exit 1; sleep 1
+            done
+            for file in /backup/archive/*; do
+              name=${file##*/}
+              case "$name" in
+                *.history) cp "$file" "$dest/wal/";;
+                ????????????????????????)
+                  if [ "$name" = "$first" ] || { [ "$name" \\> "$first" ] && [ "$name" \\< "$last" ]; } || [ "$name" = "$last" ]; then
+                    cp "$file" "$dest/wal/"
+                  fi;;
+              esac
+            done
+            test -f "$dest/wal/$first"
+            chown -R "$4:$5" "$dest"
+            chmod -R u+rwX,go-rwx "$dest"
+            chmod 711 "$dest"
+            chown -R "101:$5" "$dest/clickhouse"
+            chmod 750 "$dest/clickhouse"
+            chmod 640 "$dest/clickhouse/backup.zip"
+            sync -f "$dest"
+        ''', 'sh', f'/backup/{stamp}', first, last, str(os.getuid()), str(os.getgid()))
+        doc = manifest(dest, ROOT / 'compose.yaml', stack.env_file,
+                       checked(['git', '-C', str(ROOT), 'rev-parse', 'HEAD'],
+                               diagnostics=stack.backups / '.diagnostics', label='git-revision'),
+                       datetime.now(timezone.utc).isoformat(), not no_fence, point, int(first[:8], 16))
+        with (dest / 'manifest.json').open('x') as handle:
+            json.dump(doc, handle, indent=2)
+            handle.write('\n')
+            handle.flush()
+            os.fsync(handle.fileno())
+        directory_fd = os.open(dest, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+        print(f'Checkpoint: {dest}', flush=True)
+    finally:
+        if paused:
+            stack.dc('unpause', 'valkey')
+        if stopped:
+            stack.dc('start', *reversed(stopped))
+
+
+def verify_checkpoint(source, images):
+    doc = json.loads((source / 'manifest.json').read_text())
+    if doc['version'] != 1 or doc['images'] != images or doc['clickhouse_database'] != 'default':
+        raise RuntimeError('restore requires the same image pins and Checkpoint format')
+    if not re.fullmatch(r'checkpoint_\d{8}T\d{12}Z', doc['postgres_restore_point']):
+        raise RuntimeError('invalid restore point')
+    timeline = doc.get('postgres_timeline_id')
+    if type(timeline) is not int or not 1 <= timeline <= 0xFFFFFFFF:
+        raise RuntimeError('Checkpoint requires a valid Postgres timeline id')
+    required = {'postgres/base.tar', 'postgres/pg_wal.tar', 'postgres/backup_manifest',
+                'clickhouse/backup.zip', 'valkey.tar', 'objects.meta.json'}
+    if not required <= doc['artifacts'].keys() or not (source / 'objects').is_dir():
+        raise RuntimeError('incomplete Checkpoint')
+    if not any(re.fullmatch(r'wal/[0-9A-F]{24}', name) for name in doc['artifacts']):
+        raise RuntimeError('Checkpoint has no archived WAL')
+    if doc['artifacts'] != inventory(source):
+        raise RuntimeError('Checkpoint checksum or size mismatch')
+    # Only our regular files/directories may be unpacked into empty target storage.
+    for name in ('postgres/base.tar', 'postgres/pg_wal.tar', 'valkey.tar'):
+        with tarfile.open(source / name) as archive:
+            for member in archive:
+                path = Path(member.name)
+                if path.is_absolute() or '..' in path.parts or not (member.isfile() or member.isdir()):
+                    raise RuntimeError('unsupported archive member (including tablespace links)')
+    return doc
+
+
+def health(stack):
+    env = stack.config['services']['caddy']['environment']
+    scheme = env['LG_SCHEME']
+    ports = stack.config['services']['caddy']['ports']
+    port = next(str(p['published']) for p in ports if p['target'] == (443 if scheme == 'https' else 80))
+    origin = f"{scheme}://{env['LG_PUBLIC_DOMAIN']}:{port}"
+    for path in ('/health/litellm', '/health/langfuse'):
+        deadline = time.monotonic() + 120
+        while time.monotonic() < deadline:
+            try:
+                with urllib.request.urlopen(origin + path, timeout=10) as response:
+                    if response.status == 200:
+                        break
+            except OSError:
+                pass
+            time.sleep(2)
+        else:
+            raise RuntimeError(f'restored stack health probe failed: {path}')
+
+
+def restore(stack, source, allow_unfenced=False):
+    source = source.resolve()
+    doc = verify_checkpoint(source, stack.images)
+    if doc.get('fenced') is not True and not allow_unfenced:
+        raise RuntimeError('restore refuses an unfenced Checkpoint without --allow-unfenced')
+    if not stack.data.exists():
+        stack.data.mkdir(parents=True, mode=0o755)
+        os.chmod(stack.data, 0o755)
+    bootstrap.write_versions(ROOT, ROOT / 'compose.yaml')
+    check_empty(stack.data, stack.project, stack.images['postgres'], stack.runner,
+                diagnostics=stack.backups / '.diagnostics', volumes=stack.volumes)
+    bootstrap.ensure_volumes(stack.runner, stack.prefix)
+    # A recovered incarnation must never publish into the source cluster's archive.
+    stack.helper('postgres', 'if [ -d /backup/archive ]; then entries=$(ls -A /backup/archive); test -z "$entries"; fi')
+    stamp = doc['postgres_restore_point'].removeprefix('checkpoint_')
+    destination = stack.backups / stamp
+    if source != destination:
+        shutil.copytree(source, destination)
+    os.chmod(destination, 0o711)
+    target = f'/backup/{stamp}'
+    stack.helper('postgres', '''
+        chown -R "101:$2" "$1/clickhouse"
+        chmod 750 "$1/clickhouse"
+        chmod 640 "$1/clickhouse/backup.zip"
+    ''', target, str(os.getgid()))
+    stack.helper('postgres', '''
+        dest=/var/lib/postgresql/18/docker
+        mkdir -p "$dest"
+        tar -xf "$1/postgres/base.tar" -C "$dest"
+        tar -xf "$1/postgres/pg_wal.tar" -C "$dest/pg_wal"
+        cp "$1/postgres/backup_manifest" "$dest/backup_manifest"
+        pg_verifybackup "$dest"
+        rm -rf "$dest/checkpoint-wal"
+        mkdir "$dest/checkpoint-wal"
+        cp "$1"/wal/* "$dest/checkpoint-wal/"
+        printf "\\nrestore_command = 'cp %s/checkpoint-wal/%%f %%p'\\nrecovery_target_name = '%s'\\nrecovery_target_timeline = '%s'\\nrecovery_target_action = 'promote'\\n" "$dest" "$2" "$3" >> "$dest/postgresql.auto.conf"
+        touch "$dest/recovery.signal"
+        chown -R postgres:postgres /var/lib/postgresql
+        chmod 700 "$dest"
+    ''', target, doc['postgres_restore_point'], str(doc['postgres_timeline_id']))
+    stack.helper('valkey', 'tar -xf "$1/valkey.tar" -C /data; chown -R valkey:valkey /data',
+                 target, mounts=('-v', f'{stack.backups}:/backup:ro'))
+    # Only storage runs until every artifact has been restored.
+    stack.dc('up', '-d', '--no-deps', '--wait', '--wait-timeout', '180',
+             'postgres', 'clickhouse', 'rustfs', 'valkey')
+    deadline = time.monotonic() + 300
+    while stack.pg('SELECT pg_is_in_recovery()') != 'f':
+        if time.monotonic() >= deadline:
+            raise RuntimeError('Postgres has not reached the Checkpoint restore point')
+        time.sleep(2)
+    # RESET must be separate statements: ALTER SYSTEM cannot run in a transaction.
+    for setting in ('restore_command', 'recovery_target', 'recovery_target_name',
+                    'recovery_target_time', 'recovery_target_xid', 'recovery_target_lsn',
+                    'recovery_target_inclusive', 'recovery_target_timeline', 'recovery_target_action'):
+        stack.pg(f'ALTER SYSTEM RESET {setting}')
+    stack.pg('SELECT pg_reload_conf()')
+    stack.helper('postgres', 'rm -rf /var/lib/postgresql/18/docker/checkpoint-wal')
+    stack.ch(f"RESTORE DATABASE default FROM Disk('backups', '{stamp}/clickhouse/backup.zip')")
+    stack.dc('run', '--rm', '--no-deps', '-T', 'rustfs-init')
+    stack.objects('restore', f'{target}/objects')
+    stack.dc('up', '-d', '--wait', '--wait-timeout', '300')
+    health(stack)
+    print('Restore complete; gateway and Langfuse health probes passed')
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    commands = parser.add_subparsers(dest='command', required=True)
+    backup_parser = commands.add_parser('backup')
+    backup_parser.add_argument('--no-fence', action='store_true')
+    backup_parser.add_argument('--fence-timeout', type=int, default=300)
+    backup_parser.add_argument('--stop-timeout', type=int, default=60)
+    restore_parser = commands.add_parser('restore')
+    restore_parser.add_argument('checkpoint', type=Path)
+    restore_parser.add_argument('--allow-unfenced', action='store_true')
+    for command in (backup_parser, restore_parser):
+        command.add_argument('--env-file', type=Path, default=ROOT / '.env')
+    args = parser.parse_args()
+    os.umask(0o077)
+    stack = Stack(args.env_file)
+    with stack.env_file.with_name(stack.env_file.name + '.lock').open('w') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with (stack.backups / '.checkpoint.lock').open('w') as repository_lock:
+            fcntl.flock(repository_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            if args.command == 'restore':
+                restore(stack, args.checkpoint, args.allow_unfenced)
+            else:
+                write_metrics(False)
+                backup(stack, args.no_fence, args.fence_timeout, args.stop_timeout)
+                prune(stack)
+                write_metrics(True)
+
+
+if __name__ == '__main__':
+    def interrupted(signum, frame):
+        raise RuntimeError('interrupted; resuming fenced services')
+    signal.signal(signal.SIGTERM, interrupted)
+    signal.signal(signal.SIGHUP, interrupted)
+    try:
+        main()
+    except (RuntimeError, OSError, ValueError, KeyError, StopIteration, KeyboardInterrupt) as error:
+        print(f'FAIL: {error}', file=sys.stderr)
+        sys.exit(1)

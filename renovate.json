@@ -1,0 +1,85 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    ":pinDigests",
+    "schedule:weekly"
+  ],
+  "enabledManagers": [
+    "docker-compose",
+    "github-actions",
+    "mise"
+  ],
+  "docker-compose": {
+    "managerFilePatterns": [
+      "/^compose\\.yaml$/"
+    ]
+  },
+  "packageRules": [
+    {
+      "matchManagers": [
+        "docker-compose"
+      ],
+      "matchUpdateTypes": [
+        "major"
+      ],
+      "labels": [
+        "major",
+        "needs-maintenance-window"
+      ],
+      "matchPackageNames": [
+        "!langfuse/langfuse",
+        "!langfuse/langfuse-worker"
+      ]
+    },
+    {
+      "matchManagers": [
+        "docker-compose"
+      ],
+      "matchUpdateTypes": [
+        "minor",
+        "patch",
+        "digest"
+      ],
+      "groupName": "stack images",
+      "matchPackageNames": [
+        "!langfuse/langfuse",
+        "!langfuse/langfuse-worker"
+      ]
+    },
+    {
+      "matchPackageNames": [
+        "ghcr.io/berriai/litellm"
+      ],
+      "allowedVersions": "!/rc|dev|nightly/"
+    },
+    {
+      "matchManagers": [
+        "docker-compose"
+      ],
+      "matchPackageNames": [
+        "langfuse/langfuse",
+        "langfuse/langfuse-worker"
+      ],
+      "groupName": "langfuse"
+    },
+    {
+      "matchManagers": [
+        "docker-compose"
+      ],
+      "matchPackageNames": [
+        "langfuse/langfuse",
+        "langfuse/langfuse-worker"
+      ],
+      "matchUpdateTypes": [
+        "major"
+      ],
+      "groupName": "langfuse major",
+      "labels": [
+        "major",
+        "needs-maintenance-window"
+      ]
+    }
+  ],
+  "automerge": false
+}

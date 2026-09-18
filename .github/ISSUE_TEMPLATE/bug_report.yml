@@ -1,0 +1,22 @@
+name: Bug report
+description: Something in the stack does not behave as documented.
+labels: [bug]
+body:
+  - type: textarea
+    attributes:
+      label: What happened
+      description: Command run, what you expected, what you got.
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Environment
+      description: Output of `docker compose version`, `git rev-parse HEAD`, and `LG_*` settings from `.env` (no secrets).
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Logs
+      description: Relevant lines from `docker compose logs <service>`.
+      render: shell
