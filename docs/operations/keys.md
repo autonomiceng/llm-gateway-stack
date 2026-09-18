@@ -13,12 +13,19 @@ Replace the model list with the consumer's allowed aliases from `config.yaml`.
 
 ```sh
 umask 077
+key_work=$(mktemp -d)
+trap 'rm -rf "$key_work"' EXIT HUP INT TERM
+printf 'Authorization: Bearer %s\n' "$LITELLM_MASTER_KEY" > "$key_work/admin-header"
 curl --fail-with-body -sS "$LITELLM_URL/key/generate" \
-  -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
+  --header "@$key_work/admin-header" \
   -H 'Content-Type: application/json' \
   -d '{"key_alias":"consumer-example","models":["gateway-mock"],"max_budget":25,"budget_duration":"30d","rpm_limit":60,"tpm_limit":100000}' \
   > consumer-key.json
 ```
+
+Run these examples in the same shell so the protected temporary files remain available.
+Credentials stay out of curl arguments; same-user processes can still read the environment
+and temporary files. The trap removes the temporary directory when the shell exits.
 
 Check for a successful response. Save its `key` in the consumer's secret store, deliver it
 securely, then remove the local response file. Consumers send that key as the Bearer token.
@@ -31,9 +38,10 @@ Set `CONSUMER_KEY` privately to inspect its `info.spend`, `max_budget`, `budget_
 `budget_reset_at`, model list and rate limits:
 
 ```sh
+printf %s "$CONSUMER_KEY" > "$key_work/consumer-key"
 curl --fail-with-body -sS --get "$LITELLM_URL/key/info" \
-  -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
-  --data-urlencode "key=$CONSUMER_KEY"
+  --header "@$key_work/admin-header" \
+  --data-urlencode "key@$key_work/consumer-key"
 ```
 
 Key info can contain sensitive fields; do not paste the response into public logs.
@@ -42,7 +50,7 @@ Revoke with `/key/delete`, then verify a request using the old key is rejected:
 ```sh
 python3 -c 'import json, os; print(json.dumps({"keys":[os.environ["CONSUMER_KEY"]]}))' |
   curl --fail-with-body -sS "$LITELLM_URL/key/delete" \
-    -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
+    --header "@$key_work/admin-header" \
     -H 'Content-Type: application/json' --data-binary @-
 ```
 

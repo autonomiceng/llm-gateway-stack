@@ -26,7 +26,7 @@ Most changes need no documentation change. Update `CONTEXT.md` when a term chang
 
 ## Plans and scratch
 
-Never commit plans, research notes, or agent scratch. `.scratch/`, `.agents/`, `.devloop/` are gitignored. Tracked work lives in `.scratch/<feature>/` as described in `docs/agents/issue-tracker.md`.
+Never commit plans, research notes, or agent scratch. `.scratch/`, `.agents/`, `.devloop/` are gitignored. Local, untracked issues and specs live in `.scratch/<feature>/` as described in `docs/agents/issue-tracker.md`.
 
 ## Delegation
 

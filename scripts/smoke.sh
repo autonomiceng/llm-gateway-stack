@@ -29,8 +29,17 @@ https_port=${SMOKE_HTTPS_PORT:-18443}
 network="$COMPOSE_PROJECT_NAME-platform"
 mkdir -p "$root/.scratch"
 work=$(mktemp -d "$root/.scratch/smoke-XXXXXX")
-# The backup root must be on a different filesystem from the checkout's data.
-backup_work=$(mktemp -d "${SMOKE_BACKUP_ROOT:-/tmp}/llm-gateway-smoke-XXXXXX")
+# Prefer /tmp when it is separate; otherwise use the Linux shared-memory filesystem.
+backup_root=${SMOKE_BACKUP_ROOT:-/tmp}
+if [[ -z "${SMOKE_BACKUP_ROOT:-}" && -d /dev/shm && $(stat -c %d "$backup_root") == "$(stat -c %d "$work")" ]]; then
+  backup_root=/dev/shm
+fi
+if [[ ! -d "$backup_root" || ! -w "$backup_root" ]] || [[ $(stat -c %d "$backup_root") == "$(stat -c %d "$work")" ]]; then
+  rmdir "$work"
+  echo "Set SMOKE_BACKUP_ROOT to a writable directory on a different filesystem from the checkout." >&2
+  exit 2
+fi
+backup_work=$(mktemp -d "$backup_root/llm-gateway-smoke-XXXXXX")
 pg_image=$(sed -n 's/^    image: \(postgres:.*\)/\1/p' compose.yaml)
 env_file="$work/.env"
 origin="localhost:$http_port"

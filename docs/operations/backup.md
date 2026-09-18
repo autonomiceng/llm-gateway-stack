@@ -11,20 +11,26 @@ Both commands accept `--env-file /path/to/.env`. They use that installation's Co
 project, image pins and storage paths. `COMPOSE_PROJECT_NAME` selects another project.
 Do not run Compose changes or other backup tools concurrently. The scripts lock the
 env file and backup repository against bootstrap and another Checkpoint operation.
+Backup attempts also lock checkout-wide console status, including attempts using
+different env files.
 
 ## Storage and secrets
 
 Set `LG_BACKUP_DIR` in `.env` to an existing, mounted repository, encrypted at rest
 and replicated off-host over encrypted transport. Encryption and replication are the
-operator's job; these scripts do neither. This setting is required. Bootstrap refuses
-a backup directory on the Postgres data filesystem (`backup_dir_same_filesystem`,
-compared using `st_dev`). A local directory on another filesystem works for a drill but
+operator's job; these scripts do neither. This setting is required. Bootstrap, backup
+and restore refuse a backup directory on the Postgres data filesystem (compared using
+`st_dev`; bootstrap reports `backup_dir_same_filesystem`).
+Backup and restore check the configured path before Compose or diagnostics can write
+there, then recheck the resolved mounts. A missing repository is never created by
+diagnostics. A local directory on another filesystem works for a drill but
 cannot survive loss of the host. Keep one archive repository per source cluster and
 recovered incarnation. The filesystem must support ownership, atomic hard links and
 fsync. NFS root squashing requires operator provisioning of compatible ownership.
 
 The bind mounts refuse a missing directory. They cannot distinguish an unmounted disk
-from an empty directory at its mountpoint: check the expected mount with `findmnt`
+from a directory on an unexpected filesystem that still differs from the data filesystem:
+check the expected mount with `findmnt`
 before starting the stack and monitor it continuously. Postgres's entrypoint creates
 `archive/`, owned by the pinned image's postgres user with mode 0700. The backup root
 must be listable by container UIDs: ClickHouse enumerates its backups disk root at startup, so use 0755 on that root and restrict
@@ -37,7 +43,9 @@ read the archive without granting access to other users. Restore applies the sam
 permissions. Other artifact directories and files are restricted to the operator.
 Failed commands retain stdout and stderr in `LG_BACKUP_DIR/.diagnostics/` (0700), in
 UTC timestamped logs (0600). Errors name a safe operation label and the log path.
-These logs can contain secrets; keep them private. They are outside Checkpoint inventories.
+If the diagnostics parent is missing or unwritable, the command still fails and reports
+that diagnostics are unavailable. These logs can contain secrets; keep them private.
+They are outside Checkpoint inventories.
 
 Keep the **original `.env` separately**, in an encrypted password manager or protected
 configuration backup, mode 0600 when on disk. Keep the matching Git checkout too.
@@ -47,6 +55,20 @@ They require the same protection as the live databases. A restore without the or
 secrets is impossible: Langfuse `ENCRYPTION_KEY` and `SALT` come from
 `LANGFUSE_ENCRYPTION_KEY` and `LANGFUSE_SALT`; LiteLLM needs `LITELLM_SALT_KEY`.
 Bootstrap must not replace these with freshly generated values for recovery.
+Checkpoint v1 records no secret fingerprints and cannot prove that a complete supplied
+`.env` is the original. Completeness and shell-conflict checks do not authenticate it.
+Health probes do not prove historical decryption. Recover `.env` from the original
+protected backup and verify previously encrypted application values before reopening
+traffic. Keep the target isolated from production callers until that check passes;
+restore starts its gateway to run probes. Existing v1 Checkpoints retain this limitation;
+their format is unchanged.
+
+Compose shell precedence remains supported for deliberate recovery retargeting.
+An exported `LG_POSTGRES_DATA_DIR`, `LG_VOLUME_PREFIX`, `LG_BACKUP_DIR` or
+`COMPOSE_PROJECT_NAME` can override the saved file. Restore warns with the affected
+setting names. Save the chosen target settings in its `.env`, or keep the identical
+exported environment for every later Compose command; otherwise a later start may
+select different storage. The source `.env` and source storage remain separate.
 
 For an existing installation, create and mount `LG_BACKUP_DIR`, then apply the updated
 Compose configuration during an operator-approved maintenance window. Postgres must
@@ -75,6 +97,12 @@ restored. An interrupted backup retains its artifacts for inspection; remove inc
 sets only after confirming no backup is running. Checksums detect corruption, not a
 maliciously replaced manifest. Custom PostgreSQL tablespaces are refused.
 
+Before creating capture artifacts or fencing, backup compares each project container's
+image reference, image content ID, and persistent mounts with resolved Compose. It
+refuses drift, including changed volume prefixes or Postgres paths. Take the Checkpoint
+from the checkout and settings that started the running installation, before updating
+its pins or storage settings. Stop and remove leftover one-off project containers first.
+
 The default fence stops Caddy, LiteLLM and Langfuse web in that order with a 60-second
 shutdown grace per service. The worker stays running until three consecutive two-second
 polls report no ready or active BullMQ work. Polling requires worker `/api/health` to
@@ -85,8 +113,11 @@ job succeeded. Resolve failed ingestion jobs before relying on a Checkpoint.
 
 After draining, the script stops the worker, checks queues again, then stops Valkey so
 AOF writes and rotations cannot race the copy. Stopping the worker also prevents its
-background database/object writes during capture. It resumes all five services on
-success, failure or catchable interruption. Default drain timeout is 300 seconds;
+background database/object writes during capture. It attempts to resume all five services on
+success, failure or catchable interruption. Resumption waits up to 300 seconds for
+Compose health and then verifies gateway and Langfuse health before retention or
+success publication. If capture and resumption both fail, the error reports both.
+Default drain timeout is 300 seconds;
 `--fence-timeout SECONDS` changes it. A fenced Checkpoint requires the Langfuse
 worker to log `Shutdown complete, exiting process` (its ClickHouse writer flush is done;
 the node process then hangs and is killed at the timeout, which is an upstream quirk) and
@@ -100,6 +131,9 @@ Direct database/object writers must also be quiesced by the operator.
 `scripts/backup.sh --no-fence` skips application stop/start and worker drain. It briefly
 pauses Valkey while copying AOF to prevent rotation races. The result is **crash-consistent
 only**, with no cross-store consistency guarantee; the manifest records `fenced: false`.
+Media metadata is collected for the files actually synced. An object deleted before its
+metadata lookup fails capture. Concurrent content/metadata edits can still represent
+different moments; only fencing gives the documented consistency boundary.
 Use the default fence for the Checkpoint before any persistent change. After a forced
 kill during `--no-fence`, run `docker compose unpause valkey`; normal cleanup cannot
 run after an uncatchable kill.
@@ -115,6 +149,9 @@ the absence of cross-store consistency. Checkpoints without a timeline id requir
 matching old checkout to restore.
 
 1. Obtain the matching checkout and original `.env` through the separate secure channel.
+   Every managed secret must be present and non-empty in that file. Backup and restore
+   reject duplicate managed settings and conflicting exported secrets under the env lock,
+   before resolving Compose or writing target data. Unset conflicting shell values.
    Set fresh `LG_POSTGRES_DATA_DIR` and `LG_BACKUP_DIR` paths and a unique `LG_VOLUME_PREFIX`. The latter needs an empty
    `archive/` or no archive directory, so the recovered timeline cannot overwrite the
    source's WAL. Create the backup root and verify its mount and permissions.
@@ -125,7 +162,9 @@ matching old checkout to restore.
    Docker host, create the shared network with `docker network create platform` if it does not exist.
 3. Run `scripts/restore.sh /path/to/original/Checkpoint`. It validates image pins and all
    artifact hashes before writing target data. It copies the Checkpoint into the new
-   backup root if necessary, unpacks and verifies the Postgres base backup, and recovers
+   backup root if necessary and re-verifies that destination against the original
+   artifact inventory before extraction, then unpacks and verifies the Postgres base backup
+   and recovers
    to the named end point on the recorded `recovery_target_timeline`, with
    `recovery_target_action=promote`. After promotion it removes `checkpoint-wal` and
    resets `restore_command` and all `recovery_target_*` settings. It restores the AOF,
@@ -159,7 +198,10 @@ fetching off-host artifacts, installing Docker and pulling images. Production RT
 be measured with representative data, storage throughput and external DNS/TLS steps.
 No measured RTO is claimed until the drill exits zero on the target host.
 
-Run monthly and after backup or pin changes:
+Run monthly and after backup or pin changes from a clean disposable checkout, without
+`.env`, `data/`, or local Compose override files. Bootstrap versions and Checkpoint
+metrics use checkout-wide `data/console`; the drill refuses a checkout with installation
+state. Use a fresh checkout for each run.
 
 ```sh
 SMOKE_PROJECT=llm-gateway-drill SMOKE_HTTP_PORT=18090 scripts/backup-drill.sh
@@ -167,7 +209,11 @@ SMOKE_PROJECT=llm-gateway-drill SMOKE_HTTP_PORT=18090 scripts/backup-drill.sh
 
 Default HTTPS port is 18453; `SMOKE_HTTPS_PORT` can change it. The drill accepts only
 `llm-gateway-drill` or a name beginning `llm-gateway-drill-`, refuses an existing project,
-uses Postgres storage under the checkout's `.scratch/` and backup repositories under `/tmp` (a separate tmpfs on the drill host), and removes only its disposable volumes and files.
+uses Postgres storage under the checkout's `.scratch/` and backup repositories under
+`SMOKE_BACKUP_ROOT` (default `/tmp`). That root must exist on a different filesystem
+from `.scratch/`; the drill checks this before creating files or Docker resources.
+CI mounts a disposable tmpfs there. The drill removes only its disposable volumes
+and temporary files; generated console state remains in the disposable checkout.
 It creates and removes its own `<project>-platform` network and probes its own HTTP port.
 It never uses the installed or smoke project. It creates LiteLLM virtual key A, sends
 two mock completions with it, waits for both observation IDs and event objects, takes a
@@ -243,9 +289,13 @@ for the upstream recovery mechanisms.
 
 The gateway writes `data/console/metrics.txt` atomically: `lg_checkpoint_timestamp_seconds`
 is the last successful capture, retention and service resumption; `lg_checkpoint_success`
-is 0 during a run or after failure and 1 after success. Until the first run, the file is
+is 0 during capture or after failure (including preflight refusal after acquiring the
+invocation locks) and 1 after success. Refused lock-contending invocations leave the
+active attempt's metrics unchanged; failures preserve the last-success timestamp.
+Until the first run, the file is
 absent and the scrape fails. Caddy serves `/metrics` at `lg-gateway:8081`, restricted
-to socket peers in `LG_OPERATOR_ALLOW`; include the scraper address. Port 8081 is never
+to socket peers in `LG_CHECKPOINT_ALLOW`; include the scraper address or its dedicated
+network CIDR. This does not grant access to operator routes. Port 8081 is never
 published, and port 80 returns 404 for checkpoint metrics. A stopped gateway during fencing causes a temporary scrape failure.
 The PostgreSQL exporter supplies `pg_up`, `pg_stat_archiver_failed_count` and
 `pg_stat_archiver_last_archive_age`. Verify in the observability query UI:

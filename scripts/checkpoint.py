@@ -15,7 +15,7 @@ import subprocess
 import sys
 import tarfile
 import time
-import urllib.request
+from contextlib import ExitStack
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -32,13 +32,16 @@ def checked(argv, runner=run, *, diagnostics, label='command'):
     result = runner(argv)
     if result.returncode:
         # Output can contain credentials. Labels are supplied by callers, never argv.
-        diagnostics.mkdir(parents=True, exist_ok=True, mode=0o700)
-        os.chmod(diagnostics, 0o700)
-        stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')
-        path = diagnostics / f'{stamp}-{label}.log'
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with os.fdopen(fd, 'w') as handle:
-            handle.write(result.stdout + result.stderr)
+        try:
+            diagnostics.mkdir(exist_ok=True, mode=0o700)
+            os.chmod(diagnostics, 0o700)
+            stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')
+            path = diagnostics / f'{stamp}-{label}.log'
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, 'w') as handle:
+                handle.write(result.stdout + result.stderr)
+        except OSError as error:
+            raise RuntimeError(f'{label} failed (exit {result.returncode}); diagnostics unavailable') from error
         raise RuntimeError(f'{label} failed (exit {result.returncode}); diagnostics: {path}')
     return result.stdout.strip()
 
@@ -218,18 +221,41 @@ return count
 '''
 
 
+def check_storage(backups, data):
+    if not backups.is_dir():
+        raise RuntimeError('LG_BACKUP_DIR must exist and its storage must be mounted')
+    parent = data
+    while not parent.exists():
+        parent = parent.parent
+    if backups.stat().st_dev == parent.stat().st_dev:
+        raise RuntimeError('backup and Postgres data must use different filesystems')
+
+
 class Stack:
     def __init__(self, env_file, runner=run):
         self.runner = runner
         self.env_file = env_file.resolve()
         if not self.env_file.is_file():
             raise RuntimeError('the original .env is required')
+        lines, saved = bootstrap.read_env(self.env_file)
+        missing = sorted(key for key in bootstrap.MANAGED if not saved.get(key))
+        if missing:
+            raise RuntimeError('the original .env is missing managed values: ' + ', '.join(missing))
+        conflicts = sorted(key for key in bootstrap.MANAGED
+                           if key in os.environ and os.environ[key] != saved[key])
+        if conflicts:
+            raise RuntimeError('shell secrets differ from the original .env: ' + ', '.join(conflicts))
         settings = {m.group('key'): bootstrap.unquote(m.group('value'))
-                    for m in map(bootstrap.ENV_LINE.match, self.env_file.read_text().splitlines()) if m}
+                    for m in map(bootstrap.ENV_LINE.match, lines) if m}
         backup_dir = os.environ.get('LG_BACKUP_DIR', settings.get('LG_BACKUP_DIR', ''))
         if not backup_dir:
             raise RuntimeError('LG_BACKUP_DIR is required')
-        self.backups = ROOT / backup_dir
+        self.backups = (ROOT / backup_dir).resolve()
+        data_dir = os.environ.get('LG_POSTGRES_DATA_DIR') or settings.get('LG_POSTGRES_DATA_DIR') or './data/postgres'
+        check_storage(self.backups, (ROOT / data_dir).resolve())
+        self.storage_overrides = sorted(key for key in (
+            'LG_POSTGRES_DATA_DIR', 'LG_VOLUME_PREFIX', 'LG_BACKUP_DIR', 'COMPOSE_PROJECT_NAME')
+            if key in os.environ and os.environ[key] != settings.get(key))
         self.command = ['docker', 'compose', '-f', str(ROOT / 'compose.yaml'), '--project-directory', str(ROOT),
                         '--env-file', str(self.env_file)]
         self.config = json.loads(self.dc('config', '--format', 'json'))
@@ -244,8 +270,7 @@ class Stack:
             raise ValueError('LG_BACKUP_KEEP must be at least 1')
         self.backups = self.mount('postgres', '/backup')
         self.data = self.mount('postgres', '/var/lib/postgresql')
-        if not self.backups.is_dir():
-            raise RuntimeError('LG_BACKUP_DIR must exist and its storage must be mounted')
+        check_storage(self.backups, self.data)
 
     def dc(self, *args, label='compose'):
         return checked(self.command + list(args), self.runner,
@@ -282,6 +307,44 @@ class Stack:
     def mount(self, service, target):
         return Path(next(v['source'] for v in self.config['services'][service]['volumes']
                          if v['target'] == target))
+
+    def attest_runtime(self):
+        """Refuse checkout/runtime drift before fencing or creating capture artifacts."""
+        diagnostics = self.backups / '.diagnostics'
+        ids = checked(['docker', 'ps', '-aq', '--filter',
+                       f'label=com.docker.compose.project={self.project}'], self.runner,
+                      diagnostics=diagnostics, label='capture-containers').split()
+        if not ids:
+            raise RuntimeError('backup requires project containers')
+        containers = json.loads(checked(['docker', 'inspect', *ids], self.runner,
+                                        diagnostics=diagnostics, label='capture-inspect'))
+        for container in containers:
+            labels = container['Config']['Labels']
+            service = labels.get('com.docker.compose.service')
+            if (service not in self.config['services'] or
+                    labels.get('com.docker.compose.oneoff', '').lower() == 'true'):
+                raise RuntimeError('unexpected project container; stop and remove it before backup')
+            expected = self.config['services'][service]
+            if container['Config']['Image'] != expected['image']:
+                raise RuntimeError(f'running image differs from resolved Compose: {service}')
+            image_id = checked(['docker', 'image', 'inspect', expected['image'],
+                                '--format', '{{.Id}}'], self.runner,
+                               diagnostics=diagnostics, label='capture-image')
+            if container['Image'] != image_id:
+                raise RuntimeError(f'running image content differs from resolved Compose: {service}')
+            mounts = {}
+            for mount in expected.get('volumes', []):
+                if mount['type'] not in ('bind', 'volume'):
+                    continue
+                source = mount['source']
+                if mount['type'] == 'volume':
+                    source = self.config['volumes'][source]['name']
+                mounts[mount['target']] = (mount['type'], source, not mount.get('read_only', False))
+            actual = {m['Destination']: (m['Type'], m['Name'] if m['Type'] == 'volume'
+                                        else m['Source'], m['RW'])
+                      for m in container['Mounts'] if m['Type'] in ('bind', 'volume')}
+            if actual != mounts:
+                raise RuntimeError(f'running persistent mounts differ from resolved Compose: {service}')
 
     def pg(self, sql):
         return self.dc('exec', '-T', 'postgres', 'psql', '-U', 'postgres', '-d', 'postgres',
@@ -321,9 +384,10 @@ class Stack:
 
         if direction == 'backup':
             aws('aws --endpoint-url http://rustfs:9000 s3 sync s3://langfuse "$1" --only-show-errors', path)
-            listing = json.loads(aws('aws --endpoint-url http://rustfs:9000 s3api list-objects-v2 '
-                                     '--bucket langfuse --prefix media/ --output json'))
-            keys = [item['Key'] for item in listing.get('Contents', [])]
+            # A concurrent unfenced upload must not add a sidecar entry for an object
+            # that was absent from the sync. A vanished object makes head-object fail.
+            keys = sorted(p.relative_to(local).as_posix()
+                          for p in (local / 'media').rglob('*') if p.is_file())
             parts = local.parent / 'objects.meta.parts'
             parts.mkdir(mode=0o700)
             (parts / 'keys').write_bytes(b''.join(
@@ -373,6 +437,7 @@ def backup(stack, no_fence, timeout, stop_timeout=60):
     running = set(stack.dc('ps', '--status', 'running', '--services').split())
     if not required <= running:
         raise RuntimeError('backup requires the complete stack running')
+    stack.attest_runtime()
     if stack.pg("SHOW archive_mode") != 'on':
         raise RuntimeError('Postgres must be restarted with WAL archiving enabled')
     if stack.pg("SELECT count(*) FROM pg_tablespace WHERE spcname NOT IN ('pg_default', 'pg_global')") != '0':
@@ -386,6 +451,7 @@ def backup(stack, no_fence, timeout, stop_timeout=60):
              'sh', f'/backup/{stamp}/clickhouse', str(os.getgid()))
     stopped = []
     paused = False
+    capture_error = None
     try:
         if not no_fence:
             for service in ('caddy', 'litellm', 'langfuse-web'):
@@ -402,13 +468,11 @@ def backup(stack, no_fence, timeout, stop_timeout=60):
             # Freeze AOF rotation for the copy. The unfenced stores can diverge.
             paused = True
             stack.dc('pause', 'valkey')
-        try:
-            stack.helper('valkey', 'umask 077; tar -C /data -cf "$1" appendonlydir',
-                         f'/backup/{stamp}/valkey.tar', mounts=('-v', f'{stack.backups}:/backup'))
-        finally:
-            if paused:
-                stack.dc('unpause', 'valkey')
-                paused = False
+        stack.helper('valkey', 'umask 077; tar -C /data -cf "$1" appendonlydir',
+                     f'/backup/{stamp}/valkey.tar', mounts=('-v', f'{stack.backups}:/backup'))
+        if paused:
+            stack.dc('unpause', 'valkey', label='fence-resume')
+            paused = False
         stack.ch(f"BACKUP DATABASE default TO Disk('backups', '{stamp}/clickhouse/backup.zip')")
         stack.dc('exec', '-T', '--user', '0', 'postgres', 'sh', '-ec',
                  'chown "101:$2" "$1"; chmod 640 "$1"',
@@ -462,11 +526,21 @@ def backup(stack, no_fence, timeout, stop_timeout=60):
         finally:
             os.close(directory_fd)
         print(f'Checkpoint: {dest}', flush=True)
+    except BaseException as error:
+        capture_error = error
+        raise
     finally:
-        if paused:
-            stack.dc('unpause', 'valkey')
-        if stopped:
-            stack.dc('start', *reversed(stopped))
+        try:
+            if paused:
+                stack.dc('unpause', 'valkey', label='fence-resume')
+            if stopped:
+                stack.dc('start', '--wait', '--wait-timeout', '300', *reversed(stopped), label='fence-resume')
+            health(stack)
+        except BaseException as resume_error:
+            if capture_error is not None:
+                raise RuntimeError(f'capture failed: {capture_error}; '
+                                   f'service resumption also failed: {resume_error}') from capture_error
+            raise
 
 
 def verify_checkpoint(source, images):
@@ -497,23 +571,13 @@ def verify_checkpoint(source, images):
 
 
 def health(stack):
-    env = stack.config['services']['caddy']['environment']
-    scheme = env['LG_SCHEME']
-    ports = stack.config['services']['caddy']['ports']
-    port = next(str(p['published']) for p in ports if p['target'] == (443 if scheme == 'https' else 80))
-    origin = f"{scheme}://{env['LG_PUBLIC_DOMAIN']}:{port}"
-    for path in ('/health/litellm', '/health/langfuse'):
-        deadline = time.monotonic() + 120
-        while time.monotonic() < deadline:
-            try:
-                with urllib.request.urlopen(origin + path, timeout=10) as response:
-                    if response.status == 200:
-                        break
-            except OSError:
-                pass
-            time.sleep(2)
-        else:
-            raise RuntimeError(f'restored stack health probe failed: {path}')
+    caddy = stack.config['services']['caddy']
+    settings = dict(caddy['environment'])
+    for port in caddy['ports']:
+        if port['target'] in (80, 443):
+            settings['LG_HTTP_PORT' if port['target'] == 80 else 'LG_HTTPS_PORT'] = str(port['published'])
+            settings['LG_BIND_HOST'] = port.get('host_ip', '127.0.0.1')
+    bootstrap.probe_gateway(settings, stack.command, stack.runner)
 
 
 def restore(stack, source, allow_unfenced=False):
@@ -534,6 +598,8 @@ def restore(stack, source, allow_unfenced=False):
     destination = stack.backups / stamp
     if source != destination:
         shutil.copytree(source, destination)
+    if inventory(destination) != doc['artifacts']:
+        raise RuntimeError('restore copy checksum or size mismatch')
     os.chmod(destination, 0o711)
     target = f'/backup/{stamp}'
     stack.helper('postgres', '''
@@ -578,7 +644,8 @@ def restore(stack, source, allow_unfenced=False):
     stack.objects('restore', f'{target}/objects')
     stack.dc('up', '-d', '--wait', '--wait-timeout', '300')
     health(stack)
-    print('Restore complete; gateway and Langfuse health probes passed')
+    print('Restore complete; gateway and Langfuse health probes passed. '
+          'Verify historical encrypted values using the original secrets; Checkpoint v1 cannot attest secret identity.')
 
 
 def main():
@@ -595,18 +662,45 @@ def main():
         command.add_argument('--env-file', type=Path, default=ROOT / '.env')
     args = parser.parse_args()
     os.umask(0o077)
-    stack = Stack(args.env_file)
-    with stack.env_file.with_name(stack.env_file.name + '.lock').open('w') as lock:
+    env_file = args.env_file.resolve()
+    with ExitStack() as locks:
+        lock = locks.enter_context(env_file.with_name(env_file.name + '.lock').open('w'))
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        with (stack.backups / '.checkpoint.lock').open('w') as repository_lock:
-            fcntl.flock(repository_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            if args.command == 'restore':
-                restore(stack, args.checkpoint, args.allow_unfenced)
-            else:
+        if args.command == 'backup':
+            # Metrics belong to the checkout, even when different env files are used.
+            # Serialize attempts before marking preflight failure; contenders leave
+            # the active attempt's status untouched.
+            console = ROOT / 'data/console'
+            console.mkdir(parents=True, exist_ok=True)
+            status_lock = locks.enter_context((console / '.checkpoint.lock').open('w'))
+            fcntl.flock(status_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        try:
+            stack = Stack(env_file)
+        except (Exception, KeyboardInterrupt):
+            if args.command == 'backup':
                 write_metrics(False)
-                backup(stack, args.no_fence, args.fence_timeout, args.stop_timeout)
-                prune(stack)
-                write_metrics(True)
+            raise
+        try:
+            repository_lock = locks.enter_context((stack.backups / '.checkpoint.lock').open('w'))
+            fcntl.flock(repository_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            # A refused concurrent invocation must not alter the active capture's status.
+            raise
+        except OSError:
+            if args.command == 'backup':
+                write_metrics(False)
+            raise
+        if args.command == 'restore':
+            if stack.storage_overrides:
+                print('Restore storage uses shell overrides: ' + ', '.join(stack.storage_overrides) +
+                      '. Save these settings in the target .env or retain them for later Compose commands.',
+                      file=sys.stderr)
+            restore(stack, args.checkpoint, args.allow_unfenced)
+        else:
+            write_metrics(False)
+            backup(stack, args.no_fence, args.fence_timeout, args.stop_timeout)
+            prune(stack)
+            write_metrics(True)
 
 
 if __name__ == '__main__':
@@ -616,6 +710,6 @@ if __name__ == '__main__':
     signal.signal(signal.SIGHUP, interrupted)
     try:
         main()
-    except (RuntimeError, OSError, ValueError, KeyError, StopIteration, KeyboardInterrupt) as error:
+    except (bootstrap.Refused, RuntimeError, OSError, ValueError, KeyError, StopIteration, KeyboardInterrupt) as error:
         print(f'FAIL: {error}', file=sys.stderr)
         sys.exit(1)

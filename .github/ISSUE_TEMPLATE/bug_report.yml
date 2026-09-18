@@ -18,5 +18,5 @@ body:
   - type: textarea
     attributes:
       label: Logs
-      description: Relevant lines from `docker compose logs <service>`.
+      description: Relevant lines from `docker compose logs <service>`. Before posting, remove API keys, tokens, passwords, authorization headers, cookies, and request bodies. Issues are public.
       render: shell

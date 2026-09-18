@@ -141,19 +141,19 @@ import rustfs-{$LG_RUSTFS_CONSOLE:off}
 
 # Unpublished listener: healthcheck via loopback, checkpoint scrape via lg-gateway:8081.
 http://:8081 {
-	route {
+	handle /metrics {
+		@denied not remote_ip {$LG_CHECKPOINT_ALLOW:127.0.0.0/8 ::1}
+		respond @denied 404
+		header Content-Type "text/plain; version=0.0.4"
+		rewrite * /metrics.txt
+		root * /srv/state
+		file_server
+	}
+	handle /versions.json {
 		@denied not remote_ip {$LG_OPERATOR_ALLOW:127.0.0.0/8 ::1}
 		respond @denied 404
-		handle /metrics {
-			header Content-Type "text/plain; version=0.0.4"
-			rewrite * /metrics.txt
-			root * /srv/state
-			file_server
-		}
-		handle /versions.json {
-			root * /srv/state
-			file_server
-		}
-		respond 404
+		root * /srv/state
+		file_server
 	}
+	respond 404
 }

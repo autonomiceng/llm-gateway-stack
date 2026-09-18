@@ -1,6 +1,8 @@
 """Backup contracts; fake runners never call Docker."""
 
 import json
+import copy
+import fcntl
 import os
 import re
 import subprocess
@@ -16,7 +18,122 @@ import checkpoint as backup  # noqa: E402
 import bootstrap  # noqa: E402
 
 
+def runtime_fixture(root):
+    stack = backup.Stack.__new__(backup.Stack)
+    stack.backups = root
+    stack.project = 'drill'
+    stack.command = ['docker', 'compose']
+    services = ('caddy', 'litellm', 'langfuse-web', 'langfuse-worker',
+                'postgres', 'clickhouse', 'rustfs', 'valkey')
+    stack.config = {'services': {name: {'image': name + ':new@sha256:pin', 'volumes': []}
+                                for name in services},
+                    'volumes': {'valkey-data': {'name': 'drill-valkey-data'}}}
+    stack.config['services']['postgres']['volumes'] = [
+        {'type': 'bind', 'source': '/new/pg', 'target': '/var/lib/postgresql'}]
+    stack.config['services']['valkey']['volumes'] = [
+        {'type': 'volume', 'source': 'valkey-data', 'target': '/data'}]
+    containers = [{'Config': {'Image': name + ':new@sha256:pin',
+                             'Labels': {'com.docker.compose.service': name}},
+                   'Image': 'sha256:' + name, 'Mounts': []} for name in services]
+    containers[-4]['Mounts'] = [{'Type': 'bind', 'Source': '/new/pg',
+                                'Destination': '/var/lib/postgresql', 'RW': True}]
+    containers[-1]['Mounts'] = [{'Type': 'volume', 'Name': 'drill-valkey-data',
+                                'Destination': '/data', 'RW': True}]
+    calls = []
+
+    def runner(argv):
+        calls.append(argv)
+        if argv[:3] == ['docker', 'ps', '-aq']:
+            output = ' '.join(services)
+        elif argv[:2] == ['docker', 'inspect']:
+            output = json.dumps(containers)
+        elif argv[:3] == ['docker', 'image', 'inspect']:
+            output = 'sha256:' + argv[3].split(':')[0]
+        elif argv == stack.command + ['ps', '--status', 'running', '--services']:
+            output = ' '.join(services)
+        else:
+            raise AssertionError(f'unexpected command: {argv}')
+        return subprocess.CompletedProcess(argv, 0, output, '')
+
+    stack.runner = runner
+    return stack, containers, calls
+
+
 class BackupTests(unittest.TestCase):
+    def test_capture_refuses_changed_image_before_writing_or_fencing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            stack, containers, calls = runtime_fixture(Path(directory))
+            stack.attest_runtime()
+            original = copy.deepcopy(containers)
+            for field in ('reference', 'content'):
+                with self.subTest(field=field):
+                    containers[:] = copy.deepcopy(original)
+                    if field == 'reference':
+                        containers[-4]['Config']['Image'] = 'postgres:old@sha256:old'
+                    else:
+                        containers[-4]['Image'] = 'sha256:old'
+                    calls.clear()
+                    with self.assertRaisesRegex(RuntimeError, 'image.*differs'):
+                        backup.backup(stack, False, 300)
+                    self.assertEqual(list(Path(directory).iterdir()), [])
+                    self.assertFalse(any('stop' in call or 'exec' in call for call in calls))
+
+    def test_capture_refuses_changed_mounts_before_writing_or_fencing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            stack, containers, calls = runtime_fixture(Path(directory))
+            original = copy.deepcopy(containers)
+            for service, field, value in ((-4, 'Source', '/old/pg'),
+                                          (-1, 'Name', 'old-valkey-data'), (-1, 'RW', False)):
+                with self.subTest(field=field):
+                    containers[:] = copy.deepcopy(original)
+                    containers[service]['Mounts'][0][field] = value
+                    calls.clear()
+                    with self.assertRaisesRegex(RuntimeError, 'mounts differ'):
+                        backup.backup(stack, False, 300)
+                    self.assertEqual(list(Path(directory).iterdir()), [])
+                    self.assertFalse(any('stop' in call or 'exec' in call for call in calls))
+
+    def check_secret_refusal(self, content, shell, expected):
+        with tempfile.TemporaryDirectory() as directory:
+            env = Path(directory) / '.env'
+            env.write_text(content)
+            original_stack = backup.Stack
+
+            def locked_stack(path):
+                with path.with_name(path.name + '.lock').open('w') as lock:
+                    with self.assertRaises(BlockingIOError):
+                        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return original_stack(path)
+
+            with patch.dict(os.environ, shell, clear=True), \
+                 patch.object(sys, 'argv', ['checkpoint.py', 'restore', directory, '--env-file', str(env)]), \
+                 patch.object(backup, 'Stack', side_effect=locked_stack), \
+                 patch.object(backup.subprocess, 'run') as runner:
+                with self.assertRaisesRegex((RuntimeError, bootstrap.Refused), expected):
+                    backup.main()
+                runner.assert_not_called()
+            self.assertEqual(env.read_text(), content)
+            self.assertEqual({p.name for p in Path(directory).iterdir()}, {'.env', '.env.lock'})
+
+    def test_restore_requires_saved_nonempty_secrets_even_when_supplied_by_shell(self):
+        saved = {key: 'saved-value' for key in bootstrap.MANAGED}
+        for value in (None, ''):
+            with self.subTest(value=value):
+                partial = dict(saved)
+                if value is None:
+                    partial.pop('LANGFUSE_ENCRYPTION_KEY')
+                else:
+                    partial['LANGFUSE_ENCRYPTION_KEY'] = value
+                self.check_secret_refusal(''.join(f'{k}={v}\n' for k, v in partial.items()),
+                                          {'LANGFUSE_ENCRYPTION_KEY': 'from-shell'}, 'missing managed')
+
+    def test_restore_rejects_conflicting_and_duplicate_saved_secrets(self):
+        content = ''.join(f'{key}=saved-value\n' for key in bootstrap.MANAGED)
+        for key in ('LANGFUSE_ENCRYPTION_KEY', 'LANGFUSE_SALT', 'LITELLM_SALT_KEY'):
+            with self.subTest(key=key):
+                self.check_secret_refusal(content, {key: 'replacement'}, 'shell secrets differ')
+        self.check_secret_refusal(content + 'VALKEY_PASSWORD=other\n', {}, 'env_repair_required')
+
     def test_manifest_records_every_image_and_keys_without_env_values(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -147,13 +264,14 @@ class BackupTests(unittest.TestCase):
         # Only the stores that hold unflushed data must stop cleanly (see Stack.stop).
         for failed in ('valkey',):
             with self.subTest(service=failed), tempfile.TemporaryDirectory() as directory:
-                stack = backup.Stack.__new__(backup.Stack)
-                stack.backups = Path(directory)
-                stack.command = ['docker', 'compose']
+                stack, _, _ = runtime_fixture(Path(directory))
+                inspect_runner = stack.runner
                 calls = []
 
                 def runner(argv):
                     calls.append(argv)
+                    if argv[:2] != ['docker', 'compose']:
+                        return inspect_runner(argv)
                     args = argv[2:]
                     output = ''
                     if args[:2] == ['ps', '--status']:
@@ -170,12 +288,12 @@ class BackupTests(unittest.TestCase):
                     return subprocess.CompletedProcess(argv, 0, output, '')
 
                 stack.runner = runner
-                with patch.object(backup, 'wait_idle'):
+                with patch.object(backup, 'wait_idle'), patch.object(backup, 'health'):
                     with self.assertRaisesRegex(RuntimeError, f'service {failed} did not stop cleanly \\(exit 137\\)'):
                         backup.backup(stack, False, 300)
                 self.assertFalse(list(stack.backups.rglob('manifest.json')))
                 stopped = services[:services.index(failed) + 1]
-                self.assertEqual(calls[-1], ['docker', 'compose', 'start', *reversed(stopped)])
+                self.assertEqual(calls[-1], ['docker', 'compose', 'start', '--wait', '--wait-timeout', '300', *reversed(stopped)])
                 self.assertFalse(any('pg_basebackup' in call for call in calls))
 
     def test_failed_command_retains_private_diagnostics_without_argv_in_name(self):

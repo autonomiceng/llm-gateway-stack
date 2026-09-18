@@ -129,7 +129,7 @@ and append `UI_USERNAME=admin` and a generated `UI_PASSWORD` to the protected `.
 Bootstrap refuses to invent missing credentials when data already exists. Use the same
 append-only secret-generation procedure above for `UI_PASSWORD` (24 random bytes).
 Set `LG_TRUSTED_PROXIES` to the platform subnet behind the edge and choose specific
-operator/scraper addresses for `LG_OPERATOR_ALLOW`; see [ingress](ingress.md).
+operator addresses for `LG_OPERATOR_ALLOW` and scraper addresses for `LG_CHECKPOINT_ALLOW`; see [ingress](ingress.md).
 
 After completing the exporter role setup and credentials, run bootstrap and recreate the
 stack in the maintenance window so healthchecks, PID/memory limits and exporters apply.

@@ -12,16 +12,18 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import http.client
 import json
 import os
 import re
 import secrets
 import shutil
+import socket
+import ssl
 import subprocess
 import sys
 import time
-import urllib.error
-import urllib.request
+import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
@@ -221,22 +223,68 @@ def compose_up(root: Path, env_file: Path, runner: Runner) -> None:
         raise Refused("compose_up_failed", (result.stderr or result.stdout).strip()[-2000:])
 
 
-def wait_ready(url: str, timeout: float = 120.0, host: str | None = None) -> None:
-    """Probe this stack's own Caddy. `host` carries the public hostname when the
-    request goes to the local listener, so it works behind platform-edge too."""
+class LocalHTTPSConnection(http.client.HTTPSConnection):
+    """Connect to the local listener while verifying the public TLS hostname."""
+
+    def __init__(self, hostname, port, address, context):
+        super().__init__(hostname, port, timeout=5, context=context)
+        self.address = address
+        self.context = context
+
+    def connect(self):
+        sock = socket.create_connection((self.address, self.port), self.timeout)
+        try:
+            self.sock = self.context.wrap_socket(sock, server_hostname=self.host)
+        except BaseException:
+            sock.close()
+            raise
+
+
+def wait_ready(url: str, timeout: float = 120.0, host: str | None = None,
+               context: ssl.SSLContext | None = None) -> None:
+    parsed = urllib.parse.urlsplit(url)
     deadline = time.monotonic() + timeout
     last = ""
     while time.monotonic() < deadline:
+        connection = (LocalHTTPSConnection(host or parsed.hostname, parsed.port,
+                                           parsed.hostname, context or ssl.create_default_context())
+                      if parsed.scheme == "https" else
+                      http.client.HTTPConnection(parsed.hostname, parsed.port, timeout=5))
         try:
-            request = urllib.request.Request(url, headers={"Host": host} if host else {})
-            with urllib.request.urlopen(request, timeout=5) as response:
-                if response.status == 200:
-                    return
-                last = f"http {response.status}"
-        except (urllib.error.URLError, OSError) as error:
+            connection.request("GET", parsed.path, headers={"Host": host} if host else {})
+            response = connection.getresponse()
+            if response.status == 200:
+                return
+            last = f"http {response.status}"
+        except (OSError, http.client.HTTPException) as error:
             last = str(error)
+        finally:
+            connection.close()
         time.sleep(3)
     raise Refused("not_ready", f"{url}: {last}")
+
+
+def probe_gateway(settings, command, runner):
+    # Behind platform-edge, probe the stack listener, where TLS has already terminated.
+    scheme = settings.get("LG_LISTEN_SCHEME") or settings.get("LG_SCHEME", "http")
+    domain = settings.get("LG_PUBLIC_DOMAIN", "localhost")
+    bind = settings.get("LG_BIND_HOST", "127.0.0.1")
+    address = "127.0.0.1" if bind in ("0.0.0.0", "127.0.0.1", "") else bind
+    if address == "::":
+        address = "::1"
+    port = settings.get("LG_HTTPS_PORT" if scheme == "https" else "LG_HTTP_PORT") or ("443" if scheme == "https" else "80")
+    context = None
+    if scheme == "https":
+        context = ssl.create_default_context()
+        if settings.get("LG_TLS_ISSUER") == "internal":
+            result = runner(command + ["exec", "-T", "caddy", "cat",
+                                       "/data/caddy/pki/authorities/local/root.crt"])
+            if result.returncode:
+                raise Refused("internal_ca_unavailable", "cannot read Caddy's internal root certificate")
+            context.load_verify_locations(cadata=result.stdout)
+    local = f"{scheme}://{'[' + address + ']' if ':' in address else address}:{port}"
+    for path in ("/health/litellm", "/health/langfuse"):
+        wait_ready(local + path, host=domain, context=context)
 
 
 def bootstrap(argv: list[str], runner: Runner = run) -> int:
@@ -244,7 +292,7 @@ def bootstrap(argv: list[str], runner: Runner = run) -> int:
     parser.add_argument("--env-file", default=".env")
     parser.add_argument("--template", default=".env.example")
     parser.add_argument("--render-only", action="store_true",
-                        help="write the env file and versions.json, start nothing")
+                        help="write the env file, start nothing")
     args = parser.parse_args(argv)
     root = Path(__file__).resolve().parent.parent
     env_file = (root / args.env_file).resolve()
@@ -328,15 +376,8 @@ def bootstrap(argv: list[str], runner: Runner = run) -> int:
         scheme = settings.get("LG_SCHEME", "http")
         domain = settings.get("LG_PUBLIC_DOMAIN", "localhost")
         origin = domain + settings.get("LG_PUBLIC_PORT_SUFFIX", "")
-        # Readiness goes to this stack's own listener, not the public URL: behind
-        # platform-edge the public URL belongs to the edge, and https ends there.
-        listen_scheme = settings.get("LG_LISTEN_SCHEME") or scheme
-        bind = settings.get("LG_BIND_HOST", "127.0.0.1")
-        probe_host = "127.0.0.1" if bind in ("0.0.0.0", "127.0.0.1", "") else bind
-        port = settings.get("LG_HTTPS_PORT" if listen_scheme == "https" else "LG_HTTP_PORT") or ("443" if listen_scheme == "https" else "80")
-        local = f"http://{probe_host}:{port}" if listen_scheme == "http" else f"https://{probe_host}:{port}"
-        for path in ("/health/litellm", "/health/langfuse"):
-            wait_ready(local + path, host=domain)
+        probe_gateway(settings, ["docker", "compose", "--project-directory", str(root),
+                                 "--env-file", str(env_file)], runner)
         print(json.dumps({
             "console": f"{scheme}://{origin}/",
             "litellm": f"{scheme}://litellm.{origin}/",

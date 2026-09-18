@@ -22,6 +22,18 @@ port = os.environ.get('SMOKE_HTTP_PORT', '18090')
 https_port = os.environ.get('SMOKE_HTTPS_PORT', '18453')
 if not re.fullmatch(r'llm-gateway-drill(?:-[a-z0-9-]+)?', project):
     sys.exit('SMOKE_PROJECT must be llm-gateway-drill or llm-gateway-drill-<suffix>')
+# Bootstrap and checkpoint metrics write checkout-wide data/console.
+# A separate Compose project cannot isolate those files from an installed checkout.
+for name in ('.env', 'data', 'compose.override.yaml', 'compose.override.yml',
+             'docker-compose.override.yaml', 'docker-compose.override.yml'):
+    if (root / name).exists() or (root / name).is_symlink():
+        sys.exit('drill requires a clean disposable checkout without .env, data or Compose overrides')
+backup_root = Path(os.environ.get('SMOKE_BACKUP_ROOT', '/tmp')).resolve()
+if not backup_root.is_dir():
+    sys.exit('SMOKE_BACKUP_ROOT must name an existing directory on a separate mounted filesystem')
+data_parent = root / '.scratch' if (root / '.scratch').exists() else root
+if backup_root.stat().st_dev == data_parent.stat().st_dev:
+    sys.exit('set SMOKE_BACKUP_ROOT to a mounted filesystem separate from checkout .scratch')
 # Ambient Compose overrides could attach production volumes or publish other ports.
 for key in ('COMPOSE_FILE', 'COMPOSE_PROFILES', 'COMPOSE_ENV_FILES'):
     os.environ.pop(key, None)
@@ -41,7 +53,7 @@ os.environ['COMPOSE_FILE'] = str(root / 'compose.yaml')
 os.umask(0o077)
 (root / '.scratch').mkdir(exist_ok=True)
 work = Path(tempfile.mkdtemp(prefix='llm-gateway-drill-', dir=root / '.scratch'))
-backup_work = Path(tempfile.mkdtemp(prefix='llm-gateway-drill-', dir='/tmp'))
+backup_work = Path(tempfile.mkdtemp(prefix='llm-gateway-drill-', dir=backup_root))
 network = project + '-platform'
 network_created = False
 

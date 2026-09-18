@@ -12,6 +12,6 @@ python3 -m unittest discover -s tests
 scripts/smoke.sh             # full boot on this host; needs Docker and ~6 GB of images
 ```
 
-CI runs the first two on every push and the smoke contract on every PR, weekly, and on demand. A version bump merges only when the smoke contract passes on the new pins.
+CI runs the first two on every push and the smoke contract and two-cycle recovery drill on every PR, weekly, and on demand. A version bump merges only when the smoke contract passes on the new pins.
 
 Report bugs and proposals through the issue templates. Report vulnerabilities through the [security policy](SECURITY.md).

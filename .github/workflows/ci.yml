@@ -53,3 +53,31 @@ jobs:
           if [ -d "$SMOKE_BACKUP_ROOT" ]; then
             rmdir "$SMOKE_BACKUP_ROOT"
           fi
+
+  recovery:
+    name: Recovery drill
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      SMOKE_BACKUP_ROOT: /tmp/gateway-recovery-backups-${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db # v3.6.3
+      - name: Prepare disposable backup filesystem
+        run: |
+          mkdir -p "$SMOKE_BACKUP_ROOT"
+          sudo mount -t tmpfs -o size=2G,mode=1777 tmpfs "$SMOKE_BACKUP_ROOT"
+      - run: scripts/backup-drill.sh
+      # Diagnostics may contain secrets. Keep them private on the runner; never upload them.
+      - name: Remove disposable backup filesystem
+        if: always()
+        run: |
+          if mountpoint -q "$SMOKE_BACKUP_ROOT"; then
+            sudo umount "$SMOKE_BACKUP_ROOT"
+          fi
+          if [ -d "$SMOKE_BACKUP_ROOT" ]; then
+            rmdir "$SMOKE_BACKUP_ROOT"
+          fi

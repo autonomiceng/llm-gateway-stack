@@ -35,6 +35,8 @@ Then `docker compose up -d`. Caddy answers the ACME challenge on port 80, stores
 docker compose cp caddy:/data/caddy/pki/authorities/local/root.crt ./gateway-root.crt
 ```
 
+Bootstrap and restore read this root from their own Caddy container for local HTTPS
+health probes. Both use the configured public domain for TLS hostname verification.
 Never disable certificate verification in clients instead.
 
 ## What is never published
@@ -69,10 +71,11 @@ access an enabled console through the gateway's direct local listener.
 
 Checkpoint metrics are available at `http://lg-gateway:8081/metrics` on the platform
 network, under job `llm-gateway-checkpoints`. Add the scraper's address to
-`LG_OPERATOR_ALLOW`. Port 8081 is an unpublished container listener; the edge routes to
+`LG_CHECKPOINT_ALLOW`, or its dedicated scraper network CIDR. This setting grants only
+checkpoint metrics access; keep operator sources in `LG_OPERATOR_ALLOW`. Port 8081 is an unpublished container listener; the edge routes to
 port 80 and receives no checkpoint metrics there. The same listener serves
 `/versions.json` over loopback for Caddy's healthcheck in every TLS mode. Include loopback
-in the allow list so that healthcheck continues to work.
+in `LG_OPERATOR_ALLOW` so that healthcheck continues to work.
 
 The observability stack must configure the checkpoint scrape plus
 `lg-valkey-exporter:9121` (job `llm-gateway-valkey`) and `lg-postgres-exporter:9187`

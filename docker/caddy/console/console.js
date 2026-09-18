@@ -19,8 +19,17 @@
   // A service this browser has seen healthy is "down" when it stops answering;
   // one it has never seen is "not installed". Optional cards only.
   const seenKey = (s) => `console.seen.${s}`;
-  const seen = (s) => localStorage.getItem(seenKey(s)) !== null;
-  const remember = (s) => localStorage.setItem(seenKey(s), new Date().toISOString());
+  const seenThisPage = new Set();
+  const seen = (s) => {
+    if (seenThisPage.has(s)) return true;
+    try { return localStorage.getItem(seenKey(s)) !== null; }
+    catch { return false; }
+  };
+  const remember = (s) => {
+    seenThisPage.add(s);
+    try { localStorage.setItem(seenKey(s), new Date().toISOString()); }
+    catch { /* Browser policy can disable persistent storage. */ }
+  };
 
   const check = async (li) => {
     const service = li.dataset.service;

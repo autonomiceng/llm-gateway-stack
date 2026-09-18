@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -84,7 +85,10 @@ class BootstrapTests(unittest.TestCase):
         compose = Path(__file__).resolve().parent.parent / "compose.yaml"
         bootstrap.write_versions(self.root, compose)
         doc = json.loads((self.root / "data" / "console" / "versions.json").read_text())
-        self.assertEqual(doc["images"]["langfuse"], "4.37.0")
+        match = re.search(r"^  langfuse-web:\n\s+image: [^\s@]+:([^\s@]+)@", compose.read_text(), re.M)
+        self.assertIsNotNone(match)
+        self.assertEqual(doc["images"]["langfuse"], match[1])
+        self.assertRegex(doc["images"]["langfuse"], r"^\d+\.\d+\.\d+$")
         self.assertNotIn("sha256", json.dumps(doc))
         self.assertFalse(doc["images"]["litellm"].startswith("v"))
 
