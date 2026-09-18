@@ -390,3 +390,9 @@ Checkpoint growth can fill the live data filesystem. Monitor free space and back
 opt-in using an explicitly configured disposable restore target. Existing installations must
 move nested backup mounts outside the Postgres data path before upgrading: overlapping
 resolved paths are now refused even when their filesystem devices differ.
+
+Resumption starts only fenced services with `up --no-deps --no-recreate`, preserving
+existing containers and avoiding dependencies on removed one-shot initialization containers.
+Datastores and initialization state must already satisfy capture preflight. A completed
+manifest is printed before resumption; wait for the command exit and success metric before
+claiming the whole backup operation succeeded.

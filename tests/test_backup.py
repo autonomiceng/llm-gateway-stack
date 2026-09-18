@@ -275,7 +275,7 @@ class BackupTests(unittest.TestCase):
                 calls = []
 
                 def runner(argv, timeout=None):
-                    if 'start' in argv:
+                    if 'up' in argv:
                         self.assertEqual(timeout, 120)
                     calls.append(argv)
                     if argv[:2] != ['docker', 'compose']:
@@ -301,7 +301,7 @@ class BackupTests(unittest.TestCase):
                         backup.backup(stack, False, 300)
                 self.assertFalse(list(stack.backups.rglob('manifest.json')))
                 stopped = services[:services.index(failed) + 1]
-                self.assertEqual(calls[-1], ['docker', 'compose', 'start', *reversed(stopped)])
+                self.assertEqual(calls[-1], ['docker', 'compose', 'up', '-d', '--no-deps', '--no-recreate', *reversed(stopped)])
                 self.assertFalse(any('pg_basebackup' in call for call in calls))
 
     def test_langfuse_web_requires_completed_backend_close_since_stop(self):

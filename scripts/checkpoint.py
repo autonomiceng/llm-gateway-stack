@@ -575,7 +575,8 @@ def resume(stack, stopped, paused, settle=0):
         stack.dc('unpause', 'valkey', label='fence-resume', timeout=120)
     if stopped:
         try:
-            stack.dc('start', *reversed(stopped), label='fence-resume', timeout=120)
+            stack.dc('up', '-d', '--no-deps', '--no-recreate', *reversed(stopped),
+                     label='fence-resume', timeout=120)
         except RuntimeError:
             pass  # The health loop retries a transient or partly completed start.
         wait_healthy(stack, stopped, settle=settle)
@@ -605,7 +606,8 @@ def wait_healthy(stack, services, timeout=300, settle=0):
                 return
             # An interrupted stop can finish after the initial start request.
             if running != set(services):
-                stack.dc('start', *reversed(services), label='fence-resume', timeout=remaining())
+                stack.dc('up', '-d', '--no-deps', '--no-recreate', *reversed(services),
+                         label='fence-resume', timeout=remaining())
         except (RuntimeError, ValueError) as error:
             last_error = error
         if time.monotonic() >= deadline:

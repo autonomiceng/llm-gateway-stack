@@ -278,12 +278,12 @@ class PersistenceReviewTests(unittest.TestCase):
                             for service in ('caddy', 'litellm', 'langfuse-web', 'langfuse-worker', 'valkey')])
                     if args[0] == 'ps':
                         return 'caddy litellm langfuse-web langfuse-worker valkey postgres clickhouse rustfs'
-                    if args[0] == 'start':
+                    if args[0] == 'up':
                         events.append('resume')
                         for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
                             self.assertEqual(signal.getsignal(sig), signal.SIG_IGN)
                         self.assertEqual(kwargs['label'], 'fence-resume')
-                        self.assertEqual(args[1:], ('valkey', 'langfuse-worker', 'langfuse-web', 'litellm', 'caddy'))
+                        self.assertEqual(args[1:], ('-d', '--no-deps', '--no-recreate', 'valkey', 'langfuse-worker', 'langfuse-web', 'litellm', 'caddy'))
                         if mode in ('resume', 'both'):
                             raise RuntimeError('fence-resume failed')
                     return ''
@@ -332,7 +332,7 @@ class PersistenceReviewTests(unittest.TestCase):
         stack.dc.side_effect = [RuntimeError('temporary daemon error'), '[]', '', healthy]
         with patch.object(checkpoint.time, 'sleep'), patch.object(checkpoint.time, 'monotonic', return_value=0):
             checkpoint.wait_healthy(stack, ['langfuse-worker'])
-        self.assertEqual([call.args[0] for call in stack.dc.call_args_list], ['ps', 'ps', 'start', 'ps'])
+        self.assertEqual([call.args[0] for call in stack.dc.call_args_list], ['ps', 'ps', 'up', 'ps'])
 
         now = [0]
         def hung_status(*args, timeout, **kwargs):
@@ -356,7 +356,7 @@ class PersistenceReviewTests(unittest.TestCase):
         with patch.object(checkpoint.time, 'sleep', side_effect=sleep), \
              patch.object(checkpoint.time, 'monotonic', side_effect=lambda: now[0]):
             checkpoint.wait_healthy(stack, ['valkey'], settle=70)
-        self.assertEqual([call.args[0] for call in stack.dc.call_args_list], ['ps', 'ps', 'ps', 'start', 'ps'])
+        self.assertEqual([call.args[0] for call in stack.dc.call_args_list], ['ps', 'ps', 'ps', 'up', 'ps'])
 
     def test_command_child_has_separate_session(self):
         result = checkpoint.run([sys.executable, '-c', 'import os; print(os.getsid(0))'])
