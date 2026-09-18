@@ -161,8 +161,12 @@ class BackupTests(unittest.TestCase):
     def test_restore_refuses_unfenced_checkpoint_without_explicit_flag(self):
         stack = Mock()
         stack.images = {}
+        stack.env_file = ROOT / '.env.example'
+        stack.config = {'networks': {'platform': {'name': 'drill-platform'}}}
         stack.data.exists.side_effect = RuntimeError('restore proceeded')
-        with patch.object(backup, 'verify_checkpoint', return_value={'fenced': False}):
+        with patch.object(backup, 'verify_checkpoint', return_value={'fenced': False}), \
+             patch.object(bootstrap, 'ensure_network'):
+
             with self.assertRaisesRegex(RuntimeError, '--allow-unfenced'):
                 backup.restore(stack, ROOT / 'unused-checkpoint')
             stack.data.exists.assert_not_called()
@@ -225,6 +229,8 @@ class BackupTests(unittest.TestCase):
             stack.data = root / 'pg'
             stack.backups = root / 'backups'
             stack.project = 'drill'
+            stack.env_file = ROOT / '.env.example'
+            stack.config = {'networks': {'platform': {'name': 'drill-platform'}}}
             stack.prefix = 'drill'
             stack.volumes = bootstrap.volume_names('drill')
             stack.images = {'postgres': 'postgres:pinned'}

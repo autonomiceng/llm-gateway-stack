@@ -29,12 +29,21 @@ https_port=${SMOKE_HTTPS_PORT:-18443}
 network="$COMPOSE_PROJECT_NAME-platform"
 mkdir -p "$root/.scratch"
 work=$(mktemp -d "$root/.scratch/smoke-XXXXXX")
-# Prefer /tmp when it is separate; otherwise use the Linux shared-memory filesystem.
+# Python is already required and reports device IDs on both GNU and BSD hosts.
+device_id() { python3 -c 'import os, sys; print(os.stat(sys.argv[1]).st_dev)' "$1"; }
+work_device=$(device_id "$work") || { rmdir "$work"; exit 2; }
 backup_root=${SMOKE_BACKUP_ROOT:-/tmp}
-if [[ -z "${SMOKE_BACKUP_ROOT:-}" && -d /dev/shm && $(stat -c %d "$backup_root") == "$(stat -c %d "$work")" ]]; then
-  backup_root=/dev/shm
+if [[ ! -d "$backup_root" || ! -w "$backup_root" ]]; then
+  rmdir "$work"
+  echo "Set SMOKE_BACKUP_ROOT to an existing writable directory on a separate filesystem." >&2
+  exit 2
 fi
-if [[ ! -d "$backup_root" || ! -w "$backup_root" ]] || [[ $(stat -c %d "$backup_root") == "$(stat -c %d "$work")" ]]; then
+backup_device=$(device_id "$backup_root") || { rmdir "$work"; exit 2; }
+if [[ -z "${SMOKE_BACKUP_ROOT:-}" && -d /dev/shm && "$backup_device" == "$work_device" ]]; then
+  backup_root=/dev/shm
+  backup_device=$(device_id "$backup_root") || { rmdir "$work"; exit 2; }
+fi
+if [[ ! -w "$backup_root" || "$backup_device" == "$work_device" ]]; then
   rmdir "$work"
   echo "Set SMOKE_BACKUP_ROOT to a writable directory on a different filesystem from the checkout." >&2
   exit 2

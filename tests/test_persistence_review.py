@@ -133,7 +133,10 @@ class PersistenceReviewTests(unittest.TestCase):
         backups.mkdir()
         data = self.root / 'pg'
         data.mkdir()
-        stack = Mock(data=data, backups=backups, images=doc['images'])
+        env_file = self.root / '.env'
+        env_file.write_text('LG_BACKUP_DIR=backups\n')
+        stack = Mock(data=data, backups=backups, images=doc['images'], env_file=env_file,
+                     config={'networks': {'platform': {'name': 'drill-platform'}}})
         copytree = shutil.copytree
 
         def corrupt_copy(src, dest, *args, **kwargs):
@@ -142,11 +145,12 @@ class PersistenceReviewTests(unittest.TestCase):
                 (dest / 'objects/media/saved').write_bytes(b'corruption')
 
         with patch.object(checkpoint, 'ROOT', self.root), \
-             patch.object(bootstrap, 'write_versions'), patch.object(bootstrap, 'ensure_volumes'), \
+             patch.object(bootstrap, 'write_versions'), patch.object(bootstrap, 'ensure_volumes'), patch.object(bootstrap, 'ensure_network'), \
              patch.object(checkpoint, 'check_empty'), patch.object(shutil, 'copytree', side_effect=corrupt_copy):
             with self.assertRaisesRegex(RuntimeError, 'restore copy checksum'):
                 checkpoint.restore(stack, source)
         # Only the archive-empty preflight helper ran. No extraction or store startup.
+        self.assertFalse((backups / doc['postgres_restore_point'].removeprefix('checkpoint_')).exists())
         stack.helper.assert_called_once()
         self.assertIn('entries=$(ls -A /backup/archive)', stack.helper.call_args.args[1])
         stack.dc.assert_not_called()
@@ -211,7 +215,7 @@ class PersistenceReviewTests(unittest.TestCase):
                     self.assertIn(f'lg_checkpoint_success {int(mode == "success")}', metrics)
                     self.assertIn('lg_checkpoint_timestamp_seconds 456', metrics)
 
-    def test_media_sidecar_tracks_synced_files_despite_new_remote_upload(self):
+    def test_media_sidecar_tracks_only_synced_files(self):
         objects = self.root / 'set/objects'
         (objects / 'media').mkdir(parents=True)
         (objects / 'media/synced').write_bytes(b'synced')
@@ -219,8 +223,6 @@ class PersistenceReviewTests(unittest.TestCase):
         stack.backups = self.root
 
         def helper(service, script, *args, **kwargs):
-            if 'list-objects-v2' in script:
-                return json.dumps({'Contents': [{'Key': 'media/synced'}, {'Key': 'media/new-upload'}]})
             if 'xargs' in script:
                 parts = self.root / 'set/objects.meta.parts'
                 self.assertEqual((parts / 'keys').read_bytes(), b'0\0media/synced\0')

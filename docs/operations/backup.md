@@ -158,12 +158,12 @@ matching old checkout to restore.
 2. Supply the original `.env` and an existing, mounted `LG_BACKUP_DIR`; no prior
    `--render-only` is required. Restore creates a missing Postgres data directory with
    mode 0755 and prepares `data/console`, then checks target storage for emptiness and creates missing external volumes.
-   Normal bootstrap starts services and makes their data non-empty, so skip it. On a new
-   Docker host, create the shared network with `docker network create platform` if it does not exist.
+   Restore also ensures the configured shared network exists before writing target data.
+   Normal bootstrap starts services and makes their data non-empty, so skip it.
 3. Run `scripts/restore.sh /path/to/original/Checkpoint`. It validates image pins and all
    artifact hashes before writing target data. It copies the Checkpoint into the new
-   backup root if necessary and re-verifies that destination against the original
-   artifact inventory before extraction, then unpacks and verifies the Postgres base backup
+   backup root through an incomplete `.restoring` directory if necessary and re-verifies
+   the copy before publishing its final name and extracting it, then unpacks and verifies the Postgres base backup
    and recovers
    to the named end point on the recorded `recovery_target_timeline`, with
    `recovery_target_action=promote`. After promotion it removes `checkpoint-wal` and

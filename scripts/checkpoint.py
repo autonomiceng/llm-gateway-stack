@@ -277,11 +277,11 @@ class Stack:
                        diagnostics=self.backups / '.diagnostics', label=label)
 
     # Services that hold unflushed data must finish their shutdown. The front services
-    # are stateless request handlers; Langfuse web waits out its stop timeout and is
+    # must finish buffered spend/trace writes. Langfuse web waits out its stop timeout and is
     # killed (exit 137), which loses nothing once Caddy is stopped. The Langfuse worker
     # flushes its ClickHouse writer and logs completion, then the node process hangs
     # and is killed too; the log line is the evidence that the flush happened.
-    CLEAN_EXIT_REQUIRED = ('valkey',)
+    CLEAN_EXIT_REQUIRED = ('litellm', 'valkey')
     WORKER_DONE = 'Shutdown complete, exiting process'
 
     def stop(self, service, timeout):
@@ -530,6 +530,7 @@ def backup(stack, no_fence, timeout, stop_timeout=60):
         capture_error = error
         raise
     finally:
+        handlers = {sig: signal.signal(sig, signal.SIG_IGN) for sig in (signal.SIGTERM, signal.SIGHUP)}
         try:
             if paused:
                 stack.dc('unpause', 'valkey', label='fence-resume')
@@ -541,6 +542,9 @@ def backup(stack, no_fence, timeout, stop_timeout=60):
                 raise RuntimeError(f'capture failed: {capture_error}; '
                                    f'service resumption also failed: {resume_error}') from capture_error
             raise
+        finally:
+            for sig, handler in handlers.items():
+                signal.signal(sig, handler)
 
 
 def verify_checkpoint(source, images):
@@ -560,6 +564,13 @@ def verify_checkpoint(source, images):
         raise RuntimeError('Checkpoint has no archived WAL')
     if doc['artifacts'] != inventory(source):
         raise RuntimeError('Checkpoint checksum or size mismatch')
+    metadata = json.loads((source / 'objects.meta.json').read_text())
+    media = {p.relative_to(source / 'objects').as_posix()
+             for p in (source / 'objects/media').rglob('*') if p.is_file()}
+    if (not isinstance(metadata, dict) or media != set(metadata)
+            or any(not isinstance(head, dict) or not isinstance(head.get('ContentType'), str)
+                   or not head['ContentType'] for head in metadata.values())):
+        raise RuntimeError('media objects and metadata sidecar differ or lack content type')
     # Only our regular files/directories may be unpacked into empty target storage.
     for name in ('postgres/base.tar', 'postgres/pg_wal.tar', 'valkey.tar'):
         with tarfile.open(source / name) as archive:
@@ -585,6 +596,11 @@ def restore(stack, source, allow_unfenced=False):
     doc = verify_checkpoint(source, stack.images)
     if doc.get('fenced') is not True and not allow_unfenced:
         raise RuntimeError('restore refuses an unfenced Checkpoint without --allow-unfenced')
+    saved_names = {m['key'] for m in map(bootstrap.ENV_LINE.match, stack.env_file.read_text().splitlines()) if m}
+    missing_names = sorted(set(doc.get('env_keys', [])) - saved_names)
+    if missing_names:
+        print('Checkpoint settings absent from target .env: ' + ', '.join(missing_names), file=sys.stderr)
+    bootstrap.ensure_network(stack.runner, stack.config['networks']['platform']['name'])
     if not stack.data.exists():
         stack.data.mkdir(parents=True, mode=0o755)
         os.chmod(stack.data, 0o755)
@@ -596,9 +612,13 @@ def restore(stack, source, allow_unfenced=False):
     stack.helper('postgres', 'if [ -d /backup/archive ]; then entries=$(ls -A /backup/archive); test -z "$entries"; fi')
     stamp = doc['postgres_restore_point'].removeprefix('checkpoint_')
     destination = stack.backups / stamp
-    if source != destination:
-        shutil.copytree(source, destination)
-    if inventory(destination) != doc['artifacts']:
+    if source != destination.resolve():
+        pending = destination.with_name(destination.name + '.restoring')
+        shutil.copytree(source, pending)
+        if inventory(pending) != doc['artifacts']:
+            raise RuntimeError('restore copy checksum or size mismatch')
+        pending.rename(destination)
+    elif inventory(destination) != doc['artifacts']:
         raise RuntimeError('restore copy checksum or size mismatch')
     os.chmod(destination, 0o711)
     target = f'/backup/{stamp}'

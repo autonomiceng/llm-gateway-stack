@@ -59,6 +59,12 @@ network_created = False
 
 
 def run(argv, label='drill-command'):
+    if label in ('drill-backup', 'drill-restore'):
+        # These entrypoints already sanitize errors; preserve their actionable refusal.
+        result = subprocess.run(argv, cwd=root, text=True, stdout=subprocess.PIPE)
+        if result.returncode:
+            raise RuntimeError(f'{label} failed (exit {result.returncode}); see the checkpoint refusal above')
+        return result.stdout.strip()
     return checkpoint.checked(argv,
         lambda args: subprocess.run(args, cwd=root, text=True, capture_output=True),
         diagnostics=work / '.diagnostics', label=label)
@@ -177,6 +183,12 @@ try:
         output = run(['scripts/backup.sh', '--env-file', str(env_file)], label='drill-backup')
         print(output, flush=True)
         checkpoint_path = next(line.removeprefix('Checkpoint: ') for line in output.splitlines() if line.startswith('Checkpoint: '))
+        captured = json.loads((Path(checkpoint_path) / 'manifest.json').read_text())
+        if captured['postgres_timeline_id'] != cycle:
+            raise RuntimeError('Checkpoint captured the wrong restored timeline')
+        if cycle > 1 and not (Path(checkpoint_path) / 'wal' / f'{cycle:08X}.history').is_file():
+            raise RuntimeError('Checkpoint omitted restored timeline history')
+        print(f'ok: captured timeline {cycle} and its required history', flush=True)
         dc('up', '-d', '--wait', '--wait-timeout', '300')
         key_b = generate_key()
         start = time.monotonic()
