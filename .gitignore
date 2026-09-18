@@ -1,0 +1,21 @@
+.env
+.env.*
+!.env.example
+*.crt
+*.key
+consumer-key.json
+backups/
+data/
+__pycache__/
+*.py[cod]
+
+# Agent scratch space
+.agents/
+.scratch/
+.devloop/
+.plans/
+.claude/
+
+# Local planning artifacts; durable knowledge lives in CONTEXT.md and docs/
+AUDIT.md
+docs/plans/
