@@ -268,7 +268,7 @@ class BackupTests(unittest.TestCase):
     def test_unclean_fence_stop_refuses_manifest_and_resumes_services(self):
         services = ('caddy', 'litellm', 'langfuse-web', 'langfuse-worker', 'valkey')
         # Only the stores that hold unflushed data must stop cleanly (see Stack.stop).
-        for failed in ('valkey',):
+        for failed in ('litellm', 'valkey'):
             with self.subTest(service=failed), tempfile.TemporaryDirectory() as directory:
                 stack, _, _ = runtime_fixture(Path(directory))
                 inspect_runner = stack.runner
@@ -294,7 +294,7 @@ class BackupTests(unittest.TestCase):
                     return subprocess.CompletedProcess(argv, 0, output, '')
 
                 stack.runner = runner
-                with patch.object(backup, 'wait_idle'), patch.object(backup, 'health'):
+                with patch.object(backup, 'wait_idle'), patch.object(backup, 'health'), patch.object(backup, 'wait_healthy'):
                     with self.assertRaisesRegex(RuntimeError, f'service {failed} did not stop cleanly \\(exit 137\\)'):
                         backup.backup(stack, False, 300)
                 self.assertFalse(list(stack.backups.rglob('manifest.json')))

@@ -158,7 +158,7 @@ class PersistenceReviewTests(unittest.TestCase):
         self.assertEqual(list(data.iterdir()), [])
 
     def test_resumption_health_and_primary_errors_gate_pruning_and_success(self):
-        for mode in ('capture', 'resume', 'both', 'health', 'success'):
+        for mode in ('capture', 'resume', 'both', 'health', 'worker-unhealthy', 'success'):
             with self.subTest(mode=mode):
                 backups = self.root / mode
                 backups.mkdir()
@@ -169,6 +169,10 @@ class PersistenceReviewTests(unittest.TestCase):
                 stack.queue_count.return_value = 0
 
                 def dc(*args, **kwargs):
+                    if args[0] == 'ps' and '--format' in args:
+                        return json.dumps([{'Service': service, 'State': 'running',
+                            'Health': 'unhealthy' if mode == 'worker-unhealthy' and service == 'langfuse-worker' else 'healthy'}
+                            for service in ('caddy', 'litellm', 'langfuse-web', 'langfuse-worker', 'valkey')])
                     if args[0] == 'ps':
                         return 'caddy litellm langfuse-web langfuse-worker valkey postgres clickhouse rustfs'
                     if args[0] == 'start':
@@ -198,6 +202,7 @@ class PersistenceReviewTests(unittest.TestCase):
                      patch.object(checkpoint, 'wait_idle'), \
                      patch.object(checkpoint, 'health', side_effect=health), \
                      patch.object(checkpoint, 'prune', side_effect=lambda _: events.append('prune')), \
+                     patch.object(checkpoint.time, 'monotonic', side_effect=iter([0, 301])), \
                      patch.object(checkpoint.time, 'time', return_value=456), redirect_stdout(io.StringIO()):
                     checkpoint.write_metrics(True)
                     if mode == 'success':

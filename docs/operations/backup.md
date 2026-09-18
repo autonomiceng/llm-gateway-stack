@@ -121,9 +121,9 @@ Default drain timeout is 300 seconds;
 `--fence-timeout SECONDS` changes it. A fenced Checkpoint requires the Langfuse
 worker to log `Shutdown complete, exiting process` (its ClickHouse writer flush is done;
 the node process then hangs and is killed at the timeout, which is an upstream quirk) and
-Valkey to exit 0. Caddy, LiteLLM and Langfuse web are stateless request handlers and may
+LiteLLM and Valkey to exit 0 so buffered spend, trace and queue writes finish. Caddy and Langfuse web may
 be killed at the stop timeout without loss once Caddy is down. A worker that never logs
-completion or an unclean Valkey stop aborts capture without a completed manifest. Rerun the backup; if unclean stops repeat, raise the shutdown grace with
+completion or an unclean LiteLLM or Valkey stop aborts capture without a completed manifest. Rerun the backup; if unclean stops repeat, raise the shutdown grace with
 `--stop-timeout SECONDS` (default 60). A forced kill of the backup process or host failure
 cannot execute cleanup: inspect the incomplete directory and start the fenced services manually.
 Direct database/object writers must also be quiesced by the operator.

@@ -538,12 +538,13 @@ def backup(stack, no_fence, timeout, stop_timeout=60):
         capture_error = error
         raise
     finally:
-        handlers = {sig: signal.signal(sig, signal.SIG_IGN) for sig in (signal.SIGTERM, signal.SIGHUP)}
+        handlers = {sig: signal.signal(sig, signal.SIG_IGN) for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT)}
         try:
             if paused:
                 stack.dc('unpause', 'valkey', label='fence-resume')
             if stopped:
                 stack.dc('start', *reversed(stopped), label='fence-resume')
+                wait_healthy(stack, stopped)
             health(stack)
         except BaseException as resume_error:
             if capture_error is not None:
@@ -553,6 +554,21 @@ def backup(stack, no_fence, timeout, stop_timeout=60):
         finally:
             for sig, handler in handlers.items():
                 signal.signal(sig, handler)
+
+
+def wait_healthy(stack, services, timeout=300):
+    deadline = time.monotonic() + timeout
+    while True:
+        output = stack.dc('ps', '--format', 'json', *services, label='fence-health')
+        containers = (json.loads(output) if output.lstrip().startswith('[')
+                      else [json.loads(line) for line in output.splitlines() if line.strip()])
+        if (len(containers) == len(services)
+                and {row.get('Service') for row in containers} == set(services)
+                and all(row.get('State') == 'running' and row.get('Health') == 'healthy' for row in containers)):
+            return
+        if time.monotonic() >= deadline:
+            raise RuntimeError('resumed services did not become healthy')
+        time.sleep(2)
 
 
 def verify_checkpoint(source, images):
@@ -625,7 +641,23 @@ def restore(stack, source, allow_unfenced=False):
         shutil.copytree(source, pending)
         if inventory(pending) != doc['artifacts']:
             raise RuntimeError('restore copy checksum or size mismatch')
+        for path in pending.rglob('*'):
+            if path.is_file():
+                with path.open('rb') as handle:
+                    os.fsync(handle.fileno())
+        directories = [path for path in pending.rglob('*') if path.is_dir()]
+        for directory in [*reversed(directories), pending]:
+            fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
         pending.rename(destination)
+        fd = os.open(stack.backups, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
     elif inventory(destination) != doc['artifacts']:
         raise RuntimeError('restore copy checksum or size mismatch')
     os.chmod(destination, 0o711)
