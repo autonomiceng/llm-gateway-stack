@@ -29,7 +29,8 @@ https_port=${SMOKE_HTTPS_PORT:-18443}
 network="$COMPOSE_PROJECT_NAME-platform"
 mkdir -p "$root/.scratch"
 work=$(mktemp -d "$root/.scratch/smoke-XXXXXX")
-backup_work=$(mktemp -d /tmp/llm-gateway-smoke-XXXXXX)
+# The backup root must be on a different filesystem from the checkout's data.
+backup_work=$(mktemp -d "${SMOKE_BACKUP_ROOT:-/tmp}/llm-gateway-smoke-XXXXXX")
 pg_image=$(sed -n 's/^    image: \(postgres:.*\)/\1/p' compose.yaml)
 env_file="$work/.env"
 origin="localhost:$http_port"
