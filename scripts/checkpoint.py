@@ -459,6 +459,7 @@ def backup(stack, no_fence, timeout, stop_timeout=60):
     stopped = []
     paused = False
     capture_error = None
+    handlers = {}
     try:
         if not no_fence:
             for service in ('caddy', 'litellm', 'langfuse-web'):
@@ -537,13 +538,12 @@ def backup(stack, no_fence, timeout, stop_timeout=60):
         capture_error = error
         raise
     finally:
-        handlers = {}
         try:
             try:
                 for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
                     handlers[sig] = signal.signal(sig, signal.SIG_IGN)
             finally:
-                resume(stack, stopped, paused)
+                resume(stack, stopped, paused, stop_timeout + 10 if capture_error else 0)
         except BaseException as resume_error:
             if capture_error is not None:
                 raise RuntimeError(f'capture failed: {capture_error}; '
@@ -554,17 +554,18 @@ def backup(stack, no_fence, timeout, stop_timeout=60):
                 signal.signal(sig, handler)
 
 
-def resume(stack, stopped, paused):
+def resume(stack, stopped, paused, settle=0):
     if paused:
         stack.dc('unpause', 'valkey', label='fence-resume')
     if stopped:
         stack.dc('start', *reversed(stopped), label='fence-resume')
-        wait_healthy(stack, stopped)
+        wait_healthy(stack, stopped, settle=settle)
     health(stack)
 
 
-def wait_healthy(stack, services, timeout=300):
-    deadline = time.monotonic() + timeout
+def wait_healthy(stack, services, timeout=300, settle=0):
+    settle_until = time.monotonic() + settle
+    deadline = settle_until + timeout
     last_error = None
     while True:
         try:
@@ -573,12 +574,13 @@ def wait_healthy(stack, services, timeout=300):
                           else [json.loads(line) for line in output.splitlines() if line.strip()])
             running = {row.get('Service') for row in containers if row.get('State') == 'running'}
             if (len(containers) == len(services) and running == set(services)
-                    and all(row.get('Health') == 'healthy' for row in containers)):
+                    and all(row.get('Health') == 'healthy' for row in containers)
+                    and (not settle or time.monotonic() >= settle_until)):
                 return
             # An interrupted stop can finish after the initial start request.
             if running != set(services):
                 stack.dc('start', *reversed(services), label='fence-resume')
-        except RuntimeError as error:
+        except (RuntimeError, ValueError) as error:
             last_error = error
         if time.monotonic() >= deadline:
             raise RuntimeError('resumed services did not become healthy') from last_error

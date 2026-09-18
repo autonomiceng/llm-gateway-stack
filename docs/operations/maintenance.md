@@ -143,3 +143,9 @@ docker compose ps -q | xargs docker inspect --format '{{.Name}} memory={{.HostCo
 
 Every long-lived container must have a nonzero memory limit. The PID limits are 4096 for
 ClickHouse, 1024 for LiteLLM and both Langfuse services, and 512 for the other services.
+
+Removing the forced one-minute `archive_timeout` command setting recreates PostgreSQL
+on the next Compose apply, causing a database restart. To restore a timed archival
+bound, set `ALTER SYSTEM SET archive_timeout='60s'; SELECT pg_reload_conf();` after
+budgeting archive storage; `ALTER SYSTEM RESET archive_timeout; SELECT pg_reload_conf();`
+returns to the upstream default.

@@ -191,7 +191,7 @@ and Checkpoint capture explicitly switches WAL before waiting for its restore po
 This avoids a mostly empty 16 MiB segment every minute under light write activity,
 which can otherwise approach 22.5 GiB/day. It provides no timed database-only archival
 bound between Checkpoints. Operators needing one must budget archive capacity and
-configure an explicit timeout in their Compose override. Manual Postgres
+set `ALTER SYSTEM SET archive_timeout='5min'; SELECT pg_reload_conf();` after budgeting storage. Manual Postgres
 PITR requires a usable base backup, every subsequent WAL segment and reconciliation
 with ClickHouse, objects and Valkey. The restore command stops at the Checkpoint's named
 end point; it has no `--target-time` option.

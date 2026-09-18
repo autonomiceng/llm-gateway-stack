@@ -205,7 +205,7 @@ class PersistenceReviewTests(unittest.TestCase):
                      patch.object(checkpoint, 'wait_idle'), \
                      patch.object(checkpoint, 'health', side_effect=health), \
                      patch.object(checkpoint, 'prune', side_effect=lambda _: events.append('prune')), \
-                     patch.object(checkpoint.time, 'monotonic', side_effect=iter([0, 301])), \
+                     patch.object(checkpoint.time, 'monotonic', side_effect=iter([0, 1000])), \
                      patch.object(checkpoint.time, 'time', return_value=456), redirect_stdout(io.StringIO()):
                     checkpoint.write_metrics(True)
                     if mode == 'success':
@@ -230,6 +230,15 @@ class PersistenceReviewTests(unittest.TestCase):
         with patch.object(checkpoint.time, 'sleep'), patch.object(checkpoint.time, 'monotonic', return_value=0):
             checkpoint.wait_healthy(stack, ['langfuse-worker'])
         self.assertEqual([call.args[0] for call in stack.dc.call_args_list], ['ps', 'ps', 'start', 'ps'])
+
+    def test_resume_waits_out_a_late_stop_after_initial_healthy_status(self):
+        stack = Mock()
+        healthy = json.dumps([{'Service': 'valkey', 'State': 'running', 'Health': 'healthy'}])
+        stack.dc.side_effect = [healthy, healthy, '[]', '', healthy]
+        ticks = iter(range(0, 500, 20))
+        with patch.object(checkpoint.time, 'sleep'), patch.object(checkpoint.time, 'monotonic', side_effect=ticks):
+            checkpoint.wait_healthy(stack, ['valkey'], settle=70)
+        self.assertEqual([call.args[0] for call in stack.dc.call_args_list], ['ps', 'ps', 'ps', 'start', 'ps'])
 
     def test_command_child_has_separate_session(self):
         result = checkpoint.run([sys.executable, '-c', 'import os; print(os.getsid(0))'])
