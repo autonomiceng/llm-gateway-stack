@@ -24,12 +24,28 @@ import bootstrap
 ROOT = Path(__file__).resolve().parent.parent
 
 
-def run(argv):
-    return subprocess.run(argv, text=True, capture_output=True, check=False, start_new_session=True)
+def run(argv, timeout=None):
+    with subprocess.Popen(argv, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                          start_new_session=True) as process:
+        try:
+            stdout, stderr = process.communicate(timeout=timeout)
+        except BaseException as error:
+            # This group belongs to the child we spawned, including the Compose plugin.
+            try:
+                if process.returncode is None:
+                    os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.wait()
+            if isinstance(error, subprocess.TimeoutExpired):
+                # TimeoutExpired includes argv, which can contain credentials.
+                raise RuntimeError('command timed out') from None
+            raise
+        return subprocess.CompletedProcess(argv, process.returncode, stdout, stderr)
 
 
-def checked(argv, runner=run, *, diagnostics, label='command'):
-    result = runner(argv)
+def checked(argv, runner=run, *, diagnostics, label='command', timeout=None):
+    result = runner(argv, timeout=timeout) if timeout is not None else runner(argv)
     if result.returncode:
         # Output can contain credentials. Labels are supplied by callers, never argv.
         try:
@@ -229,14 +245,11 @@ return count
 '''
 
 
-def check_storage(backups, data):
-    if not backups.is_dir():
-        raise RuntimeError('LG_BACKUP_DIR must exist and its storage must be mounted')
-    parent = data
-    while not parent.exists():
-        parent = parent.parent
-    if backups.stat().st_dev == parent.stat().st_dev:
-        raise RuntimeError('backup and Postgres data must use different filesystems')
+def check_storage(backups, data, allow_same_filesystem=False):
+    try:
+        bootstrap.check_backup_storage(backups, data, allow_same_filesystem)
+    except bootstrap.Refused as error:
+        raise RuntimeError(error.detail) from error
 
 
 class Stack:
@@ -255,14 +268,16 @@ class Stack:
             raise RuntimeError('shell secrets differ from the original .env: ' + ', '.join(conflicts))
         settings = {m.group('key'): bootstrap.unquote(m.group('value'))
                     for m in map(bootstrap.ENV_LINE.match, lines) if m}
+        allow_same_filesystem = bootstrap.backup_policy(settings)
         backup_dir = os.environ.get('LG_BACKUP_DIR', settings.get('LG_BACKUP_DIR', ''))
         if not backup_dir:
             raise RuntimeError('LG_BACKUP_DIR is required')
         self.backups = (ROOT / backup_dir).resolve()
         data_dir = os.environ.get('LG_POSTGRES_DATA_DIR') or settings.get('LG_POSTGRES_DATA_DIR') or './data/postgres'
-        check_storage(self.backups, (ROOT / data_dir).resolve())
+        check_storage(self.backups, (ROOT / data_dir).resolve(), allow_same_filesystem)
         self.storage_overrides = sorted(key for key in (
-            'LG_POSTGRES_DATA_DIR', 'LG_VOLUME_PREFIX', 'LG_BACKUP_DIR', 'COMPOSE_PROJECT_NAME')
+            'LG_POSTGRES_DATA_DIR', 'LG_VOLUME_PREFIX', 'LG_BACKUP_DIR', 'COMPOSE_PROJECT_NAME',
+            'LG_ALLOW_SAME_FILESYSTEM_BACKUP')
             if key in os.environ and os.environ[key] != settings.get(key))
         self.command = ['docker', 'compose', '-f', str(ROOT / 'compose.yaml'), '--project-directory', str(ROOT),
                         '--env-file', str(self.env_file)]
@@ -278,11 +293,11 @@ class Stack:
             raise ValueError('LG_BACKUP_KEEP must be at least 1')
         self.backups = self.mount('postgres', '/backup')
         self.data = self.mount('postgres', '/var/lib/postgresql')
-        check_storage(self.backups, self.data)
+        check_storage(self.backups, self.data, allow_same_filesystem)
 
-    def dc(self, *args, label='compose'):
+    def dc(self, *args, label='compose', timeout=None):
         return checked(self.command + list(args), self.runner,
-                       diagnostics=self.backups / '.diagnostics', label=label)
+                       diagnostics=self.backups / '.diagnostics', label=label, timeout=timeout)
 
     # Langfuse's pinned web shutdown waits 110s and leaves process exit to its supervisor.
     # Require its backend-close marker, and the worker's writer-flush marker, before capture.
@@ -557,20 +572,30 @@ def backup(stack, no_fence, timeout, stop_timeout=120):
 
 def resume(stack, stopped, paused, settle=0):
     if paused:
-        stack.dc('unpause', 'valkey', label='fence-resume')
+        stack.dc('unpause', 'valkey', label='fence-resume', timeout=120)
     if stopped:
-        stack.dc('start', *reversed(stopped), label='fence-resume')
+        try:
+            stack.dc('start', *reversed(stopped), label='fence-resume', timeout=120)
+        except RuntimeError:
+            pass  # The health loop retries a transient or partly completed start.
         wait_healthy(stack, stopped, settle=settle)
-    health(stack)
+    health(stack, timeout=120)
 
 
 def wait_healthy(stack, services, timeout=300, settle=0):
     settle_until = time.monotonic() + settle
     deadline = settle_until + timeout
     last_error = None
+    def remaining():
+        seconds = deadline - time.monotonic()
+        if seconds <= 0:
+            raise RuntimeError('resumed services did not become healthy') from last_error
+        return min(120, seconds)
+
     while True:
         try:
-            output = stack.dc('ps', '--format', 'json', *services, label='fence-health')
+            output = stack.dc('ps', '--format', 'json', *services, label='fence-health',
+                              timeout=remaining())
             containers = (json.loads(output) if output.lstrip().startswith('[')
                           else [json.loads(line) for line in output.splitlines() if line.strip()])
             running = {row.get('Service') for row in containers if row.get('State') == 'running'}
@@ -580,12 +605,12 @@ def wait_healthy(stack, services, timeout=300, settle=0):
                 return
             # An interrupted stop can finish after the initial start request.
             if running != set(services):
-                stack.dc('start', *reversed(services), label='fence-resume')
+                stack.dc('start', *reversed(services), label='fence-resume', timeout=remaining())
         except (RuntimeError, ValueError) as error:
             last_error = error
         if time.monotonic() >= deadline:
             raise RuntimeError('resumed services did not become healthy') from last_error
-        time.sleep(2)
+        time.sleep(min(2, max(0, deadline - time.monotonic())))
 
 
 def verify_checkpoint(source, images):
@@ -622,14 +647,15 @@ def verify_checkpoint(source, images):
     return doc
 
 
-def health(stack):
+def health(stack, timeout=None):
     caddy = stack.config['services']['caddy']
     settings = dict(caddy['environment'])
     for port in caddy['ports']:
         if port['target'] in (80, 443):
             settings['LG_HTTP_PORT' if port['target'] == 80 else 'LG_HTTPS_PORT'] = str(port['published'])
             settings['LG_BIND_HOST'] = port.get('host_ip', '127.0.0.1')
-    bootstrap.probe_gateway(settings, stack.command, stack.runner)
+    runner = stack.runner if timeout is None else lambda argv: stack.runner(argv, timeout=timeout)
+    bootstrap.probe_gateway(settings, stack.command, runner)
 
 
 def restore(stack, source, allow_unfenced=False):
@@ -738,6 +764,8 @@ def main():
     for command in (backup_parser, restore_parser):
         command.add_argument('--env-file', type=Path, default=ROOT / '.env')
     args = parser.parse_args()
+    if args.command == 'backup' and not args.no_fence and args.stop_timeout < 120:
+        parser.error('--stop-timeout must be at least 120 for a fenced backup')
     os.umask(0o077)
     env_file = args.env_file.resolve()
     with ExitStack() as locks:

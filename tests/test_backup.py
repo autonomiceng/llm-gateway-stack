@@ -108,7 +108,7 @@ class BackupTests(unittest.TestCase):
             with patch.dict(os.environ, shell, clear=True), \
                  patch.object(sys, 'argv', ['checkpoint.py', 'restore', directory, '--env-file', str(env)]), \
                  patch.object(backup, 'Stack', side_effect=locked_stack), \
-                 patch.object(backup.subprocess, 'run') as runner:
+                 patch.object(backup.subprocess, 'Popen') as runner:
                 with self.assertRaisesRegex((RuntimeError, bootstrap.Refused), expected):
                     backup.main()
                 runner.assert_not_called()
@@ -274,7 +274,9 @@ class BackupTests(unittest.TestCase):
                 inspect_runner = stack.runner
                 calls = []
 
-                def runner(argv):
+                def runner(argv, timeout=None):
+                    if 'start' in argv:
+                        self.assertEqual(timeout, 120)
                     calls.append(argv)
                     if argv[:2] != ['docker', 'compose']:
                         return inspect_runner(argv)

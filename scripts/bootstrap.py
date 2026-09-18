@@ -131,6 +131,32 @@ def unquote(value: str) -> str:
     return value
 
 
+def backup_policy(settings: dict[str, str]) -> bool:
+    """Storage policy follows Compose precedence, including an explicitly empty shell value."""
+    value = os.environ.get("LG_ALLOW_SAME_FILESYSTEM_BACKUP",
+                           settings.get("LG_ALLOW_SAME_FILESYSTEM_BACKUP", "false"))
+    if value not in ("true", "false"):
+        raise Refused("invalid_backup_policy", "LG_ALLOW_SAME_FILESYSTEM_BACKUP must be true or false")
+    if value == "true":
+        print("WARNING: development same-filesystem backups enabled; disk loss affects both "
+              "live data and backups. This does not meet the production backup contract.", file=sys.stderr)
+    return value == "true"
+
+
+def check_backup_storage(backups: Path, data: Path, allow_same_filesystem: bool = False) -> None:
+    backups, data = backups.resolve(), data.resolve()
+    if not backups.is_dir():
+        raise Refused("backup_dir_missing", "LG_BACKUP_DIR must exist and its storage must be mounted")
+    if backups.is_relative_to(data) or data.is_relative_to(backups):
+        raise Refused("backup_dir_overlap", "backup and Postgres data paths must not overlap")
+    # Inspect the nearest existing parent before creating the cluster directory.
+    parent = data
+    while not parent.exists():
+        parent = parent.parent
+    if backups.stat().st_dev == parent.stat().st_dev and not allow_same_filesystem:
+        raise Refused("backup_dir_same_filesystem", "backup and Postgres data must use different filesystems")
+
+
 def project_name(settings: dict[str, str]) -> str:
     """Same precedence as Compose: shell environment, then the env file, then name:."""
     return os.environ.get("COMPOSE_PROJECT_NAME") or unquote(settings.get("COMPOSE_PROJECT_NAME", "")) or PROJECT
@@ -322,6 +348,7 @@ def bootstrap(argv: list[str], runner: Runner = run) -> int:
         }
         # Match Compose's shell precedence for operator settings as well as secrets.
         settings.update({key: os.environ[key] for key in settings if key in os.environ})
+        allow_same_filesystem = backup_policy(settings)
         project = project_name(settings)
         prefix = os.environ.get("LG_VOLUME_PREFIX", settings.get("LG_VOLUME_PREFIX")) or PROJECT
         data_dir_setting = os.environ.get("LG_POSTGRES_DATA_DIR") or settings.get("LG_POSTGRES_DATA_DIR", "./data/postgres")
@@ -355,14 +382,7 @@ def bootstrap(argv: list[str], runner: Runner = run) -> int:
         if not backup_setting:
             raise Refused("backup_dir_required", "set LG_BACKUP_DIR to a separate mounted filesystem")
         backup_dir = (root / backup_setting).resolve()
-        if not backup_dir.is_dir():
-            raise Refused("backup_dir_missing", "LG_BACKUP_DIR must exist and its storage must be mounted")
-        # Inspect the nearest existing parent before creating the cluster directory.
-        data_parent = data_dir
-        while not data_parent.exists():
-            data_parent = data_parent.parent
-        if backup_dir.stat().st_dev == data_parent.stat().st_dev:
-            raise Refused("backup_dir_same_filesystem", "backup and Postgres data must use different filesystems")
+        check_backup_storage(backup_dir, data_dir, allow_same_filesystem)
 
         # 0755: the postgres user must traverse this directory to reach its cluster,
         # which the image creates underneath as 18/docker with mode 0700.

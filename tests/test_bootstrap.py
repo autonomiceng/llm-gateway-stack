@@ -1,5 +1,6 @@
 """Bootstrap contract. Docker is never called; a fake runner answers instead."""
 
+import io
 import json
 import os
 import re
@@ -8,6 +9,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from contextlib import redirect_stderr
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
@@ -143,6 +145,40 @@ class BootstrapTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, "backup_dir_same_filesystem")
         self.assertEqual(runner.calls, [])
         self.assertFalse((self.root / "pg").exists())
+
+    def test_development_policy_opt_in_precedence_and_overlap(self):
+        self.render()
+        backups = self.root / "backups"
+        backups.mkdir()
+        data = self.root / "pg"
+        base = self.env.read_text() + (f"\nLG_BACKUP_DIR={backups}\nLG_POSTGRES_DATA_DIR={data}\n"
+                                      "LANGFUSE_INIT_USER_EMAIL=operator@gateway.test\n")
+        key = "LG_ALLOW_SAME_FILESYSTEM_BACKUP"
+        for saved, shell, target, error in (
+            ("true", {}, data, None),
+            ("false", {key: "true"}, data, None),
+            ("true", {key: "false"}, data, "backup_dir_same_filesystem"),
+            ("true", {key: ""}, data, "invalid_backup_policy"),
+            ("TRUE", {}, data, "invalid_backup_policy"),
+            ("true", {}, backups / "pg", "backup_dir_overlap"),
+        ):
+            with self.subTest(saved=saved, shell=shell, target=target):
+                self.env.write_text(base + f"{key}={saved}\nLG_POSTGRES_DATA_DIR={target}\n")
+                runner = runner_with()
+                warning = io.StringIO()
+                with patch.dict(os.environ, shell, clear=True), redirect_stderr(warning), \
+                     patch.object(bootstrap.shutil, "which", return_value="docker"), \
+                     patch.object(bootstrap, "write_versions"), patch.object(bootstrap, "probe_gateway"):
+                    if error:
+                        with self.assertRaises(bootstrap.Refused) as raised:
+                            bootstrap.bootstrap(["--env-file", str(self.env)], runner=runner)
+                        self.assertEqual(raised.exception.code, error)
+                        self.assertEqual(runner.calls, [])
+                    else:
+                        self.assertEqual(bootstrap.bootstrap(["--env-file", str(self.env)], runner=runner), 0)
+                        self.assertTrue(any("up" in call for call in runner.calls))
+                        self.assertIn("disk loss affects both", warning.getvalue())
+                        self.assertTrue(data.is_dir())
 
     def test_langfuse_login_is_required_before_startup(self):
         self.render()

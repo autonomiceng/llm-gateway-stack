@@ -11,8 +11,9 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 import unittest
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import nullcontext, redirect_stderr, redirect_stdout
 from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -101,6 +102,107 @@ class PersistenceReviewTests(unittest.TestCase):
             self.assertEqual(runner.call_count, 1)
             self.assertEqual(len(list((backups / '.diagnostics').glob('*.log'))), 1)
 
+    def test_same_filesystem_policy_still_refuses_invalid_values_and_overlapping_paths(self):
+        backups = self.root / 'backups'
+        backups.mkdir()
+        alias = self.root / 'alias'
+        alias.symlink_to(backups, target_is_directory=True)
+        original = self.env.read_text()
+        key = 'LG_ALLOW_SAME_FILESYSTEM_BACKUP'
+        for policy, data, expected in (
+            ('false', self.root / 'pg', 'different filesystems'),
+            ('TRUE', self.root / 'pg', 'invalid_backup_policy'),
+            ('1', self.root / 'pg', 'invalid_backup_policy'),
+            ('', self.root / 'pg', 'invalid_backup_policy'),
+            ('true', backups, 'must not overlap'),
+            ('true', backups / 'pg', 'must not overlap'),
+            ('true', self.root, 'must not overlap'),
+            ('true', alias / 'pg', 'must not overlap'),
+        ):
+            with self.subTest(policy=policy, data=data):
+                self.env.write_text(original + f'LG_BACKUP_DIR={backups}\nLG_POSTGRES_DATA_DIR={data}\n'
+                                    f'{key}={policy}\n')
+                runner = Mock()
+                with patch.dict(os.environ, {}, clear=True), redirect_stderr(io.StringIO()):
+                    with self.assertRaisesRegex((RuntimeError, bootstrap.Refused), expected):
+                        checkpoint.Stack(self.env, runner)
+                runner.assert_not_called()
+                self.assertFalse((backups / '.diagnostics').exists())
+
+    def test_owned_command_timeout_and_interrupt_clean_up_process_group(self):
+        popen = subprocess.Popen
+        for interrupted in (False, True):
+            with self.subTest(interrupted=interrupted):
+                pid_file = self.root / 'child.pid'
+                pid_file.unlink(missing_ok=True)
+                processes = []
+                # The child inherits the owned session, as a Compose plugin would.
+                code = ('import subprocess, sys, time; '
+                        'from pathlib import Path; '
+                        'p = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"]); '
+                        'Path(sys.argv[1]).write_text(str(p.pid)); time.sleep(60)')
+
+                def spawn(*args, **kwargs):
+                    process = popen(*args, **kwargs)
+                    processes.append(process)
+                    if interrupted:
+                        def communicate(**_):
+                            deadline = time.monotonic() + 5
+                            while not pid_file.exists() and time.monotonic() < deadline:
+                                time.sleep(0.01)
+                            raise KeyboardInterrupt()
+                        process.communicate = communicate
+                    return process
+
+                try:
+                    with patch.object(checkpoint.subprocess, 'Popen', side_effect=spawn):
+                        with self.assertRaises(KeyboardInterrupt if interrupted else RuntimeError) as raised:
+                            checkpoint.run([sys.executable, '-c', code, str(pid_file), 'private-secret'], timeout=1)
+                    self.assertNotIn('private-secret', str(raised.exception))
+                    self.assertEqual(processes[0].returncode, -signal.SIGKILL)
+                    self.assertTrue(pid_file.exists())
+                    child = int(pid_file.read_text())
+                    deadline = time.monotonic() + 5
+                    while True:
+                        try:
+                            state = Path(f'/proc/{child}/stat').read_text().split()[2]
+                        except FileNotFoundError:
+                            break
+                        if state == 'Z':
+                            break
+                        self.assertLess(time.monotonic(), deadline, 'owned descendant survived cleanup')
+                        time.sleep(0.01)
+                finally:
+                    for process in processes:
+                        try:
+                            if process.returncode is None:
+                                os.killpg(process.pid, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+                        process.wait()
+
+    def test_fenced_stop_timeout_rejected_before_locks_or_stack_construction(self):
+        for seconds in ('-1', '0', '119'):
+            with self.subTest(seconds=seconds), \
+                 patch.object(sys, 'argv', ['checkpoint.py', 'backup', '--stop-timeout', seconds,
+                                           '--env-file', str(self.env)]), \
+                 patch.object(checkpoint, 'Stack') as stack, redirect_stderr(io.StringIO()) as errors:
+                with self.assertRaises(SystemExit) as raised:
+                    checkpoint.main()
+                self.assertEqual(raised.exception.code, 2)
+                self.assertIn('must be at least 120', errors.getvalue())
+                stack.assert_not_called()
+                self.assertFalse(self.env.with_name('.env.lock').exists())
+
+        for extra in (['--stop-timeout', '120'], ['--stop-timeout', '1', '--no-fence']):
+            with self.subTest(extra=extra), patch.object(checkpoint, 'ROOT', self.root), \
+                 patch.object(sys, 'argv', ['checkpoint.py', 'backup', '--env-file', str(self.env), *extra]), \
+                 patch.object(checkpoint, 'Stack', side_effect=RuntimeError('preflight reached')) as stack, \
+                 patch.object(checkpoint, 'write_metrics'):
+                with self.assertRaisesRegex(RuntimeError, 'preflight reached'):
+                    checkpoint.main()
+                stack.assert_called_once_with(self.env)
+
     def test_preflight_failure_sets_failure_but_lock_contenders_preserve_status(self):
         backups = self.root / 'backups'
         backups.mkdir()
@@ -171,7 +273,7 @@ class PersistenceReviewTests(unittest.TestCase):
 
                 def dc(*args, **kwargs):
                     if args[0] == 'ps' and '--format' in args:
-                        return json.dumps([{'Service': service, 'State': 'running',
+                        return json.dumps([{'Service': service, 'State': 'exited' if mode in ('resume', 'both') else 'running',
                             'Health': 'unhealthy' if mode == 'worker-unhealthy' and service == 'langfuse-worker' else 'healthy'}
                             for service in ('caddy', 'litellm', 'langfuse-web', 'langfuse-worker', 'valkey')])
                     if args[0] == 'ps':
@@ -190,7 +292,8 @@ class PersistenceReviewTests(unittest.TestCase):
                     if mode in ('capture', 'both'):
                         raise RuntimeError('archive capture failed')
 
-                def health(_):
+                def health(_, timeout=None):
+                    self.assertEqual(timeout, 120)
                     events.append('health')
                     if mode == 'health':
                         raise RuntimeError('resumed health failed')
@@ -205,7 +308,7 @@ class PersistenceReviewTests(unittest.TestCase):
                      patch.object(checkpoint, 'wait_idle'), \
                      patch.object(checkpoint, 'health', side_effect=health), \
                      patch.object(checkpoint, 'prune', side_effect=lambda _: events.append('prune')), \
-                     patch.object(checkpoint.time, 'monotonic', side_effect=iter([0, 1000])), \
+                     patch.object(checkpoint.time, 'monotonic', side_effect=iter([0, 0, 1000, 1000, 1000])), \
                      patch.object(checkpoint.time, 'time', return_value=456), redirect_stdout(io.StringIO()):
                     checkpoint.write_metrics(True)
                     if mode == 'success':
@@ -217,7 +320,7 @@ class PersistenceReviewTests(unittest.TestCase):
                         if mode in ('capture', 'both'):
                             self.assertIn('archive capture failed', str(error.exception))
                         if mode in ('resume', 'both'):
-                            self.assertIn('fence-resume failed', str(error.exception))
+                            self.assertIn('did not become healthy', str(error.exception))
                         self.assertNotIn('prune', events)
                     metrics = (self.root / 'data/console/metrics.txt').read_text()
                     self.assertIn(f'lg_checkpoint_success {int(mode == "success")}', metrics)
@@ -231,12 +334,27 @@ class PersistenceReviewTests(unittest.TestCase):
             checkpoint.wait_healthy(stack, ['langfuse-worker'])
         self.assertEqual([call.args[0] for call in stack.dc.call_args_list], ['ps', 'ps', 'start', 'ps'])
 
+        now = [0]
+        def hung_status(*args, timeout, **kwargs):
+            now[0] += timeout
+            raise RuntimeError('command timed out')
+        stack.dc.reset_mock(side_effect=True)
+        stack.dc.side_effect = hung_status
+        with patch.object(checkpoint.time, 'monotonic', side_effect=lambda: now[0]):
+            with self.assertRaisesRegex(RuntimeError, 'did not become healthy'):
+                checkpoint.wait_healthy(stack, ['langfuse-worker'], timeout=5)
+        self.assertEqual(now[0], 5)
+        self.assertEqual(stack.dc.call_count, 1)
+
     def test_resume_waits_out_a_late_stop_after_initial_healthy_status(self):
         stack = Mock()
         healthy = json.dumps([{'Service': 'valkey', 'State': 'running', 'Health': 'healthy'}])
         stack.dc.side_effect = [healthy, healthy, '[]', '', healthy]
-        ticks = iter(range(0, 500, 20))
-        with patch.object(checkpoint.time, 'sleep'), patch.object(checkpoint.time, 'monotonic', side_effect=ticks):
+        now = [0]
+        def sleep(_):
+            now[0] += 30
+        with patch.object(checkpoint.time, 'sleep', side_effect=sleep), \
+             patch.object(checkpoint.time, 'monotonic', side_effect=lambda: now[0]):
             checkpoint.wait_healthy(stack, ['valkey'], settle=70)
         self.assertEqual([call.args[0] for call in stack.dc.call_args_list], ['ps', 'ps', 'ps', 'start', 'ps'])
 
@@ -311,25 +429,30 @@ class PersistenceReviewTests(unittest.TestCase):
         runner = Mock(return_value=subprocess.CompletedProcess([], 0, json.dumps(config), ''))
         overrides = {'LG_BACKUP_DIR': str(backups), 'LG_POSTGRES_DATA_DIR': str(self.root / 'target-pg'),
                      'LG_VOLUME_PREFIX': 'target-prefix', 'COMPOSE_PROJECT_NAME': 'target-project'}
-        with patch.dict(os.environ, overrides, clear=True), patch.object(checkpoint, 'ROOT', self.root), \
-             separate_device(backups):
-            stack = checkpoint.Stack(self.env, runner)
-            self.assertEqual(stack.backups, backups)
-            self.assertEqual(stack.data, self.root / 'target-pg')
-            self.assertEqual(stack.project, 'target-project')
-            self.assertEqual(stack.prefix, 'target-prefix')
-            self.assertEqual(set(stack.storage_overrides), set(overrides))
-            output = io.StringIO()
-            with patch.object(checkpoint, 'Stack', return_value=stack), patch.object(checkpoint, 'restore') as restore, \
-                 patch.object(sys, 'argv', ['checkpoint.py', 'restore', 'source', '--env-file', str(self.env)]), \
-                 redirect_stderr(output):
-                checkpoint.main()
-            restore.assert_called_once()
-            for key in overrides:
-                self.assertIn(key, output.getvalue())
-            self.assertNotIn(str(backups), output.getvalue())
-            self.assertNotIn('saved-value', output.getvalue())
-            self.assertNotIn('target-prefix', self.env.read_text())
+        for distinct in (True, False):
+            if not distinct:
+                overrides['LG_ALLOW_SAME_FILESYSTEM_BACKUP'] = 'true'
+            with self.subTest(distinct=distinct):
+                with patch.dict(os.environ, overrides, clear=True), patch.object(checkpoint, 'ROOT', self.root), \
+                     (separate_device(backups) if distinct else nullcontext()):
+                    stack = checkpoint.Stack(self.env, runner)
+                    self.assertEqual(stack.backups, backups)
+                    self.assertEqual(stack.data, self.root / 'target-pg')
+                    self.assertEqual(stack.project, 'target-project')
+                    self.assertEqual(stack.prefix, 'target-prefix')
+                    self.assertEqual(set(stack.storage_overrides), set(overrides))
+                    output = io.StringIO()
+                    with patch.object(checkpoint, 'Stack', return_value=stack), patch.object(checkpoint, 'restore') as restore, \
+                         patch.object(sys, 'argv', ['checkpoint.py', 'restore', 'source', '--env-file', str(self.env)]), \
+                         redirect_stderr(output):
+                        checkpoint.main()
+                    restore.assert_called_once()
+                    for key in overrides:
+                        self.assertIn(key, output.getvalue())
+                    self.assertNotIn(str(backups), output.getvalue())
+                    self.assertNotIn('saved-value', output.getvalue())
+                    self.assertNotIn('target-prefix', self.env.read_text())
+
 
 
 if __name__ == '__main__':

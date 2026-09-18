@@ -19,7 +19,7 @@ different env files.
 Set `LG_BACKUP_DIR` in `.env` to an existing, mounted repository, encrypted at rest
 and replicated off-host over encrypted transport. Encryption and replication are the
 operator's job; these scripts do neither. This setting is required. Bootstrap, backup
-and restore refuse a backup directory on the Postgres data filesystem (compared using
+and restore default to refusing a backup directory on the Postgres data filesystem (compared using
 `st_dev`; bootstrap reports `backup_dir_same_filesystem`).
 Backup and restore check the configured path before Compose or diagnostics can write
 there, then recheck the resolved mounts. A missing repository is never created by
@@ -27,6 +27,24 @@ diagnostics. A local directory on another filesystem works for a drill but
 cannot survive loss of the host. Keep one archive repository per source cluster and
 recovered incarnation. The filesystem must support ownership, atomic hard links and
 fsync. NFS root squashing requires operator provisioning of compatible ownership.
+
+For an explicitly opted-in development installation, create a dedicated directory such
+as `~/backups/llm-gateway-dev` and set `LG_BACKUP_DIR` to its **absolute expanded path**
+in `.env`, with `LG_ALLOW_SAME_FILESYSTEM_BACKUP=true`. The default is `false`; only
+literal `true` and `false` are accepted. Exported settings override `.env`, including
+an empty policy value, which is invalid. Bootstrap, backup and restore use the same
+policy and warn on opt-in: disk loss affects both live data and backups. This development
+choice does not meet the production durability contract in ADR-0002. Local Mode alone
+does not enable it.
+
+The opt-in waives only the filesystem separation check. Identical, nested and
+symlink-resolved overlapping Postgres and backup paths remain forbidden, including
+when the paths span mounts. Keep the repository dedicated and preserve its permissions,
+archive publication checks, capacity monitoring and manifest verification. WAL archiving,
+coordinated fencing and retention remain enabled. Schedule Checkpoints as below; merely
+enabling WAL archiving does not create a whole-stack Checkpoint. For a development
+restore, explicitly retain the policy in the target `.env` or shell along with its new
+storage paths. Production still requires a separate filesystem and off-host copies.
 
 The bind mounts refuse a missing directory. They cannot distinguish an unmounted disk
 from a directory on an unexpected filesystem that still differs from the data filesystem:
@@ -64,9 +82,9 @@ restore starts its gateway to run probes. Existing v1 Checkpoints retain this li
 their format is unchanged.
 
 Compose shell precedence remains supported for deliberate recovery retargeting.
-An exported `LG_POSTGRES_DATA_DIR`, `LG_VOLUME_PREFIX`, `LG_BACKUP_DIR` or
-`COMPOSE_PROJECT_NAME` can override the saved file. Restore warns with the affected
-setting names. Save the chosen target settings in its `.env`, or keep the identical
+An exported `LG_POSTGRES_DATA_DIR`, `LG_VOLUME_PREFIX`, `LG_BACKUP_DIR`,
+`COMPOSE_PROJECT_NAME` or `LG_ALLOW_SAME_FILESYSTEM_BACKUP` can override the saved file.
+Restore warns with the affected setting names. Save the chosen target settings in its `.env`, or keep the identical
 exported environment for every later Compose command; otherwise a later start may
 select different storage. The source `.env` and source storage remain separate.
 
@@ -114,9 +132,34 @@ job succeeded. Resolve failed ingestion jobs before relying on a Checkpoint.
 After draining, the script stops the worker, checks queues again, then stops Valkey so
 AOF writes and rotations cannot race the copy. Stopping the worker also prevents its
 background database/object writes during capture. It attempts to resume all five services on
-success, failure or catchable interruption. Resumption waits up to 300 seconds for
-Compose health and then verifies gateway and Langfuse health before retention or
-success publication. If capture and resumption both fail, the error reports both.
+success, failure or catchable interruption. Resumption allows up to 120 seconds for
+its initial Compose start (or unpause). After failed or interrupted capture, it waits
+at least `--stop-timeout` plus 10 seconds (130 by default) before accepting healthy
+services, allowing an in-flight daemon stop to settle. The Compose health deadline is
+that settle interval plus 300 seconds; status and retry-start commands each have a
+120-second limit, shortened to the remaining deadline. It then verifies gateway and
+Langfuse health before retention or success publication. Reading an internal TLS CA
+allows another 120 seconds; each of the two HTTP probes has a 120-second retry window
+and five-second socket timeouts, so an in-flight request can overrun its retry window.
+If capture and resumption both fail, the error reports both.
+
+For a supervisor, budget the initial start, settle interval, health polling, optional
+CA read and both gateway probes: 910 seconds at the default shutdown grace before
+HTTP request overruns and process cleanup. Allow **at least 1080 seconds** before a
+forced kill, increasing this by every second added to `--stop-timeout`. Under systemd,
+set `TimeoutStopSec=1080` and `KillMode=mixed`: the initial stop signal must reach only
+the backup parent so it can resume services. A separate session does not escape the
+unit's cgroup. These are operational allowances, not a guaranteed RTO under stalled
+host I/O. Capture commands have no new 120-second limit because legitimate base backups
+and object copies can take much longer; a whole-job timeout must budget the complete
+capture plus resumption.
+
+On interruption or command timeout, the script kills its owned CLI process group,
+including Compose plugin children, and reaps the direct child. Docker-daemon work already
+submitted, such as a stop or an exec running `pg_basebackup`, can continue. Inspect and remove leftover
+one-off containers only after confirming their work has ended; a later capture refuses
+such containers.
+
 Default drain timeout is 300 seconds;
 `--fence-timeout SECONDS` changes it. A fenced Checkpoint requires the Langfuse
 worker to log `Shutdown complete, exiting process` (its ClickHouse writer flush is done;
@@ -127,7 +170,7 @@ both its `Prisma connection has been closed.` and `Shutdown complete` messages f
 this stop attempt. Its supervisor may then kill the remaining process. Missing web
 or worker completion evidence, or an unclean Caddy, LiteLLM or Valkey stop, aborts
 capture without a completed manifest. Rerun the backup; if unclean stops repeat, raise the shutdown grace with
-`--stop-timeout SECONDS` (default 120). A forced kill of the backup process or host failure
+`--stop-timeout SECONDS` (default and fenced minimum 120). A forced kill of the backup process or host failure
 cannot execute cleanup: inspect the incomplete directory and start the fenced services manually.
 Direct database/object writers must also be quiesced by the operator.
 
@@ -340,3 +383,10 @@ See [PostgreSQL archiving settings](https://www.postgresql.org/docs/18/runtime-c
 The web drain check follows the [pinned Langfuse shutdown implementation](https://github.com/langfuse/langfuse/blob/v4.37.0/web/src/utils/shutdown.ts).
 It covers the upstream drain boundary; clients must retry requests without a successful
 response, and direct writers must remain quiesced throughout capture.
+
+Development same-filesystem backups share capacity with the live database: archive or
+Checkpoint growth can fill the live data filesystem. Monitor free space and backup failures.
+`scripts/backup-drill.sh` continues to require a separate filesystem; exercise the development
+opt-in using an explicitly configured disposable restore target. Existing installations must
+move nested backup mounts outside the Postgres data path before upgrading: overlapping
+resolved paths are now refused even when their filesystem devices differ.
