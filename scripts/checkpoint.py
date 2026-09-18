@@ -543,7 +543,7 @@ def backup(stack, no_fence, timeout, stop_timeout=60):
             if paused:
                 stack.dc('unpause', 'valkey', label='fence-resume')
             if stopped:
-                stack.dc('start', '--wait', '--wait-timeout', '300', *reversed(stopped), label='fence-resume')
+                stack.dc('start', *reversed(stopped), label='fence-resume')
             health(stack)
         except BaseException as resume_error:
             if capture_error is not None:
