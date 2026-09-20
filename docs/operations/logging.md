@@ -13,9 +13,10 @@ Never put credentials in URL paths. Request/response bodies are not access-log f
 Application logs are independent of Caddy's filters; keep diagnostic verbosity and
 sensitive payload logging disabled.
 
-An optional Alloy collector can read the host journal using `loki.source.journal` and
-select Docker entries by their `CONTAINER_NAME` / `CONTAINER_ID_FULL` fields.
-Configure its journal access, labels and destination in the observability repository.
+The optional observability stack already discovers these containers and reads their logs
+through Docker’s API using Alloy’s `loki.source.docker`. Docker reads journald directly,
+even with its extra file cache disabled; no additional journal mount is needed. In Loki,
+query `{compose_project="llm-gateway-stack"}`, adjusting the project name if changed.
 Collection failure or absence does not affect gateway startup or request handling.
 
 ## Application audit
