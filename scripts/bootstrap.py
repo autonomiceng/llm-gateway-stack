@@ -198,8 +198,9 @@ def write_versions(root: Path, compose: Path, refs: dict[str, str]) -> None:
                          else digest or "latest")
     doc = {
         "pinnedAt": datetime.fromtimestamp(compose.stat().st_mtime, timezone.utc).isoformat(),
+        "configuredAt": datetime.now(timezone.utc).isoformat(),
         "images": {
-            "litellm": tags.get("litellm", "unknown").lstrip("v"),
+            "litellm": re.sub(r"^v(?=\d)", "", tags.get("litellm", "unknown")),
             "langfuse": tags.get("langfuse-web", "unknown"),
             "rustfs": tags.get("rustfs", "unknown"),
             "postgres": tags.get("postgres", "unknown"),

@@ -5,7 +5,7 @@ Default versions are pinned by digest in `compose.yaml`. Renovate opens a pull r
 ## Image overrides
 
 Copy the relevant empty `LG_*_IMAGE` assignment from `.env.example` into `.env`,
-uncomment it, and supply a complete reference such as `registry.example/gateway:trial` or
+and supply a complete reference such as `registry.example/gateway:trial` or
 `registry.example/gateway@sha256:<digest>`. Every service has an override, including the
 AWS CLI helper. Langfuse web and worker use separate references and must stay on matching
 versions. Empty or unset values use the inline default. Exported values take precedence,

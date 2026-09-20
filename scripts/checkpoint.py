@@ -78,6 +78,13 @@ def immutable(ref):
     return re.fullmatch(r'[^@\s]+@sha256:[0-9a-f]{64}', ref) is not None
 
 
+def image_repository(ref):
+    repository = ref.split('@', 1)[0]
+    if ':' in repository.rsplit('/', 1)[-1]:
+        repository = repository.rsplit(':', 1)[0]
+    return repository.removeprefix('docker.io/').removeprefix('index.docker.io/').removeprefix('library/')
+
+
 def inventory(directory):
     out = {}
     for path in sorted(directory.rglob('*')):
@@ -334,7 +341,8 @@ class Stack:
                               '{{.Id}} {{json .RepoDigests}}'], self.runner,
                              diagnostics=self.backups / '.diagnostics', label='capture-image')
             image_id, digests = output.split(' ', 1)
-            candidates = sorted(value for value in json.loads(digests) or [] if immutable(value))
+            candidates = sorted((value for value in json.loads(digests) or [] if immutable(value)),
+                                key=lambda value: (image_repository(value) != image_repository(ref), value))
             if not immutable(ref) and not candidates:
                 raise RuntimeError(f'{service}: image has no registry digest; publish and pull it before backup')
             refs[service] = ref if immutable(ref) else candidates[0]
@@ -678,6 +686,9 @@ def restore(stack, source, allow_unfenced=False):
     doc = verify_checkpoint(source, stack.images)
     if doc.get('fenced') is not True and not allow_unfenced:
         raise RuntimeError('restore refuses an unfenced Checkpoint without --allow-unfenced')
+    for ref in stack.images.values():
+        checked(['docker', 'image', 'inspect', ref, '--format', '{{.Id}}'], stack.runner,
+                diagnostics=stack.backups / '.diagnostics', label='restore-image')
     saved_names = {m['key'] for m in map(bootstrap.ENV_LINE.match, stack.env_file.read_text().splitlines()) if m}
     missing_names = sorted(set(doc.get('env_keys', [])) - saved_names)
     if missing_names:

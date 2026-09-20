@@ -240,6 +240,7 @@ class PersistenceReviewTests(unittest.TestCase):
         env_file.write_text('LG_BACKUP_DIR=backups\n')
         stack = Mock(data=data, backups=backups, images=doc['images'], env_file=env_file,
                      config={'networks': {'platform': {'name': 'drill-platform'}}})
+        stack.runner.return_value = subprocess.CompletedProcess([], 0, '', '')
         copytree = shutil.copytree
 
         def corrupt_copy(src, dest, *args, **kwargs):
@@ -419,6 +420,19 @@ class PersistenceReviewTests(unittest.TestCase):
         (source / 'manifest.json').write_text(json.dumps(doc))
         with self.assertRaisesRegex(RuntimeError, 'same immutable image'):
             checkpoint.verify_checkpoint(source, doc['images'])
+
+    def test_restore_refuses_missing_image_before_creating_target_storage(self):
+        source = self.root / 'source'
+        doc = checkpoint_fixture(source)
+        stack = Mock(images=doc['images'], backups=self.root / 'backups')
+        stack.backups.mkdir()
+        stack.runner.return_value = subprocess.CompletedProcess([], 1, '', 'image unavailable')
+        with patch.object(bootstrap, 'ensure_network') as network:
+            with self.assertRaisesRegex(RuntimeError, 'restore-image'):
+                checkpoint.restore(stack, source)
+        network.assert_not_called()
+        stack.data.mkdir.assert_not_called()
+        stack.helper.assert_not_called()
 
     def test_verify_checkpoint_rejects_hostile_tar_members_with_matching_hashes(self):
         for index, (name, kind) in enumerate((('../escape', tarfile.REGTYPE),

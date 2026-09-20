@@ -124,10 +124,12 @@ its pins or storage settings. Stop and remove leftover one-off project container
 
 Every configured image, including helpers, must be available locally before backup.
 Tags are resolved through Docker's local `RepoDigests` and checked against the local image
-content ID. Local images without a registry digest are refused before capture or fencing;
+content ID. When several registry digests are available, capture prefers the configured
+repository. Local images without a registry digest are refused before capture or fencing;
 publish and pull the image, then recreate the affected service before backing it up.
 Checkpoint helpers never pull images during capture. Keep recorded registry digests
-available for recovery and pull them before restore. Do not retag or prune images during
+available for recovery and pull them before restore. Restore checks every required image
+before creating target storage. Do not retag or prune images during
 a Checkpoint operation. Overrides still need compatible commands, UIDs and data layouts.
 
 The default fence stops Caddy, LiteLLM and Langfuse web in that order with a 120-second

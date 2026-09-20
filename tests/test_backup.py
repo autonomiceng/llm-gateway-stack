@@ -48,9 +48,12 @@ def runtime_fixture(root):
         elif argv[:2] == ['docker', 'inspect']:
             output = json.dumps(containers)
         elif argv[:3] == ['docker', 'image', 'inspect']:
-            output = 'sha256:' + argv[3].split('@')[0].split(':')[0]
+            repository = argv[3].split('@', 1)[0]
+            if ':' in repository.rsplit('/', 1)[-1]:
+                repository = repository.rsplit(':', 1)[0]
+            output = 'sha256:' + repository
             if '.RepoDigests' in argv[-1]:
-                output += ' ' + json.dumps([argv[3].split('@')[0].split(':')[0] + '@sha256:' + 'a' * 64])
+                output += ' ' + json.dumps([repository + '@sha256:' + 'a' * 64])
         elif argv == stack.command + ['ps', '--status', 'running', '--services']:
             output = ' '.join(services)
         else:
@@ -105,6 +108,29 @@ class BackupTests(unittest.TestCase):
                 backup.backup(stack, False, 300)
             self.assertEqual(list(Path(directory).iterdir()), [])
             self.assertFalse(any('stop' in call or 'exec' in call for call in calls))
+
+    def test_capture_prefers_configured_registry_when_image_has_multiple_digests(self):
+        with tempfile.TemporaryDirectory() as directory:
+            stack, containers, calls = runtime_fixture(Path(directory))
+            reference = 'registry.example:5000/store:trial'
+            expected = 'registry.example:5000/store@sha256:' + 'a' * 64
+            other = 'another.example/store@sha256:' + 'a' * 64
+            stack.config['services']['postgres']['image'] = reference
+            container = next(c for c in containers if c['Config']['Labels']['com.docker.compose.service'] == 'postgres')
+            container['Config']['Image'] = reference
+            runner = stack.runner
+            def inspect(argv):
+                if argv[:3] == ['docker', 'image', 'inspect'] and argv[3] in (reference, expected, other):
+                    value = container['Image']
+                    if '.RepoDigests' in argv[-1]:
+                        value += ' ' + json.dumps([other, expected])
+                    return subprocess.CompletedProcess(argv, 0, value, '')
+                return runner(argv)
+            stack.runner = inspect
+            stack.attest_runtime()
+            self.assertEqual(stack.images['postgres'], expected)
+            for ref in ('postgres:trial', 'docker.io/library/postgres:trial', 'index.docker.io/library/postgres@sha256:abc'):
+                self.assertEqual(backup.image_repository(ref), 'postgres')
 
     def test_capture_refuses_changed_mounts_before_writing_or_fencing(self):
         with tempfile.TemporaryDirectory() as directory:

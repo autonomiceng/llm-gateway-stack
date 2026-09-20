@@ -55,14 +55,14 @@ defaults = images(os.environ)
 cases = {"litellm": ("LG_LITELLM_IMAGE", "localhost:5000/experiment/gateway:trial"),
          "postgres": ("LG_POSTGRES_IMAGE", "mirror.test/store@sha256:" + "a" * 64),
          "rustfs-init": ("LG_AWS_CLI_IMAGE", "local-helper:trial")}
+original = (work / ".env").read_text()
 with (work / ".env").open("a") as handle:
     for key, value in cases.values():
         handle.write(f"{key}={value}\n")
 assert images(os.environ) == {**defaults, **{name: ref for name, (_, ref) in cases.items()}}
 assert images({**os.environ, **{key: "" for key, _ in cases.values()}}) == defaults
 # Leave subsequent default gates on the original settings.
-lines = (work / ".env").read_text().splitlines()
-(work / ".env").write_text("\n".join(lines[:-len(cases)]) + "\n")
+(work / ".env").write_text(original)
 print("image overrides: PASS (app/store/helper, complete refs and empty shell fallback)")
 PYIMAGES
 

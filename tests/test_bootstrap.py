@@ -101,7 +101,7 @@ class BootstrapTests(unittest.TestCase):
         bootstrap.write_versions(self.root, compose, resolved)
         doc = json.loads((self.root / "data" / "console" / "versions.json").read_text())
         self.assertEqual(doc["images"]["langfuse"], "4.37.1")
-        self.assertEqual(doc["images"]["litellm"], "trial")
+        self.assertEqual(doc["images"]["litellm"], "vtrial")
         self.assertEqual(doc["images"]["postgres"], "sha256:" + "b" * 64)
         self.assertNotIn("private-secret", json.dumps(doc))
         with self.assertRaises(bootstrap.Refused) as raised:
