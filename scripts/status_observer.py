@@ -82,7 +82,29 @@ def inventory(project, runner):
     return result
 
 
-def observe_service(component, candidates, config, inventory_at, runner, clock):
+def local_bridge(config, runner, env):
+    """Remote/rootless contexts cannot justify dialing container IPs on this host."""
+    try:
+        endpoint = env.get('DOCKER_HOST') if not env.get('DOCKER_CONTEXT') else None
+        if not endpoint:
+            contexts = read_json(runner(['docker', 'context', 'inspect'], timeout=4, limit=65536))
+            endpoint = contexts[0]['Endpoints']['docker']['Host']
+        if not endpoint.startswith('unix:///'):
+            return None
+        security = read_json(runner(['docker', 'info', '--format', '{{json .SecurityOptions}}'],
+                                    timeout=4, limit=65536))
+        if not isinstance(security, list) or any('rootless' in str(item) for item in security):
+            return None
+        network = config['networks']['default']['name']
+        details = read_json(runner(['docker', 'network', 'inspect', network], timeout=4, limit=65536))
+        if len(details) == 1 and details[0]['Driver'] == 'bridge' and details[0]['Scope'] == 'local':
+            return network
+    except (Unavailable, KeyError, TypeError, ValueError, AttributeError, IndexError):
+        pass
+    return None
+
+
+def observe_service(component, candidates, config, inventory_at, network, runner, clock):
     row = empty(component)
     service = config['services'].get(component)
     if service is None:
@@ -133,8 +155,7 @@ def observe_service(component, candidates, config, inventory_at, runner, clock):
             row['state'] = 'unavailable'
         elif state.get('Status') == 'restarting':
             row['state'] = 'starting'
-        elif state.get('Status') == 'running' and not state.get('Paused'):
-            network = config.get('networks', {}).get('default', {}).get('name')
+        elif state.get('Status') == 'running' and not state.get('Paused') and network:
             ip = doc.get('NetworkSettings', {}).get('Networks', {}).get(network, {}).get('IPAddress')
             if ip:
                 ipaddress.ip_address(ip)
@@ -166,11 +187,12 @@ def collect(root, env_file, runner=run, clock=now):
             resources = inventory(config['name'], runner) or None
         except Unavailable:
             resources = None
+        network = local_bridge(config, runner, environment()) if resources is not None else None
         names = (*SERVICES, 'rustfs-init')
         with ThreadPoolExecutor(max_workers=4) as pool:
             futures = {name: pool.submit(observe_service, name,
                                         resources.get(name, []) if resources is not None else None,
-                                        config, inventory_at, runner, clock) for name in names}
+                                        config, inventory_at, network, runner, clock) for name in names}
             for name, future in futures.items():
                 rows[name] = future.result()
         try:

@@ -22,6 +22,9 @@ class FakeRunner:
         self.calls = []
         self.fail = set()
         self.http = {}
+        self.endpoint = "unix:///var/run/docker.sock"
+        self.security = []
+        self.driver = "bridge"
         self.config = {'name': 'selected-project', 'networks': {'default': {'name': 'selected_default'}},
                        'services': {name: {'image': 'private/repo:operator-secret-tag',
                                            'environment': {'PASSWORD': SECRET}}
@@ -43,6 +46,12 @@ class FakeRunner:
 
     def __call__(self, argv, **kwargs):
         self.calls.append((argv, kwargs))
+        if argv[:3] == ['docker', 'context', 'inspect']:
+            return json.dumps([{'Endpoints': {'docker': {'Host': self.endpoint}}}])
+        if argv[:2] == ['docker', 'info']:
+            return json.dumps(self.security)
+        if argv[:3] == ['docker', 'network', 'inspect']:
+            return json.dumps([{'Driver': self.driver, 'Scope': 'local'}])
         if 'config' in argv:
             if 'config' in self.fail:
                 raise io.Unavailable(SECRET)
@@ -225,7 +234,7 @@ class ObserverTests(unittest.TestCase):
         self.fake.containers['valkey']['State']['Paused'] = True
         self.assertEqual(self.rows()['postgres']['state'], 'unavailable')
         self.assertEqual(self.rows()['valkey']['state'], 'unknown')
-        row = observer.observe_service('litellm', ['a', 'b'], self.fake.config, AT, self.fake, lambda: AT)
+        row = observer.observe_service('litellm', ['a', 'b'], self.fake.config, AT, 'selected_default', self.fake, lambda: AT)
         self.assertEqual(row['state'], 'unknown')
 
     def test_invalid_task_times_cannot_create_success(self):
@@ -268,3 +277,12 @@ class ObserverTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+    def test_remote_rootless_or_nonbridge_context_never_dials_container_addresses(self):
+        for field, value in (('endpoint', 'ssh://operator@remote'), ('security', ['name=rootless']), ('driver', 'overlay')):
+            with self.subTest(field=field), patch.object(self.fake, field, value), \
+                    patch.object(observer, 'probe') as probe:
+                rows = {row['id']: row for row in self.collect()['components']}
+                self.assertEqual(rows['litellm']['state'], 'unknown')
+                self.assertEqual(rows['postgres']['state'], 'unknown')
+                probe.assert_not_called()
