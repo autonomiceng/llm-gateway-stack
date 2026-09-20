@@ -63,6 +63,10 @@ selection. It creates no directories, units, env files or private copies. A fres
 check permits an env file that the owning bootstrap has not created yet.
 Existing units require the original env file.
 
+Unit enumeration can exit nonzero for an absent name. The installer then requires
+`show` to confirm `LoadState=not-found` with empty fragment and drop-in paths.
+An unavailable manager or inconclusive response still refuses before writing.
+
 Both check and install refuse foreign loaded or installed unit fragments, drop-ins,
 partial or malformed pairs, symlinks, hard links, non-private unit files, and unsafe
 unit destinations. Install checks the manager **before** creating a user override.

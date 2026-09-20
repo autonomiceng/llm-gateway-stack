@@ -92,12 +92,17 @@ def manager_check(unit_dir, present, runner, *, loaded=False):
     runner(['systemctl', '--user', 'show', '--property=Version'], timeout=10)
     for name in (NAME + '.service', NAME + '.timer'):
         if not loaded:
-            installed = runner(['systemctl', '--user', 'list-unit-files', name,
-                                '--no-legend', '--no-pager'], timeout=10)
-            active = runner(['systemctl', '--user', 'list-units', '--all', name,
-                             '--no-legend', '--no-pager'], timeout=10)
-            if not installed.strip() and not active.strip():
-                continue
+            try:
+                installed = runner(['systemctl', '--user', 'list-unit-files', name,
+                                    '--no-legend', '--no-pager'], timeout=10)
+                active = runner(['systemctl', '--user', 'list-units', '--all', name,
+                                 '--no-legend', '--no-pager'], timeout=10)
+            except Unavailable:
+                # An absent unit can make enumeration exit 1; show must establish absence.
+                pass
+            else:
+                if not installed.strip() and not active.strip():
+                    continue
         evidence = runner(['systemctl', '--user', 'show', name, '--property=FragmentPath',
                            '--property=DropInPaths', '--property=LoadState'], timeout=10)
         fields = set(evidence.strip().splitlines())
@@ -196,7 +201,7 @@ def main():
             return 0
         install(args.checkout, args.env_file, unit_dir)
     except (OSError, UnicodeError, Unavailable):
-        print('status timer installation failed; preserve units and retry the same selection. '
+        print(f"status timer {'check' if args.check else 'installation'} failed; preserve units and retry the same selection. "
               'Foreign or partial pairs require inspection; no existing units were overwritten.', file=sys.stderr)
         return 1
     print('Status timer enabled. An active user manager with Docker access is required; '

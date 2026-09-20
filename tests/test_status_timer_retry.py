@@ -1,7 +1,6 @@
 """Pure timer custody and retry tests; every external command is a fake."""
 import os
 from pathlib import Path
-import shutil
 import stat
 import sys
 import tempfile
@@ -20,6 +19,7 @@ class FakeManager:
         self.listed = True
         self.drop_ins = ''
         self.fail_at = ''
+        self.enumeration_fails = False
         self.enabled = 'enabled'
         self.active = 'active'
 
@@ -34,10 +34,17 @@ class FakeManager:
             return 'Version=255\n'
         name = next((arg for arg in argv if arg.endswith(('.service', '.timer'))), '')
         present = bool(self.foreign) or (self.unit_dir / name).is_file()
+        if action == 'list-unit-files' and self.enumeration_fails:
+            # status_io.run maps exit 1 with empty stdout/stderr to Unavailable.
+            raise Unavailable()
+        if action == 'show' and self.fail_at == 'unit-show':
+            raise Unavailable()
         if action == 'list-unit-files' and not self.listed:
             return ''
         if action in ('list-unit-files', 'list-units'):
             return name + ' loaded\n' if present else ''
+        if action == 'show' and not present:
+            return 'LoadState=not-found\nFragmentPath=\nDropInPaths=' + self.drop_ins + '\n'
         if action == 'show':
             fragment = self.foreign or str(self.unit_dir / name)
             return 'FragmentPath=' + fragment + '\nDropInPaths=' + self.drop_ins + '\nLoadState=loaded\n'
@@ -67,7 +74,6 @@ class TimerRetryTests(unittest.TestCase):
         self.env.chmod(0o600)
         self.unit_dir = self.host / 'config/systemd/user'
         self.manager = FakeManager(self.unit_dir)
-        pass
 
     def invoke(self, *, check=False, **options):
         action = installer.check if check else installer.install
@@ -83,14 +89,12 @@ class TimerRetryTests(unittest.TestCase):
 
     def test_fresh_check_creates_no_directories_units_or_private_copies(self):
         self.env.unlink()
-        pass
         before = self.snapshot()
         self.invoke(check=True)
         self.assertEqual(self.snapshot(), before)
         self.assertFalse(self.unit_dir.exists())
         original_check = installer.check
         argv = ['install_status_timer.py', '--check', '--checkout', str(self.root), '--env-file', str(self.env)]
-        pass
         with patch.object(sys, 'argv', argv), patch.dict(os.environ, {'XDG_CONFIG_HOME': str(self.host / 'config')}), \
                 patch.object(installer, 'check', side_effect=lambda *args: original_check(*args, runner=self.manager)):
             self.assertEqual(installer.main(), 0)
@@ -106,6 +110,38 @@ class TimerRetryTests(unittest.TestCase):
         with self.assertRaises((OSError, Unavailable)):
             self.invoke(check=True)
         self.assertEqual(self.snapshot(), before)
+
+    def test_absent_enumeration_uses_show_and_manager_failures_refuse_without_writes(self):
+        self.manager.enumeration_fails = True
+        self.assertEqual(self.manager(['systemctl', '--user', 'list-units', '--all',
+                                       installer.NAME + '.service', '--no-legend', '--no-pager']), '')
+        before = self.snapshot()
+        self.invoke(check=True)
+        self.assertEqual(self.snapshot(), before)
+        for suffix in ('.service', '.timer'):
+            self.assertTrue(any(call[2:4] == ['show', installer.NAME + suffix]
+                                and '--property=LoadState' in call for call in self.manager.calls))
+        for foreign, drop_ins, failure in (('', '', 'show'), ('', '', 'unit-show'),
+                                          ('/usr/lib/systemd/user/foreign.service', '', ''),
+                                          ('', '/run/user/override.conf', '')):
+            with self.subTest(foreign=foreign, drop_ins=drop_ins, failure=failure):
+                self.manager.foreign, self.manager.drop_ins, self.manager.fail_at = foreign, drop_ins, failure
+                for check in (True, False):
+                    with self.assertRaises(Unavailable):
+                        self.invoke(check=check)
+                    self.assertEqual(self.snapshot(), before)
+        self.manager.foreign = self.manager.drop_ins = self.manager.fail_at = ''
+        self.invoke()
+        self.assertEqual(set(path.name for path in self.unit_dir.iterdir()),
+                         {installer.NAME + '.service', installer.NAME + '.timer'})
+
+    def test_failure_diagnostic_names_the_requested_action(self):
+        for flag, action, diagnostic in (('--check', 'check', 'check'), ('--install', 'install', 'installation')):
+            argv = ['install_status_timer.py', flag, '--checkout', str(self.root), '--env-file', str(self.env)]
+            with self.subTest(flag=flag), patch.object(sys, 'argv', argv), \
+                    patch.object(installer, action, side_effect=Unavailable()), patch('builtins.print') as printed:
+                self.assertEqual(installer.main(), 1)
+            self.assertTrue(printed.call_args.args[0].startswith('status timer ' + diagnostic + ' failed;'))
 
     def test_exact_pair_retries_partial_activation_without_rewriting(self):
         for failure in ('enable', 'is-active'):
