@@ -85,7 +85,7 @@ command = ['docker', 'compose', '-f', str(root / 'compose.yaml'), '--project-dir
 image = next((line.strip().split(':-', 1)[1].removesuffix('}')
              for line in (root / 'compose.yaml').read_text().splitlines()
              if line.strip().startswith('image: ${LG_POSTGRES_IMAGE:-')), None)
-if image is None:
+if not image:
     sys.exit('FAIL: compose.yaml has no PostgreSQL image default')
 
 
