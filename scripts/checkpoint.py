@@ -705,7 +705,7 @@ def restore(stack, source, allow_unfenced=False):
     bootstrap.write_versions(ROOT, ROOT / 'compose.yaml', stack.images)
     check_empty(stack.data, stack.project, stack.images['postgres'], stack.runner,
                 diagnostics=stack.backups / '.diagnostics', volumes=stack.volumes)
-    bootstrap.ensure_volumes(stack.runner, stack.prefix)
+    bootstrap.ensure_volumes(stack.runner, stack.prefix, stack.project)
     # A recovered incarnation must never publish into the source cluster's archive.
     stack.helper('postgres', 'if [ -d /backup/archive ]; then entries=$(ls -A /backup/archive); test -z "$entries"; fi')
     stamp = doc['postgres_restore_point'].removeprefix('checkpoint_')
