@@ -4,6 +4,7 @@ import json
 import math
 import os
 import selectors
+import signal
 import stat
 import subprocess
 import time
@@ -29,7 +30,7 @@ def run(argv, *, timeout=4, limit=65536, cwd=None, env=None):
     """Drain both pipes with a shared byte/deadline budget, never log their contents."""
     try:
         with subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                              stdin=subprocess.DEVNULL, cwd=cwd, env=env) as process:
+                              stdin=subprocess.DEVNULL, cwd=cwd, env=env, start_new_session=True) as process:
             try:
                 deadline = time.monotonic() + timeout
                 output = bytearray()
@@ -58,8 +59,11 @@ def run(argv, *, timeout=4, limit=65536, cwd=None, env=None):
                     raise Unavailable()
                 return output.decode('utf-8')
             finally:
-                if process.poll() is None:
-                    process.kill()  # Only the child captured at spawn.
+                try:
+                    # The session/group ID is the child PID captured at spawn.
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
                 process.wait()
     except (OSError, UnicodeError) as error:
         raise Unsupported() from error
