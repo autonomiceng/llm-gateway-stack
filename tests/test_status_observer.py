@@ -274,10 +274,6 @@ class ObserverTests(unittest.TestCase):
                 self.assertIsNone(probes.version(service, value))
         self.assertEqual(probes.version('postgres', '18.6-alpine3.22'), '18.6')
 
-
-if __name__ == '__main__':
-    unittest.main()
-
     def test_remote_rootless_or_nonbridge_context_never_dials_container_addresses(self):
         for field, value in (('endpoint', 'ssh://operator@remote'), ('security', ['name=rootless']), ('driver', 'overlay')):
             with self.subTest(field=field), patch.object(self.fake, field, value), \
@@ -291,6 +287,7 @@ if __name__ == '__main__':
         import fcntl
         console = self.root / 'data/console'
         console.mkdir(parents=True)
+        console.chmod(0o755)
         public = console / 'status.json'
         public.write_text('old observation')
         with (console / '.status.lock').open('w') as handle:
@@ -298,3 +295,19 @@ if __name__ == '__main__':
             with patch.object(observer, 'collect', side_effect=AssertionError('duplicate collection')):
                 self.assertIsNone(observer.observe(self.root, self.env))
         self.assertEqual(public.read_text(), 'old observation')
+
+
+    def test_named_context_endpoint_wins_over_host_and_default_reports_host(self):
+        # Docker context inspect resolves the default context's DOCKER_HOST too.
+        for context, endpoint, expected in (
+            ('local-rootful', 'unix:///var/run/docker.sock', 'selected_default'),
+            ('remote', 'ssh://operator@remote', None),
+            ('default', 'tcp://remote.invalid:2375', None),
+        ):
+            with self.subTest(context=context), patch.object(self.fake, 'endpoint', endpoint):
+                self.assertEqual(observer.local_bridge(self.fake.config, self.fake,
+                    {'DOCKER_CONTEXT': context, 'DOCKER_HOST': 'tcp://remote.invalid:2375'}), expected)
+
+
+if __name__ == '__main__':
+    unittest.main()
