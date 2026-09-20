@@ -121,6 +121,18 @@ http.server.HTTPServer(('', 4000), Handler).serve_forever()
         finally:
             connection.close()
 
+    def test_observer_caddy_probe_is_independent_of_public_routes(self):
+        self.start()
+        info = json.loads(docker("inspect", GATEWAY))[0]
+        ip = info["NetworkSettings"]["Networks"][NETWORK]["IPAddress"]
+        connection = http.client.HTTPConnection(ip, 8081, timeout=5)
+        try:
+            connection.request("GET", "/health/status")
+            response = connection.getresponse()
+            self.assertEqual((response.status, response.read()), (200, b"ok"))
+        finally:
+            connection.close()
+
     def test_public_status_transport_and_frozen_evidence(self):
         frozen = {"schemaVersion": 1, "stack": "gateway", "generatedAt": "2026-09-20T12:00:00Z",
                   "configurationObservedAt": "2026-09-20T11:00:00Z",
