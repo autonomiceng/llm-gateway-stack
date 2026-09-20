@@ -10,7 +10,10 @@
     for (const link of document.querySelectorAll("[data-link]")) {
       link.dataset.targetUrl = hostFor(link.dataset.link) + (link.dataset.path || "/");
       const optional = link.closest?.("[data-optional]");
-      if (!optional || optional.dataset.ready === "true") link.href = link.dataset.targetUrl;
+      if (!optional || optional.dataset.ready === "true") {
+        link.href = link.dataset.targetUrl;
+        link.removeAttribute("aria-disabled");
+      }
     }
     for (const code of document.querySelectorAll("[data-url]")) {
       code.textContent = hostFor(code.dataset.url) + (code.dataset.path || "");
