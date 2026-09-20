@@ -91,7 +91,7 @@ def local_bridge(config, runner, env):
             return None
         contexts = read_json(runner(['docker', 'context', 'inspect'], timeout=4, limit=65536))
         endpoint = contexts[0]['Endpoints']['docker']['Host']
-        if not endpoint.startswith('unix:///'):
+        if not endpoint.startswith('unix:///') or explicit and endpoint != explicit:
             return None
         security = read_json(runner(['docker', 'info', '--format', '{{json .SecurityOptions}}'],
                                     timeout=4, limit=65536))

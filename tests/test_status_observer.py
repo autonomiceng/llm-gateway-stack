@@ -309,5 +309,12 @@ class ObserverTests(unittest.TestCase):
                     {'DOCKER_CONTEXT': context, 'DOCKER_HOST': 'tcp://remote.invalid:2375'}), expected)
 
 
+    def test_explicit_local_host_must_agree_with_context_socket(self):
+        self.assertEqual(observer.local_bridge(self.fake.config, self.fake,
+            {'DOCKER_HOST': self.fake.endpoint, 'DOCKER_CONTEXT': 'local'}), 'selected_default')
+        self.assertIsNone(observer.local_bridge(self.fake.config, self.fake,
+            {'DOCKER_HOST': 'unix:///run/other-docker.sock', 'DOCKER_CONTEXT': 'local'}))
+
+
 if __name__ == '__main__':
     unittest.main()
