@@ -47,6 +47,10 @@ class PublicationTests(unittest.TestCase):
         self.assertEqual(stat.S_IMODE((state / 'status').stat().st_mode), 0o700)
         self.assertEqual(stat.S_IMODE((state / 'console').stat().st_mode), 0o755)
         self.assertEqual(stat.S_IMODE((state / 'console/status.json').stat().st_mode), 0o644)
+        with self.assertRaises(io.Unavailable):
+            with io.directory(state / 'writable', 0o775):
+                pass
+        self.assertFalse((state / 'writable').exists())
 
 
     def test_symlink_directory_and_file_are_refused_without_touching_target(self):

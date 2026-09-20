@@ -99,6 +99,8 @@ def read_json(text, limit=65536):
 @contextmanager
 def directory(path, mode=0o755):
     """Walk with directory descriptors so swapped symlinks cannot redirect writes."""
+    if mode & 0o022:
+        raise Unavailable()
     path = Path(os.path.abspath(path))
     fd = os.open('/', os.O_RDONLY | os.O_DIRECTORY)
     parts = path.parts[1:]
