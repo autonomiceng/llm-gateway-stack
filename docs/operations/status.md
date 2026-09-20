@@ -161,3 +161,9 @@ of the pinned images. Probe semantics follow the upstream
 [Langfuse](https://langfuse.com/self-hosting/configuration/health-readiness-endpoints),
 [worker readiness implementation](https://github.com/langfuse/langfuse/blob/main/worker/src/features/health/index.ts),
 and [RustFS](https://docs.rustfs.com/en/operations/status-check) interfaces.
+
+Before dialing a container address, the observer verifies a local Unix Docker
+endpoint, a rootful daemon and the selected project's local bridge network. Remote,
+rootless and other network modes retain unknown readiness instead of probing a
+possibly unrelated host address. Concurrent observations coalesce under the
+installation's file lock; the invocation that finds it held exits successfully.
