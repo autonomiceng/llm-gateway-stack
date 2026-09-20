@@ -326,7 +326,7 @@ class Stack:
         for container in containers:
             code = container.get('ExitCode')
             if container.get('State') != 'exited' or code != 0:
-                raise RuntimeError(f'service {service} did not stop cleanly (exit {code})')
+                raise RuntimeError(f'service {service} did not stop cleanly (exit {code}, state {container.get("State")!r})')
 
     def mount(self, service, target):
         return Path(next(v['source'] for v in self.config['services'][service]['volumes']
