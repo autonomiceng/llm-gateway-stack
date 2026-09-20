@@ -3,12 +3,20 @@
 (() => {
   const base = `${location.protocol}//${location.host}`;
   const origins = async () => {
-    const response = await fetch("/origins.json", { cache: "no-store" });
+    const response = await fetch("/origins.json", { cache: "no-store", signal: AbortSignal.timeout(4000) });
     if (!response.ok) throw new Error(String(response.status));
     const origin = await response.json();
+    const consoleLink = document.querySelector('[data-rustfs-console]');
+    const consoleEnabled = origin.rustfsConsole === 'on';
+    document.querySelector('[data-rustfs-disabled]').hidden = consoleEnabled;
     const hostFor = (sub) => origin[sub] || `${origin.scheme}://${sub}.${origin.domain}${origin.port}`;
     for (const link of document.querySelectorAll("[data-link]")) {
       link.dataset.targetUrl = hostFor(link.dataset.link) + (link.dataset.path || "/");
+      if (link === consoleLink && !consoleEnabled) {
+        link.removeAttribute("href");
+        link.setAttribute("aria-disabled", "true");
+        continue;
+      }
       const optional = link.closest?.("[data-optional]");
       if (!optional || optional.dataset.ready === "true") {
         link.href = link.dataset.targetUrl;
@@ -73,6 +81,7 @@
   };
 
   const checkAll = async () => {
+    await origins().catch(() => {});
     await Promise.all([...document.querySelectorAll("[data-service]")].map(check));
     const t = new Date();
     document.querySelector("[data-checked]").textContent =
@@ -97,7 +106,6 @@
   };
 
   versions();
-  origins().catch(() => {});
   checkAll();
   // Repaint only when a check completes; no continuous animation.
   setInterval(checkAll, 30000);

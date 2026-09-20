@@ -42,7 +42,7 @@ for mode in local public proxy; do
   LG_ACCESS_MODE=$mode docker compose --env-file "$work/.env" config --format json > "$work/$mode.json"
   LG_ACCESS_MODE=$mode LG_CONSOLE_URL=https://darkforge.tail694fe2.ts.net:8446 \
     LG_LITELLM_URL=https://darkforge.tail694fe2.ts.net:8443 \
-    LG_LANGFUSE_URL=https://darkforge.tail694fe2.ts.net:8444 LG_S3_URL=https://darkforge.tail694fe2.ts.net:8445 \
+    LG_LANGFUSE_URL=https://darkforge.tail694fe2.ts.net:8444 LG_S3_URL=https://darkforge.tail694fe2.ts.net:8445 LG_RUSTFS_URL=https://darkforge.tail694fe2.ts.net:8449 \
     docker compose --env-file "$work/.env" config --format json > "$work/$mode-origins.json"
 done
 python3 - "$work" <<'PY'
@@ -89,7 +89,7 @@ for mode in "local http dual localhost internal true" "local https dual example.
         origins=(-e LG_CONSOLE_URL=https://darkforge.tail694fe2.ts.net:8446
           -e LG_LITELLM_URL=https://darkforge.tail694fe2.ts.net:8443
           -e LG_LANGFUSE_URL=https://darkforge.tail694fe2.ts.net:8444
-          -e LG_S3_URL=https://darkforge.tail694fe2.ts.net:8445)
+          -e LG_S3_URL=https://darkforge.tail694fe2.ts.net:8445 -e LG_RUSTFS_URL=https://darkforge.tail694fe2.ts.net:8449)
       fi
       docker run --rm "${origins[@]}" -e "LG_RUSTFS_CONSOLE=$console" -e "LG_TRUSTED_PROXIES=$proxies" \
         -e "LG_ACCESS_MODE=$access" -e "LG_SCHEME=$scheme" -e "LG_HTTPS_PUBLISHED=$published" \

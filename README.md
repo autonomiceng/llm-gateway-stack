@@ -36,7 +36,7 @@ Bootstrap writes `.env` with generated secrets, creates the shared `platform` ne
 | `http://localhost/` | Console: links, live health; pinned versions for operators |
 | `http://litellm.localhost/` | The gateway API; `/ui/` restricted to operators |
 | `http://langfuse.localhost/` | Traces, evals, prompts |
-| `http://rustfs.localhost/` | Not enabled; `LG_RUSTFS_CONSOLE=on` enables the operator-only console |
+| `http://rustfs.localhost/` | RustFS admin console; operator access and RustFS login required |
 
 Try it without any provider keys:
 

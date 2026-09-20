@@ -75,12 +75,13 @@ origin() {
 }
 
 seen_authorities=' '
-for app in CONSOLE LITELLM LANGFUSE S3; do
+for app in CONSOLE LITELLM LANGFUSE S3 RUSTFS; do
   case "$app" in
     CONSOLE) default_host=$LG_PUBLIC_DOMAIN; value=${LG_CONSOLE_URL:-} ;;
     LITELLM) default_host=litellm.$LG_PUBLIC_DOMAIN; value=${LG_LITELLM_URL:-} ;;
     LANGFUSE) default_host=langfuse.$LG_PUBLIC_DOMAIN; value=${LG_LANGFUSE_URL:-} ;;
     S3) default_host=s3.$LG_PUBLIC_DOMAIN; value=${LG_S3_URL:-} ;;
+    RUSTFS) default_host=rustfs.$LG_PUBLIC_DOMAIN; value=${LG_RUSTFS_URL:-} ;;
   esac
   origin "LG_${app}_URL" "${value:-$LG_SCHEME://$default_host${LG_PUBLIC_PORT_SUFFIX:-}}"
   case "$seen_authorities" in *" $origin_authority "*) refuse "duplicate application authority at LG_${app}_URL" ;; esac
@@ -116,8 +117,8 @@ done
 
 # Bootstrap uses the same validation without requiring Caddy or Docker.
 if [ "${1:-}" = --origins ]; then
-  printf '{"LG_CONSOLE_URL":"%s","LG_LITELLM_URL":"%s","LG_LANGFUSE_URL":"%s","LG_S3_URL":"%s","LG_GRAFANA_URL":"%s","LG_BACKPLANE_URL":"%s"}\n' \
-    "$LG_CONSOLE_URL" "$LG_LITELLM_URL" "$LG_LANGFUSE_URL" "$LG_S3_URL" "$LG_GRAFANA_URL" "$LG_BACKPLANE_URL"
+  printf '{"LG_CONSOLE_URL":"%s","LG_LITELLM_URL":"%s","LG_LANGFUSE_URL":"%s","LG_S3_URL":"%s","LG_RUSTFS_URL":"%s","LG_GRAFANA_URL":"%s","LG_BACKPLANE_URL":"%s"}\n' \
+    "$LG_CONSOLE_URL" "$LG_LITELLM_URL" "$LG_LANGFUSE_URL" "$LG_S3_URL" "$LG_RUSTFS_URL" "$LG_GRAFANA_URL" "$LG_BACKPLANE_URL"
   exit 0
 fi
 exec "$@"

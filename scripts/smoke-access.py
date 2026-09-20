@@ -50,9 +50,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_header('X-Smoke-Path', self.path)
         self.end_headers()
         self.wfile.write(json.dumps(dict(self.headers)).encode())
+    do_POST = do_GET
     def log_message(self, *args):
         pass
-for port in (3000, 9000):
+for port in (3000, 9000, 9001):
     threading.Thread(target=http.server.HTTPServer(('', port), Handler).serve_forever, daemon=True).start()
 http.server.HTTPServer(('', 4000), Handler).serve_forever()
 """
@@ -101,7 +102,7 @@ http.server.HTTPServer(('', 4000), Handler).serve_forever()
             time.sleep(0.5)
         self.fail("gateway did not start; inspect the disposable container logs")
 
-    def request(self, path, host="localhost", tls=False, headers=None):
+    def request(self, path, host="localhost", tls=False, headers=None, method="GET"):
         if tls:
             root = docker("exec", GATEWAY, "cat", "/data/caddy/pki/authorities/local/root.crt")
             context = ssl.create_default_context(cadata=root)
@@ -109,7 +110,7 @@ http.server.HTTPServer(('', 4000), Handler).serve_forever()
         else:
             connection = http.client.HTTPConnection("127.0.0.1", HTTP_PORT, timeout=5)
         try:
-            connection.request("GET", path, headers={"Host": host, **(headers or {})})
+            connection.request(method, path, headers={"Host": host, **(headers or {})})
             response = connection.getresponse()
             return response.status, dict(response.getheaders()), response.read()
         finally:
@@ -130,12 +131,21 @@ http.server.HTTPServer(('', 4000), Handler).serve_forever()
         self.assertEqual(status, 308)
         self.assertEqual(headers["Location"], f"https://litellm.gateway.test:{HTTPS_PORT}/v1/models")
         self.assertEqual(self.request("/health/litellm", "gateway.test")[0], 200)
+        self.assertEqual(self.request("/", "rustfs.gateway.test")[1]["Location"], f"https://rustfs.gateway.test:{HTTPS_PORT}/")
         self.assertEqual(self.request("/", "untrusted.test")[1]["Location"], f"https://gateway.test:{HTTPS_PORT}/")
+
+    def test_public_disabled_rustfs_does_not_redirect(self):
+        self.start("public", origins={"LG_RUSTFS_CONSOLE": "off"})
+        for path in ("/", "/rustfs/console/"):
+            status, headers, _ = self.request(path, "rustfs.gateway.test")
+            self.assertEqual(status, 404)
+            self.assertNotIn("Location", headers)
+        self.assertEqual(self.request("/", "litellm.gateway.test")[0], 308)
 
     def test_proxy_forwarding_and_http_only(self):
         hostname = "darkforge.tail694fe2.ts.net"
         origins = {f"LG_{app}_URL": f"https://{hostname}:{port}" for app, port in (
-            ("LITELLM", 8443), ("LANGFUSE", 8444), ("S3", 8445), ("CONSOLE", 8446))}
+            ("LITELLM", 8443), ("LANGFUSE", 8444), ("S3", 8445), ("CONSOLE", 8446), ("RUSTFS", 8449))}
         for trust, expected in (("192.0.2.0/24", "http"), (self.subnet, "https")):
             self.start("proxy", trust, origins=origins, operators="127.0.0.0/8 ::1")
             status, headers, body = self.request("/", "litellm.gateway.test",
@@ -163,6 +173,7 @@ http.server.HTTPServer(('', 4000), Handler).serve_forever()
             self.assertEqual(self.request("/health/readiness", f"{hostname}:8443")[2], b"")
             self.assertEqual(self.request("/versions.json", f"{hostname}:8446")[0], 404)
             self.assertEqual(self.request("/", "rustfs.gateway.test")[0], 404)
+            self.assertEqual(self.request("/", f"{hostname}:8449")[0], 404)
             ports = json.loads(docker("inspect", GATEWAY))[0]["HostConfig"]["PortBindings"]
             self.assertEqual(set(ports), {"80/tcp"})
             if trust != self.subnet:
@@ -171,10 +182,14 @@ http.server.HTTPServer(('', 4000), Handler).serve_forever()
 
     def test_proxy_ui_redirect_keeps_https_origin(self):
         origin = "https://darkforge.tail694fe2.ts.net:8443"
-        self.start("proxy", self.subnet, origins={"LG_LITELLM_URL": origin})
+        self.start("proxy", self.subnet, origins={"LG_LITELLM_URL": origin, "LG_RUSTFS_URL": "https://darkforge.tail694fe2.ts.net:8449"})
+        self.assertEqual(self.request("/rustfs/console/", "darkforge.tail694fe2.ts.net:8449")[1]["X-Smoke-Upstream"], "9001")
         status, headers, _ = self.request("/ui?view=models", "darkforge.tail694fe2.ts.net:8443")
         self.assertEqual(status, 308)
         self.assertEqual(headers["Location"], origin + "/ui/?view=models")
+        self.assertEqual(self.request("/", "darkforge.tail694fe2.ts.net:8449", headers={"Accept": "text/html"})[1]["Location"], "/rustfs/console/")
+        self.assertEqual(self.request("/", "darkforge.tail694fe2.ts.net:8449", headers={"Accept": "application/json"})[1]["X-Smoke-Upstream"], "9001")
+        self.assertEqual(self.request("/", "darkforge.tail694fe2.ts.net:8449", method="POST")[1]["X-Smoke-Upstream"], "9001")
 
     def test_ip_root_and_configured_application_origins(self):
         self.start()
@@ -184,7 +199,7 @@ http.server.HTTPServer(('', 4000), Handler).serve_forever()
         self.assertEqual(status, 200)
         self.assertEqual(json.loads(body), {
             "scheme": "http", "domain": "localhost", "port": "", "console": "http://localhost",
-            "litellm": "http://litellm.localhost", "langfuse": "http://langfuse.localhost", "s3": "http://s3.localhost", "grafana": "http://grafana.localhost", "backplane": "http://backplane.localhost"})
+            "litellm": "http://litellm.localhost", "langfuse": "http://langfuse.localhost", "s3": "http://s3.localhost", "rustfs": "http://rustfs.localhost", "rustfsConsole": "on", "grafana": "http://grafana.localhost", "backplane": "http://backplane.localhost"})
 
     def test_access_logs_redact_credentials(self):
         self.start()

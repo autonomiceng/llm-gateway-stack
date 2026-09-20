@@ -296,7 +296,7 @@ def access_settings(settings: dict[str, str]) -> dict[str, str]:
         raise Refused("invalid_access_settings", f"COMPOSE_FILE must include compose.{mode}.yaml")
     access_keys = {"LG_ACCESS_MODE", "LG_BIND_HOST", "LG_SCHEME", "LG_PUBLIC_DOMAIN", "LG_PUBLIC_PORT_SUFFIX",
                    "LG_TRUSTED_PROXIES", "LG_LISTEN_SCHEME", "LG_TLS_ISSUER"}
-    access_keys.update("LG_" + app + "_URL" for app in ("CONSOLE", "LITELLM", "LANGFUSE", "S3", "GRAFANA", "BACKPLANE"))
+    access_keys.update("LG_" + app + "_URL" for app in ("CONSOLE", "LITELLM", "LANGFUSE", "S3", "RUSTFS", "GRAFANA", "BACKPLANE"))
     environment = {key: value for key, value in values.items() if key in access_keys}
     environment["LG_HTTPS_PUBLISHED"] = str(mode != "proxy").lower()
     environment.setdefault("LG_TRUSTED_PROXIES", "")
