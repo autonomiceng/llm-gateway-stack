@@ -357,7 +357,7 @@ class BackupTests(unittest.TestCase):
 
                 stack.runner = runner
                 with patch.object(backup, 'wait_idle'), patch.object(backup, 'health'), patch.object(backup, 'wait_healthy'):
-                    with self.assertRaisesRegex(RuntimeError, f'service {failed} did not stop cleanly \\(exit 137\\)'):
+                    with self.assertRaisesRegex(RuntimeError, f'service {failed} did not stop cleanly \\(exit 137, state .*\\)'):
                         backup.backup(stack, False, 300)
                 self.assertFalse(list(stack.backups.rglob('manifest.json')))
                 stopped = services[:services.index(failed) + 1]
@@ -398,6 +398,16 @@ class BackupTests(unittest.TestCase):
             for token in argv:
                 self.assertNotIn(token, path.name)
                 self.assertNotIn(token, str(raised.exception))
+
+
+
+class StopDiagnosticTests(unittest.TestCase):
+    def test_zero_exit_with_running_state_remains_a_fence_refusal(self):
+        with tempfile.TemporaryDirectory() as directory:
+            stack, _, _ = runtime_fixture(Path(directory))
+            with patch.object(stack, 'dc', side_effect=['', json.dumps({'State': 'running', 'ExitCode': 0})]):
+                with self.assertRaisesRegex(RuntimeError, "exit 0, state 'running'"):
+                    stack.stop('litellm', 10)
 
 
 if __name__ == '__main__':
