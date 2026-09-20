@@ -2,6 +2,22 @@
 // polls /health/<service> through the Stack Gateway. No secrets, no writes.
 (() => {
   const base = `${location.protocol}//${location.host}`;
+  for (const code of document.querySelectorAll('[data-url]')) {
+    const cell = code.parentElement; cell.classList.add('endpoint');
+    const copy = document.createElement('button'); copy.type = 'button'; copy.className = 'copy';
+    copy.innerHTML = "<svg viewBox=\"0 0 24 24\" width=\"16\" height=\"16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.6\" aria-hidden=\"true\"><rect x=\"8\" y=\"8\" width=\"12\" height=\"12\" rx=\"2\"/><path d=\"M16 8V4H4v12h4\"/></svg>";
+    copy.setAttribute('aria-label', 'Copy ' + code.closest('[data-service]').querySelector('h2').textContent.trim() + ' endpoint');
+    copy.title = 'Copy endpoint';
+    const status = document.createElement('span'); status.className = 'copy-status'; status.setAttribute('role', 'status');
+    let timer;
+    copy.addEventListener('click', async () => {
+      try { await navigator.clipboard.writeText(code.textContent); status.textContent = 'Copied'; }
+      catch (_) { status.textContent = 'Select the address to copy'; }
+      clearTimeout(timer); timer = setTimeout(() => { status.textContent = ''; }, 3000);
+    });
+    copy.disabled = true;
+    cell.append(copy, status);
+  }
   const origins = async () => {
     const response = await fetch("/origins.json", { cache: "no-store", signal: AbortSignal.timeout(4000) });
     if (!response.ok) throw new Error(String(response.status));
@@ -25,6 +41,7 @@
     }
     for (const code of document.querySelectorAll("[data-url]")) {
       code.textContent = hostFor(code.dataset.url) + (code.dataset.path || "");
+      code.parentElement.querySelector(".copy").disabled = false;
     }
   };
 
