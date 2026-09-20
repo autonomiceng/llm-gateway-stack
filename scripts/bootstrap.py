@@ -78,11 +78,11 @@ class Refused(Exception):
         self.detail = detail
 
 
-Runner = Callable[[list[str]], subprocess.CompletedProcess[str]]
+Runner = Callable[..., subprocess.CompletedProcess[str]]
 
 
-def run(argv: list[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(argv, text=True, capture_output=True, check=False)
+def run(argv: list[str], *, timeout=None) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(argv, text=True, capture_output=True, check=False, timeout=timeout)
 
 
 def read_env(path: Path) -> tuple[list[str], dict[str, str]]:
@@ -490,9 +490,12 @@ def bootstrap(argv: list[str], runner: Runner = run) -> int:
             record_bootstrap(root, env_file, started, "unavailable")
             raise
         record_bootstrap(root, env_file, started, "healthy")
-        observed = runner([sys.executable, str(root / "scripts/status_observer.py"),
-                           "--checkout", str(root), "--env-file", str(env_file)])
-        if observed.returncode:
+        try:
+            observed = runner([sys.executable, str(root / "scripts/status_observer.py"),
+                               "--checkout", str(root), "--env-file", str(env_file)], timeout=120)
+            if observed.returncode:
+                raise subprocess.SubprocessError()
+        except (OSError, subprocess.SubprocessError):
             print("Status observation failed; run the observer after checking its publication permissions.", file=sys.stderr)
         print(json.dumps({
             "console": settings["LG_CONSOLE_URL"] + "/",

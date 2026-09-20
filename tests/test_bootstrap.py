@@ -19,7 +19,7 @@ import bootstrap  # noqa: E402
 def runner_with(volumes=(), network_exists=True):
     calls = []
 
-    def run(argv):
+    def run(argv, **options):
         calls.append(argv)
         if argv[:3] == ["docker", "volume", "ls"]:
             return subprocess.CompletedProcess(argv, 0, "\n".join(volumes), "")
@@ -248,6 +248,26 @@ sys.exit(19)
                 else:
                     self.assertEqual(bootstrap.bootstrap(['--env-file', str(self.env)], runner=runner_with()), 0)
                 self.assertIn('Status execution record unavailable', warning.getvalue())
+
+    def test_initial_observer_deadline_does_not_change_successful_bootstrap(self):
+        self.render()
+        backups = self.root / 'backups'
+        backups.mkdir()
+        self.env.write_text(self.env.read_text() + f'\nLG_BACKUP_DIR={backups}\n'
+                            f'LG_POSTGRES_DATA_DIR={self.root / "pg"}\nLG_ALLOW_SAME_FILESYSTEM_BACKUP=true\n'
+                            'LANGFUSE_INIT_USER_EMAIL=operator@gateway.test\n')
+        base = runner_with()
+        def runner(argv, **options):
+            if any(str(part).endswith('/status_observer.py') for part in argv):
+                self.assertEqual(options, {'timeout': 120})
+                raise subprocess.TimeoutExpired(argv, options['timeout'])
+            return base(argv)
+        with patch.dict(os.environ, {}, clear=True), redirect_stderr(io.StringIO()) as warning, \
+             patch.object(bootstrap.shutil, 'which', return_value='docker'), \
+             patch.object(bootstrap, 'write_versions'), patch.object(bootstrap, 'images', return_value={}), \
+             patch.object(bootstrap, 'task_record'), patch.object(bootstrap, 'probe_gateway'):
+            self.assertEqual(bootstrap.bootstrap(['--env-file', str(self.env)], runner=runner), 0)
+        self.assertIn('Status observation failed', warning.getvalue())
 
     def test_langfuse_login_is_required_before_startup(self):
         self.render()

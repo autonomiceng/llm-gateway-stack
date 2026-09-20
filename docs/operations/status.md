@@ -55,7 +55,7 @@ systemctl --user daemon-reload
 ```
 
 Existing documents expire normally after removal. If installation fails after
-writing units, inspect/remove that pair before retrying. No host unit is enabled
+writing units, first disable the retained timer and service with `systemctl --user disable --now` as above, then inspect or remove that pair before retrying. No host unit is enabled
 by repository development, validation or bootstrap.
 
 Status recording is best-effort and never replaces a bootstrap failure. Both
@@ -117,7 +117,7 @@ probing. Version probes never borrow configured image tags.
 Only `bootstrap` and `rustfs-init` are tasks. Bootstrap's protected record is tied
 to its exact env path; render-only and preflight refusals do not record an
 execution. Bootstrap records success after gateway readiness and failure during
-preparation/startup. An interrupted record remains unknown. RustFS initialization
+preparation/startup. Abrupt termination leaves the record unknown; a caught interrupt records unavailable. RustFS initialization
 uses its own container start/finish/exit record. An unexecuted or missing task
 record is unknown, with no invented execution time. Old execution dates remain
 unchanged when their records are inspected again; task success describes that
@@ -167,3 +167,5 @@ endpoint, a rootful daemon and the selected project's local bridge network. Remo
 rootless and other network modes retain unknown readiness instead of probing a
 possibly unrelated host address. Concurrent observations coalesce under the
 installation's file lock; the invocation that finds it held exits successfully.
+
+Bootstrap bounds the optional initial observation to 120 seconds; its failure does not change successful stack startup. Conflicting Docker connection settings yield unknown observations.
