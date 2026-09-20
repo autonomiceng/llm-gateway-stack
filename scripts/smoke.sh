@@ -124,7 +124,9 @@ done
 ok "ClickHouse and RustFS produce no application log files"
 
 # Console and its data.
-curl -fsS "http://$origin/" | grep -q 'LLM Gateway' || fail "console did not render"
+# Read the complete page before matching: bundled icons can exceed the pipe buffer.
+curl -fsS "http://$origin/" -o "$work/console.html" || fail "console request failed"
+grep -q 'LLM Gateway' "$work/console.html" || fail "console did not render"
 docker compose --env-file "$env_file" exec -T caddy wget -qO- http://127.0.0.1:8081/versions.json | grep -q '"langfuse"' || fail "versions.json missing"
 ok "console served"
 
