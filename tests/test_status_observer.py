@@ -125,6 +125,10 @@ class ObserverTests(unittest.TestCase):
                     self.assertEqual(rows[sibling]['state'], 'healthy', sibling)
 
     def test_inventory_failure_and_missing_configuration_do_not_prove_absence(self):
+        saved = self.fake.containers
+        self.fake.containers = {}
+        self.assertEqual(self.rows()['litellm']['state'], 'unknown')
+        self.fake.containers = saved
         self.fake.fail = {'inventory'}
         rows = self.rows()
         self.assertEqual(rows['litellm']['state'], 'unknown')

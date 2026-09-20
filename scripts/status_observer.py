@@ -163,7 +163,7 @@ def collect(root, env_file, runner=run, clock=now):
     else:
         inventory_at = clock()
         try:
-            resources = inventory(config['name'], runner)
+            resources = inventory(config['name'], runner) or None
         except Unavailable:
             resources = None
         names = (*SERVICES, 'rustfs-init')

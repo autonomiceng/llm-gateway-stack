@@ -36,7 +36,7 @@ def configured_image(service, image):
         return {}
     reference, _, digest = image.partition('@')
     tag = reference.rsplit('/', 1)[-1].partition(':')[2]
-    result = {'configuredVersion': version(service, tag) or 'custom'}
+    result = {'configuredVersion': version(service, tag) or 'custom'} if tag else {}
     if re.fullmatch(r'sha256:[0-9a-f]{64}', digest):
         result['configuredDigest'] = digest
     return result
@@ -83,8 +83,7 @@ def readiness(service, container, ip, runner):
         return 'healthy', versions[0]
     if service == 'clickhouse':
         text = execute(container, ['sh', '-ec',
-                       'exec clickhouse-client --host 127.0.0.1 --user "$CLICKHOUSE_USER" '
-                       '--password "$CLICKHOUSE_PASSWORD" --max_execution_time 2 '
+                       'exec clickhouse-client --host 127.0.0.1 --max_execution_time 2 '
                        '--query "SELECT version()"'], runner)
         observed_version = version(service, text.strip())
         if not observed_version:
