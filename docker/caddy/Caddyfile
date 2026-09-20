@@ -89,7 +89,16 @@
 }
 
 # Stack Console and the health paths it polls. Health answers carry no secrets.
+(console-health-on) {
+	import health rustfs:9001 /rustfs/console/
+}
+(console-health-off) {
+	respond 404
+}
 (console) {
+	handle /health/rustfs-console {
+		import console-health-{$LG_RUSTFS_CONSOLE:on}
+	}
 	handle /health/litellm {
 		import health litellm:4000 /health/readiness
 	}
@@ -119,10 +128,12 @@
 		respond 404
 	}
 	handle /origins.json {
+		header Cache-Control "no-store"
 		header Content-Type application/json
-		respond `{"scheme":"{$LG_SCHEME}","domain":"{$LG_PUBLIC_DOMAIN}","port":"{$LG_PUBLIC_PORT_SUFFIX}","console":"{$LG_CONSOLE_URL}","litellm":"{$LG_LITELLM_URL}","langfuse":"{$LG_LANGFUSE_URL}","s3":"{$LG_S3_URL}","grafana":"{$LG_GRAFANA_URL}","backplane":"{$LG_BACKPLANE_URL}"}`
+		respond `{"scheme":"{$LG_SCHEME}","domain":"{$LG_PUBLIC_DOMAIN}","port":"{$LG_PUBLIC_PORT_SUFFIX}","console":"{$LG_CONSOLE_URL}","litellm":"{$LG_LITELLM_URL}","langfuse":"{$LG_LANGFUSE_URL}","s3":"{$LG_S3_URL}","rustfs":"{$LG_RUSTFS_URL}","rustfsConsole":"{$LG_RUSTFS_CONSOLE:on}","grafana":"{$LG_GRAFANA_URL}","backplane":"{$LG_BACKPLANE_URL}"}`
 	}
 	handle {
+		header Cache-Control "no-cache"
 		root * /srv/console
 		file_server
 	}
@@ -149,6 +160,7 @@
 	route {
 		@denied not remote_ip {$LG_OPERATOR_ALLOW:127.0.0.0/8 ::1}
 		respond @denied 404
+		redir / /rustfs/console/ 302
 		import app rustfs:9001
 	}
 }
@@ -156,6 +168,10 @@
 # Host matchers discard ports. Compare the complete authority from Edge instead.
 # Each alias imports the same restrictions as its existing hostname route.
 (proxy-origins) {
+	@rustfs_origin expression `{http.request.hostport}.lowerAscii() == "{$LG_RUSTFS_AUTHORITY}"`
+	handle @rustfs_origin {
+		import rustfs-{$LG_RUSTFS_CONSOLE:on}
+	}
 	@console_origin expression `{http.request.hostport}.lowerAscii() == "{$LG_CONSOLE_AUTHORITY}"`
 	handle @console_origin {
 		import console
@@ -196,7 +212,7 @@
 	}
 	@rustfs host rustfs.{$LG_PUBLIC_DOMAIN}
 	handle @rustfs {
-		import rustfs-{$LG_RUSTFS_CONSOLE:off}
+		import rustfs-{$LG_RUSTFS_CONSOLE:on}
 	}
 	handle {
 		import console
@@ -210,7 +226,7 @@
 		}
 		import gateway
 	}
-	import https-rustfs-{$LG_RUSTFS_CONSOLE:off}
+	import https-rustfs-{$LG_RUSTFS_CONSOLE:on}
 }
 
 (https-rustfs-off) {

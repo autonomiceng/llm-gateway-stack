@@ -8,7 +8,7 @@ Caddy is the only published entry. By default, applications use these hostnames 
 | `litellm.<domain>` | LiteLLM API; admin UI restricted to operators |
 | `langfuse.<domain>` | Langfuse |
 | `s3.<domain>` | RustFS S3 API, for presigned media and export URLs |
-| `rustfs.<domain>` | RustFS console, disabled unless `LG_RUSTFS_CONSOLE=on`; operators only |
+| `rustfs.<domain>` | RustFS admin console, enabled by default; operators only |
 
 ## Local Mode (default)
 
@@ -135,7 +135,7 @@ its socket address in `LG_OPERATOR_ALLOW` and matching access restrictions at Ed
 
 `LG_OPERATOR_ALLOW` is a space-separated list of socket peer CIDRs, default
 `127.0.0.0/8 ::1`. It gates `/versions.json`, health JSON bodies, LiteLLM `/ui*` and
-`/openapi.json`, and the optional RustFS console. Other clients receive 404 for operator
+`/openapi.json`, and the RustFS console. Other clients receive 404 for operator
 paths; health probes preserve the upstream HTTP status with an empty body. The public
 Stack Console can still show service health; pinned versions require operator access.
 Forwarded client headers never grant operator access.
@@ -146,10 +146,10 @@ platform-edge, socket peers are the edge: allowing the edge's subnet would also 
 public callers. Keep public operator-path exclusions at the edge and use a direct local
 connection for administration. `LG_TRUSTED_PROXIES` does not grant operator access.
 
-The RustFS console is disabled by default. Set `LG_RUSTFS_CONSOLE=on` and recreate
-RustFS and Caddy to enable its operator-restricted hostname. The S3 API remains available
-for presigned media and exports. platform-edge must drop its public `rustfs` route;
-access an enabled console through the gateway's direct local listener.
+The RustFS console is enabled by default. Set `LG_RUSTFS_CONSOLE=off` and recreate
+RustFS and Caddy to disable it. The S3 API remains available for presigned media and
+exports. Edge can route its separate admin hostname or private Tailscale port; application
+login and the gateway's operator allow list still apply.
 
 Checkpoint metrics are available at `http://lg-gateway:8081/metrics` on the platform
 network, under job `llm-gateway-checkpoints`. Add the scraper's address to
@@ -164,3 +164,17 @@ The observability stack must configure the checkpoint scrape plus
 (job `llm-gateway-postgres`); verify these jobs before relying on their alerts.
 
 `LG_GRAFANA_URL` and `LG_BACKPLANE_URL` optionally set the companion links in the gateway overview. They do not install those stacks or add application routes. Platform Edge’s Tailscale setup fills them in automatically.
+
+## RustFS browser admin console
+
+The RustFS admin console is enabled by default at `http://rustfs.localhost` locally,
+or `https://rustfs.<your-domain>` with public HTTPS. Sign in using the installation's
+`RUSTFS_ACCESS_KEY` and `RUSTFS_SECRET_KEY` from its private `.env`. Keep those values private.
+The console retains the same `LG_OPERATOR_ALLOW` restriction as other operator pages.
+Set `LG_RUSTFS_CONSOLE=off` to disable it. This does not disable the S3 API.
+
+For access through Platform Edge and Tailscale, rerun Edge's `scripts/tailscale_serve.py`
+after updating both repositories. It connects the admin console at HTTPS port 8449 by
+default, independently of the S3 API on 8445. The gateway overview shows the current
+console setting and refreshes application addresses along with health every 30 seconds.
+`LG_RUSTFS_URL` sets a full browser origin when another gateway handles HTTPS.

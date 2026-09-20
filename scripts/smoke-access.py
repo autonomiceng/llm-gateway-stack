@@ -52,7 +52,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(json.dumps(dict(self.headers)).encode())
     def log_message(self, *args):
         pass
-for port in (3000, 9000):
+for port in (3000, 9000, 9001):
     threading.Thread(target=http.server.HTTPServer(('', port), Handler).serve_forever, daemon=True).start()
 http.server.HTTPServer(('', 4000), Handler).serve_forever()
 """
@@ -135,7 +135,7 @@ http.server.HTTPServer(('', 4000), Handler).serve_forever()
     def test_proxy_forwarding_and_http_only(self):
         hostname = "darkforge.tail694fe2.ts.net"
         origins = {f"LG_{app}_URL": f"https://{hostname}:{port}" for app, port in (
-            ("LITELLM", 8443), ("LANGFUSE", 8444), ("S3", 8445), ("CONSOLE", 8446))}
+            ("LITELLM", 8443), ("LANGFUSE", 8444), ("S3", 8445), ("CONSOLE", 8446), ("RUSTFS", 8449))}
         for trust, expected in (("192.0.2.0/24", "http"), (self.subnet, "https")):
             self.start("proxy", trust, origins=origins, operators="127.0.0.0/8 ::1")
             status, headers, body = self.request("/", "litellm.gateway.test",
@@ -163,6 +163,7 @@ http.server.HTTPServer(('', 4000), Handler).serve_forever()
             self.assertEqual(self.request("/health/readiness", f"{hostname}:8443")[2], b"")
             self.assertEqual(self.request("/versions.json", f"{hostname}:8446")[0], 404)
             self.assertEqual(self.request("/", "rustfs.gateway.test")[0], 404)
+            self.assertEqual(self.request("/", f"{hostname}:8449")[0], 404)
             ports = json.loads(docker("inspect", GATEWAY))[0]["HostConfig"]["PortBindings"]
             self.assertEqual(set(ports), {"80/tcp"})
             if trust != self.subnet:
@@ -171,10 +172,12 @@ http.server.HTTPServer(('', 4000), Handler).serve_forever()
 
     def test_proxy_ui_redirect_keeps_https_origin(self):
         origin = "https://darkforge.tail694fe2.ts.net:8443"
-        self.start("proxy", self.subnet, origins={"LG_LITELLM_URL": origin})
+        self.start("proxy", self.subnet, origins={"LG_LITELLM_URL": origin, "LG_RUSTFS_URL": "https://darkforge.tail694fe2.ts.net:8449"})
+        self.assertEqual(self.request("/rustfs/console/", "darkforge.tail694fe2.ts.net:8449")[1]["X-Smoke-Upstream"], "9001")
         status, headers, _ = self.request("/ui?view=models", "darkforge.tail694fe2.ts.net:8443")
         self.assertEqual(status, 308)
         self.assertEqual(headers["Location"], origin + "/ui/?view=models")
+        self.assertEqual(self.request("/", "darkforge.tail694fe2.ts.net:8449")[1]["Location"], "/rustfs/console/")
 
     def test_ip_root_and_configured_application_origins(self):
         self.start()
@@ -184,7 +187,7 @@ http.server.HTTPServer(('', 4000), Handler).serve_forever()
         self.assertEqual(status, 200)
         self.assertEqual(json.loads(body), {
             "scheme": "http", "domain": "localhost", "port": "", "console": "http://localhost",
-            "litellm": "http://litellm.localhost", "langfuse": "http://langfuse.localhost", "s3": "http://s3.localhost", "grafana": "http://grafana.localhost", "backplane": "http://backplane.localhost"})
+            "litellm": "http://litellm.localhost", "langfuse": "http://langfuse.localhost", "s3": "http://s3.localhost", "rustfs": "http://rustfs.localhost", "rustfsConsole": "on", "grafana": "http://grafana.localhost", "backplane": "http://backplane.localhost"})
 
     def test_access_logs_redact_credentials(self):
         self.start()
