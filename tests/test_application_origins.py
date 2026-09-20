@@ -69,7 +69,11 @@ const fs = require('node:fs');
   for (const explicit of [false, true]) {
     const origins = {scheme: 'http', domain: 'localhost', port: ':8080'};
     if (explicit) Object.assign(origins, JSON.parse(process.env.TEST_ORIGINS));
-    const links = ['litellm', 'langfuse', 's3', 'grafana', 'backplane'].map(link => ({dataset: {link, path: '/ui/'}}));
+    const links = ['litellm', 'langfuse', 's3', 'grafana', 'backplane'].map(link => ({
+      dataset: {link, path: '/ui/'}, disabled: true,
+      closest: () => ['grafana', 'backplane'].includes(link) ? {dataset: {ready: 'true'}} : null,
+      removeAttribute(name) { if (name === 'aria-disabled') this.disabled = false; }
+    }));
     const codes = ['litellm', 'langfuse', 's3', 'grafana', 'backplane'].map(url => ({dataset: {url}}));
     const context = {location: {protocol: 'https:', host: 'unrelated.test'},
       fetch: async path => ({ok: true, json: async () => path === '/origins.json' ? origins : {}}),
@@ -79,6 +83,7 @@ const fs = require('node:fs');
     await new Promise(setImmediate);
     for (const el of links) assert.equal(el.href,
       (explicit ? origins[el.dataset.link] : `http://${el.dataset.link}.localhost:8080`) + '/ui/');
+    for (const el of links) assert.equal(el.disabled, false, 'ready links must be accessible after origins load');
     for (const el of codes) assert.equal(el.textContent,
       explicit ? origins[el.dataset.url] : `http://${el.dataset.url}.localhost:8080`);
   }

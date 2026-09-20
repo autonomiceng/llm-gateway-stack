@@ -285,7 +285,7 @@ def access_settings(settings: dict[str, str]) -> dict[str, str]:
     files = files.replace("${LG_ACCESS_MODE:-local}", mode).split(os.pathsep)
     if mode != "local" and not any(Path(name).name == f"compose.{mode}.yaml" for name in files):
         raise Refused("invalid_access_settings", f"COMPOSE_FILE must include compose.{mode}.yaml")
-    access_keys = {"LG_ACCESS_MODE", "LG_SCHEME", "LG_PUBLIC_DOMAIN", "LG_PUBLIC_PORT_SUFFIX",
+    access_keys = {"LG_ACCESS_MODE", "LG_BIND_HOST", "LG_SCHEME", "LG_PUBLIC_DOMAIN", "LG_PUBLIC_PORT_SUFFIX",
                    "LG_TRUSTED_PROXIES", "LG_LISTEN_SCHEME", "LG_TLS_ISSUER"}
     access_keys.update("LG_" + app + "_URL" for app in ("CONSOLE", "LITELLM", "LANGFUSE", "S3", "GRAFANA", "BACKPLANE"))
     environment = {key: value for key, value in values.items() if key in access_keys}
