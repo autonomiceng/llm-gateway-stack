@@ -228,6 +228,27 @@ sys.exit(19)
                         self.assertEqual([call.args[3] for call in record.call_args_list], ["unknown", "healthy"])
                         self.assertEqual(record.call_args_list[0].args[2], record.call_args_list[1].args[2])
 
+    def test_status_record_failure_does_not_abort_bootstrap_or_mask_readiness(self):
+        self.render()
+        backups = self.root / 'backups'
+        backups.mkdir()
+        self.env.write_text(self.env.read_text() + f'\nLG_BACKUP_DIR={backups}\n'
+                            f'LG_POSTGRES_DATA_DIR={self.root / "pg"}\nLG_ALLOW_SAME_FILESYSTEM_BACKUP=true\n'
+                            'LANGFUSE_INIT_USER_EMAIL=operator@gateway.test\n')
+        for failure in (None, bootstrap.Refused('not_ready', 'original readiness refusal')):
+            with patch.dict(os.environ, {}, clear=True), redirect_stderr(io.StringIO()) as warning, \
+                 patch.object(bootstrap.shutil, 'which', return_value='docker'), \
+                 patch.object(bootstrap, 'write_versions'), patch.object(bootstrap, 'images', return_value={}), \
+                 patch.object(bootstrap, 'task_record', side_effect=bootstrap.Unavailable()), \
+                 patch.object(bootstrap, 'probe_gateway', side_effect=failure):
+                if failure:
+                    with self.assertRaises(bootstrap.Refused) as raised:
+                        bootstrap.bootstrap(['--env-file', str(self.env)], runner=runner_with())
+                    self.assertIs(raised.exception, failure)
+                else:
+                    self.assertEqual(bootstrap.bootstrap(['--env-file', str(self.env)], runner=runner_with()), 0)
+                self.assertIn('Status execution record unavailable', warning.getvalue())
+
     def test_langfuse_login_is_required_before_startup(self):
         self.render()
         original = self.env.read_text()

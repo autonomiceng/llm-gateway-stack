@@ -8,6 +8,11 @@ errors. This is an informational observation interface, with no write actions.
 Caddy reads `data/console/status.json` through its existing read-only mount and
 receives no Docker socket or administrative endpoint.
 
+This deliberately extends the previous operator-only version metadata posture:
+allowlisted version numbers and image digests in `/status.json` are public even in
+Public Mode. `/versions.json` remains restricted by `LG_OPERATOR_ALLOW`. Neither
+interface authorizes administration or application access.
+
 ## Install independently
 
 Python 3.11+, Docker CLI with Compose, Docker access for the ordinary installation
@@ -53,6 +58,11 @@ Existing documents expire normally after removal. If installation fails after
 writing units, inspect/remove that pair before retrying. No host unit is enabled
 by repository development, validation or bootstrap.
 
+Status recording is best-effort and never replaces a bootstrap failure. Both
+`data/` and its status directories must have safe ownership and permissions for
+execution recording. A group-writable `data/` can leave that record unknown while
+the stack still starts normally.
+
 The observer preserves existing directory permissions and refuses symlinks in
 publication paths, special files, hardlinked destinations, and destination
 directories owned by another user or writable by group/others. New public
@@ -89,8 +99,10 @@ Known endpoints returning 401/403/404 and missing probe executables produce
 `unknown`; failed, oversized, malformed or timed-out supported probes produce
 `unavailable`. Missing bridge addressing, paused containers and multiple replicas
 remain unknown. A stopped service is unavailable; a restarting container is
-starting. A successful project-scoped inventory with no container proves absent
-for a configured service. Inspection failures cannot prove absence. Omitted
+starting. An inventory that finds other containers in the selected project can
+prove an individual configured service absent. An entirely empty inventory is
+unknown because a shell-only project selection may differ from the env file.
+Inspection failures cannot prove absence. Omitted
 services stay unknown; this producer has no explicit disable setting and emits
 no inferred disabled state. Telemetry remains unknown because this checkout
 cannot inspect the external collector's configuration or collection success.

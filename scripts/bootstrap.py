@@ -28,7 +28,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
-from status_io import now, task_record
+from status_io import Unavailable, now, task_record
+
+
+def record_bootstrap(root, env_file, started, state):
+    try:
+        task_record(root, env_file, started, state)
+    except (OSError, Unavailable):
+        print("Status execution record unavailable; check data directory ownership and permissions.", file=sys.stderr)
 
 PROJECT = "llm-gateway-stack"
 NETWORK = "platform"
@@ -463,7 +470,7 @@ def bootstrap(argv: list[str], runner: Runner = run) -> int:
         check_backup_storage(backup_dir, data_dir, allow_same_filesystem)
 
         started = now()
-        task_record(root, env_file, started, "unknown")
+        record_bootstrap(root, env_file, started, "unknown")
         try:
             # 0755: the postgres user must traverse this directory to reach its cluster,
             # which the image creates underneath as 18/docker with mode 0700.
@@ -480,9 +487,9 @@ def bootstrap(argv: list[str], runner: Runner = run) -> int:
             probe_gateway(settings, ["docker", "compose", "--project-directory", str(root),
                                      "--env-file", str(env_file)], runner)
         except BaseException:
-            task_record(root, env_file, started, "unavailable")
+            record_bootstrap(root, env_file, started, "unavailable")
             raise
-        task_record(root, env_file, started, "healthy")
+        record_bootstrap(root, env_file, started, "healthy")
         observed = runner([sys.executable, str(root / "scripts/status_observer.py"),
                            "--checkout", str(root), "--env-file", str(env_file)])
         if observed.returncode:
