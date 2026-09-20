@@ -28,6 +28,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
+from status_io import now, task_record
+
 PROJECT = "llm-gateway-stack"
 NETWORK = "platform"
 VOLUMES = ("clickhouse-data", "clickhouse-logs", "rustfs-data", "valkey-data", "caddy-data", "caddy-config")
@@ -190,7 +192,7 @@ def images(command: list[str], runner: Runner = run) -> dict[str, str]:
 
 def write_versions(root: Path, compose: Path, refs: dict[str, str]) -> None:
     console = root / "data" / "console"
-    console.mkdir(parents=True, exist_ok=True)
+    console.mkdir(parents=True, exist_ok=True, mode=0o755)
     tags = {}
     for service, ref in refs.items():
         name, _, digest = ref.partition("@")
@@ -460,20 +462,31 @@ def bootstrap(argv: list[str], runner: Runner = run) -> int:
         backup_dir = (root / backup_setting).resolve()
         check_backup_storage(backup_dir, data_dir, allow_same_filesystem)
 
-        # 0755: the postgres user must traverse this directory to reach its cluster,
-        # which the image creates underneath as 18/docker with mode 0700.
-        data_dir.mkdir(parents=True, exist_ok=True, mode=0o755)
-        os.chmod(data_dir, 0o755)
-        write_versions(root, compose, images([
-            "env", "LG_LANGFUSE_URL=" + canonical_langfuse,
-            "docker", "compose", "--project-directory", str(root), "--env-file", str(env_file),
-        ], runner))
+        started = now()
+        task_record(root, env_file, started, "unknown")
+        try:
+            # 0755: the postgres user must traverse this directory to reach its cluster,
+            # which the image creates underneath as 18/docker with mode 0700.
+            data_dir.mkdir(parents=True, exist_ok=True, mode=0o755)
+            os.chmod(data_dir, 0o755)
+            write_versions(root, compose, images([
+                "env", "LG_LANGFUSE_URL=" + canonical_langfuse,
+                "docker", "compose", "--project-directory", str(root), "--env-file", str(env_file),
+            ], runner))
 
-        ensure_network(runner, settings.get("LG_PLATFORM_NETWORK", NETWORK))
-        ensure_volumes(runner, prefix)
-        compose_up(root, env_file, runner, canonical_langfuse)
-        probe_gateway(settings, ["docker", "compose", "--project-directory", str(root),
-                                 "--env-file", str(env_file)], runner)
+            ensure_network(runner, settings.get("LG_PLATFORM_NETWORK", NETWORK))
+            ensure_volumes(runner, prefix)
+            compose_up(root, env_file, runner, canonical_langfuse)
+            probe_gateway(settings, ["docker", "compose", "--project-directory", str(root),
+                                     "--env-file", str(env_file)], runner)
+        except BaseException:
+            task_record(root, env_file, started, "unavailable")
+            raise
+        task_record(root, env_file, started, "healthy")
+        observed = runner([sys.executable, str(root / "scripts/status_observer.py"),
+                           "--checkout", str(root), "--env-file", str(env_file)])
+        if observed.returncode:
+            print("Status observation failed; run the observer after checking its publication permissions.", file=sys.stderr)
         print(json.dumps({
             "console": settings["LG_CONSOLE_URL"] + "/",
             "litellm": settings["LG_LITELLM_URL"] + "/",
