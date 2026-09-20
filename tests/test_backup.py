@@ -400,8 +400,6 @@ class BackupTests(unittest.TestCase):
                 self.assertNotIn(token, str(raised.exception))
 
 
-if __name__ == '__main__':
-    unittest.main()
 
 class StopDiagnosticTests(unittest.TestCase):
     def test_zero_exit_with_running_state_remains_a_fence_refusal(self):
@@ -410,3 +408,7 @@ class StopDiagnosticTests(unittest.TestCase):
             with patch.object(stack, 'dc', side_effect=['', json.dumps({'State': 'running', 'ExitCode': 0})]):
                 with self.assertRaisesRegex(RuntimeError, "exit 0, state 'running'"):
                     stack.stop('litellm', 10)
+
+
+if __name__ == '__main__':
+    unittest.main()
