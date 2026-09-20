@@ -82,7 +82,7 @@ def read_pair(fd):
 
 def existing_pair(unit_dir):
     try:
-        with directory(unit_dir, create=False) as fd:
+        with directory(unit_dir, create=False, ancestors=True) as fd:
             return read_pair(fd)
     except FileNotFoundError:
         return {}
@@ -126,7 +126,7 @@ def activate(contents, unit_dir, runner):
     # Check the manager before creating even an absent destination. A system unit
     # with this name must never be shadowed by a new per-user installation.
     check_units(contents, unit_dir, runner)
-    with directory(unit_dir, 0o700) as fd:
+    with directory(unit_dir, 0o700, ancestors=True) as fd:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         actual = read_pair(fd)
         expected = {name: text.encode('utf-8') for name, text in contents.items()}

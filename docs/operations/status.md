@@ -74,6 +74,14 @@ Unit names alone never establish ownership. New units are private, and both the
 files and containing directory are fsynced. Existing directory permissions and
 systemd argument quoting are preserved.
 
+Unit-directory ancestors must be owned by root or the installation user and must
+not be group- or other-writable, except trusted sticky directories with existing
+trusted children. Every new component requires a parent owned by the installation
+user with no group/other write permission; the final unit directory has the same
+strict rule. Symlink ancestors are refused. These checks apply only to timer units,
+not general status publication. Inspect unsafe ancestors with the host administrator;
+the installer never changes existing directory permissions.
+
 Repeat the same `--install` command after an interrupted activation. An exact
 pair is not rewritten. After reload, the installer verifies both loaded fragments
 and absence of drop-ins, then enables the timer and verifies enabled and active
