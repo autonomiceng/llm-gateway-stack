@@ -1,6 +1,8 @@
 """Backup contracts; fake runners never call Docker."""
 
 import json
+import contextlib
+import io
 import copy
 import fcntl
 import os
@@ -85,7 +87,7 @@ class BackupTests(unittest.TestCase):
                     self.assertEqual(list(Path(directory).iterdir()), [])
                     self.assertFalse(any('stop' in call or 'exec' in call for call in calls))
 
-    def test_capture_resolves_effective_images_and_refuses_local_only_before_fencing(self):
+    def test_capture_resolves_effective_images_and_refuses_unverifiable_content_before_fencing(self):
         with tempfile.TemporaryDirectory() as directory:
             stack, containers, calls = runtime_fixture(Path(directory))
             for service in ('postgres', 'caddy'):
@@ -93,7 +95,11 @@ class BackupTests(unittest.TestCase):
                 container = next(c for c in containers
                                  if c['Config']['Labels']['com.docker.compose.service'] == service)
                 container['Config']['Image'] = service + ':trial'
-            stack.attest_runtime()
+            out, warning = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(warning):
+                stack.attest_runtime()
+            self.assertEqual(out.getvalue(), '')
+            self.assertIn('publication was not checked', warning.getvalue())
             self.assertEqual(stack.images['postgres'], 'postgres@sha256:' + 'a' * 64)
             self.assertTrue(all(backup.immutable(ref) for ref in stack.images.values()))
             runner = stack.runner
@@ -104,7 +110,7 @@ class BackupTests(unittest.TestCase):
                 return result
             stack.runner = local_only
             calls.clear()
-            with self.assertRaisesRegex(RuntimeError, 'no registry digest'):
+            with self.assertRaisesRegex(RuntimeError, 'no verifiable immutable reference'):
                 backup.backup(stack, False, 300)
             self.assertEqual(list(Path(directory).iterdir()), [])
             self.assertFalse(any('stop' in call or 'exec' in call for call in calls))
