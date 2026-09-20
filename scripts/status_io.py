@@ -97,7 +97,7 @@ def read_json(text, limit=65536):
 
 
 @contextmanager
-def directory(path, mode=0o755):
+def directory(path, mode=0o755, *, create=True):
     """Walk with directory descriptors so swapped symlinks cannot redirect writes."""
     if mode & 0o022:
         raise Unavailable()
@@ -110,6 +110,11 @@ def directory(path, mode=0o755):
             try:
                 child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
             except FileNotFoundError:
+                if not create:
+                    info = os.fstat(fd)
+                    if info.st_uid != os.getuid() or info.st_mode & 0o022:
+                        raise Unavailable()
+                    raise
                 os.mkdir(part, mode=mode, dir_fd=fd)
                 child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
                 leaf_created = index == len(parts) - 1

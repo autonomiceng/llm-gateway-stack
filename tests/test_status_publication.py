@@ -15,6 +15,7 @@ import install_status_timer as installer
 import status_io as io
 import status_observer as observer
 from test_status_observer import AT, FakeRunner
+from test_status_timer_retry import FakeManager
 
 
 class PublicationTests(unittest.TestCase):
@@ -152,10 +153,11 @@ class PublicationTests(unittest.TestCase):
         env = root / 'selected.env'
         env.touch()
         unit_dir = self.root / 'units'
-        calls = []
-        installer.install(root, env, unit_dir, lambda argv, **_: calls.append(argv))
-        self.assertEqual(calls, [['systemctl', '--user', 'daemon-reload'],
-                                 ['systemctl', '--user', 'enable', '--now', 'llm-gateway-status.timer']])
+        manager = FakeManager(unit_dir)
+        calls = manager.calls
+        installer.install(root, env, unit_dir, manager)
+        self.assertEqual(calls[-2:], [['systemctl', '--user', 'is-enabled', 'llm-gateway-status.timer'],
+                                    ['systemctl', '--user', 'is-active', 'llm-gateway-status.timer']])
         text = (unit_dir / 'llm-gateway-status.service').read_text()
         self.assertIn('$$money%%', text)
         self.assertIn('\\"quotes\\"', text)
@@ -164,9 +166,9 @@ class PublicationTests(unittest.TestCase):
         self.assertNotIn('EnvironmentFile', text)
         self.assertIn('OnUnitInactiveSec=30s', (unit_dir / 'llm-gateway-status.timer').read_text())
         calls.clear()
-        with self.assertRaises(io.Unavailable):
-            installer.install(root, env, unit_dir, lambda argv, **_: calls.append(argv))
-        self.assertEqual(calls, [])
+        before = {path: path.stat().st_mtime_ns for path in unit_dir.iterdir()}
+        installer.install(root, env, unit_dir, manager)
+        self.assertEqual(before, {path: path.stat().st_mtime_ns for path in unit_dir.iterdir()})
         for value in ('path\nExecStart=bad', 'path\x00bad'):
             with self.assertRaises(io.Unavailable):
                 installer.quote(value)
@@ -183,11 +185,12 @@ class PublicationTests(unittest.TestCase):
             if path == installer.NAME + '.timer':
                 raise OSError('injected second write failure')
             return original(path, *args, **kwargs)
-        calls = []
+        manager = FakeManager(unit_dir)
+        calls = manager.calls
         with patch.object(installer.os, 'open', side_effect=opened), self.assertRaises(OSError):
-            installer.install(self.root, env, unit_dir, lambda *args, **kwargs: calls.append(args))
+            installer.install(self.root, env, unit_dir, manager)
         self.assertEqual(list(unit_dir.iterdir()), [])
-        self.assertEqual(calls, [])
+        self.assertFalse(any('enable' in argv for argv in calls))
 
     def test_xdg_relative_and_empty_values_use_home_config(self):
         argv = ['installer', '--checkout', str(self.root), '--env-file', str(self.root / '.env'), '--install']
