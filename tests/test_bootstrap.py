@@ -278,6 +278,19 @@ class BootstrapTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(result.stdout, "gateway-started")
 
+    def test_gateway_probes_normalize_bracketed_ipv6_bind_addresses(self):
+        for bind, address in (("[::1]", "::1"), ("[2001:db8::10]", "2001:db8::10"),
+                              ("::1", "::1"), ("[::]", "::1"), ("::", "::1"),
+                              ("0.0.0.0", "127.0.0.1"), ("127.0.0.1", "127.0.0.1")):
+            with self.subTest(bind=bind), patch.object(bootstrap, "wait_ready") as wait, \
+                 patch.object(bootstrap.ssl, "create_default_context"):
+                bootstrap.probe_gateway({"LG_BIND_HOST": bind}, ["docker", "compose"], runner_with())
+                urls = [bootstrap.urllib.parse.urlsplit(call.args[0]) for call in wait.call_args_list]
+                self.assertEqual([url.hostname for url in urls], [address] * 4)
+                self.assertEqual([url.port for url in urls], [80, 80, 443, 443])
+                self.assertEqual([url.scheme for url in urls], ["http", "http", "https", "https"])
+                self.assertTrue(all(call.kwargs["host"] == "localhost" for call in wait.call_args_list))
+
     def test_local_readiness_checks_both_protocols_with_own_ca(self):
         runner = runner_with()
         with patch.object(bootstrap, "wait_ready") as wait, \
