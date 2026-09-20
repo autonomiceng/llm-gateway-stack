@@ -337,6 +337,7 @@ def probe_gateway(settings, command, runner):
     settings = access_settings(settings)
     domain = settings.get("LG_PUBLIC_DOMAIN", "localhost")
     bind = settings.get("LG_BIND_HOST", "127.0.0.1")
+    bind = bind[1:-1] if bind.startswith("[") and bind.endswith("]") else bind
     address = "127.0.0.1" if bind in ("0.0.0.0", "127.0.0.1", "") else bind
     if address == "::":
         address = "::1"
