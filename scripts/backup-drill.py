@@ -82,9 +82,11 @@ except RuntimeError as error:
 
 env_file = work / '.env'
 command = ['docker', 'compose', '-f', str(root / 'compose.yaml'), '--project-directory', str(root), '--env-file', str(env_file)]
-image = next(line.strip().split(':-', 1)[1].removesuffix('}')
+image = next((line.strip().split(':-', 1)[1].removesuffix('}')
              for line in (root / 'compose.yaml').read_text().splitlines()
-             if line.strip().startswith('image: ${LG_POSTGRES_IMAGE:-'))
+             if line.strip().startswith('image: ${LG_POSTGRES_IMAGE:-')), None)
+if image is None:
+    sys.exit('FAIL: compose.yaml has no PostgreSQL image default')
 
 
 def dc(*args):

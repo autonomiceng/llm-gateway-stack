@@ -125,7 +125,9 @@ its pins or storage settings. Stop and remove leftover one-off project container
 Every configured image, including helpers, must be available locally before backup.
 Tags are resolved through Docker's local `RepoDigests` and checked against the local image
 content ID. When several registry digests are available, capture prefers the configured
-repository. Local images without a registry digest are refused before capture or fencing;
+repository. If that repository has no digest, capture records an available registry
+identity for the same image; inspect the manifest and retain access to that registry.
+Local images without a registry digest are refused before capture or fencing;
 publish and pull the image, then recreate the affected service before backing it up.
 Checkpoint helpers never pull images during capture. Keep recorded registry digests
 available for recovery and pull them before restore. Restore checks every required image

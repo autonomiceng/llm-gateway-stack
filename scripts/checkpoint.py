@@ -686,9 +686,12 @@ def restore(stack, source, allow_unfenced=False):
     doc = verify_checkpoint(source, stack.images)
     if doc.get('fenced') is not True and not allow_unfenced:
         raise RuntimeError('restore refuses an unfenced Checkpoint without --allow-unfenced')
-    for ref in stack.images.values():
-        checked(['docker', 'image', 'inspect', ref, '--format', '{{.Id}}'], stack.runner,
-                diagnostics=stack.backups / '.diagnostics', label='restore-image')
+    for service, ref in stack.images.items():
+        try:
+            checked(['docker', 'image', 'inspect', ref, '--format', '{{.Id}}'], stack.runner,
+                    diagnostics=stack.backups / '.diagnostics', label='restore-image')
+        except RuntimeError as error:
+            raise RuntimeError(f'{service}: pull the recorded Checkpoint image before restore; {error}') from error
     saved_names = {m['key'] for m in map(bootstrap.ENV_LINE.match, stack.env_file.read_text().splitlines()) if m}
     missing_names = sorted(set(doc.get('env_keys', [])) - saved_names)
     if missing_names:

@@ -33,7 +33,7 @@ Bootstrap writes `.env` with generated secrets, creates the shared `platform` ne
 
 | URL | What |
 | --- | --- |
-| `http://localhost/` | Console: links, live health; pinned versions for operators |
+| `http://localhost/` | Console: links, live health; configured versions for operators |
 | `http://litellm.localhost/` | The gateway API; `/ui/` restricted to operators |
 | `http://langfuse.localhost/` | Traces, evals, prompts |
 | `http://rustfs.localhost/` | RustFS admin console; operator access and RustFS login required |
@@ -63,7 +63,9 @@ Local Mode serves HTTP and self-signed HTTPS without redirecting HTTP or telling
 | RustFS | S3-compatible store for events, media, exports | volume |
 | Valkey | Ingestion queue and cache, `noeviction`, AOF | volume |
 
-Every image is pinned as `tag@sha256` in `compose.yaml`. Renovate opens the bump; a human merges it after the smoke test passes.
+Default images are pinned as `tag@sha256` in `compose.yaml`.
+Override any service with its complete `LG_*_IMAGE` reference in `.env`; see
+[image overrides](docs/operations/maintenance.md#image-overrides). Renovate opens the bump; a human merges it after the smoke test passes.
 
 ## Built on
 
