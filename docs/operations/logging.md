@@ -84,4 +84,4 @@ References: [Docker journald](https://docs.docker.com/engine/logging/drivers/jou
 [Caddy log filters](https://caddyserver.com/docs/caddyfile/directives/log),
 [RustFS entrypoint](https://github.com/rustfs/rustfs/blob/1.0.0/entrypoint.sh),
 [ClickHouse logger configuration](https://github.com/ClickHouse/ClickHouse/blob/master/programs/server/config.xml),
-[Alloy journal source](https://grafana.com/docs/alloy/latest/reference/components/loki/loki.source.journal/).
+[Alloy Docker source](https://grafana.com/docs/alloy/latest/reference/components/loki/loki.source.docker/).

@@ -76,7 +76,9 @@ When the backplane or the observability stack runs on the same host, the gateway
 Two stacks cannot both publish 80 and 443. On a shared host Platform Edge owns those ports,
 terminates TLS, and routes explicit application hostnames to `lg-gateway:80`.
 Set `LG_ACCESS_MODE=proxy`, the external `LG_PUBLIC_DOMAIN`, and a spare
-`LG_HTTP_PORT` on loopback. Behind another gateway, the stack publishes no HTTPS port and performs no TLS
+`LG_HTTP_PORT` on loopback. An explicit interface address in `LG_BIND_HOST` is also
+supported; wildcard binds (`0.0.0.0` and `::`) are refused in Proxy Mode.
+Behind another gateway, the stack publishes no HTTPS port and performs no TLS
 issuance. The external scheme defaults to HTTPS; `LG_SCHEME=http` remains useful
 when the edge's configured application URL is HTTP.
 

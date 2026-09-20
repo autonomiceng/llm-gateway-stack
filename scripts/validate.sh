@@ -52,6 +52,7 @@ for mode in ("local", "public", "proxy"):
     gateway = services["caddy"]
     ports = {port["target"] for port in gateway["ports"]}
     assert ports == ({80} if mode == "proxy" else {80, 443}), (mode, ports)
+    assert all(port["host_ip"] == gateway["environment"]["LG_BIND_HOST"] for port in gateway["ports"])
     scheme = "http" if mode == "local" else "https"
     assert gateway["environment"]["LG_SCHEME"] == scheme
     assert services["litellm"]["environment"]["PROXY_BASE_URL"] == f"{scheme}://litellm.localhost"
