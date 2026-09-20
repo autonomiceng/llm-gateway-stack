@@ -169,3 +169,5 @@ possibly unrelated host address. Concurrent observations coalesce under the
 installation's file lock; the invocation that finds it held exits successfully.
 
 Bootstrap bounds the optional initial observation to 120 seconds; its failure does not change successful stack startup. Conflicting Docker connection settings yield unknown observations.
+
+Docker endpoint agreement is conservative and byte-exact. Use the same Unix socket spelling for `DOCKER_HOST` and the selected context (for example, both `/var/run/docker.sock`); aliases such as `/run/docker.sock` can otherwise produce unknown observations.
