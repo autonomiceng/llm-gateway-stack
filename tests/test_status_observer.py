@@ -286,3 +286,15 @@ if __name__ == '__main__':
                 self.assertEqual(rows['litellm']['state'], 'unknown')
                 self.assertEqual(rows['postgres']['state'], 'unknown')
                 probe.assert_not_called()
+
+    def test_concurrent_publication_leaves_existing_bytes_unchanged(self):
+        import fcntl
+        console = self.root / 'data/console'
+        console.mkdir(parents=True)
+        public = console / 'status.json'
+        public.write_text('old observation')
+        with (console / '.status.lock').open('w') as handle:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            with patch.object(observer, 'collect', side_effect=AssertionError('duplicate collection')):
+                self.assertIsNone(observer.observe(self.root, self.env))
+        self.assertEqual(public.read_text(), 'old observation')

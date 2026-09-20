@@ -216,7 +216,10 @@ def observe(root, env_file, runner=run, clock=now):
         regular(fd, '.status.lock')
         lock = os.open('.status.lock', os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600, dir_fd=fd)
         try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return None  # Another invocation already owns publication.
             document = collect(root, env_file, runner, clock)
             if len(document['components']) > 32:
                 raise Unavailable()
