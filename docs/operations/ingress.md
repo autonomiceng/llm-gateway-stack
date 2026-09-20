@@ -164,3 +164,5 @@ The observability stack must configure the checkpoint scrape plus
 (job `llm-gateway-postgres`); verify these jobs before relying on their alerts.
 
 `LG_GRAFANA_URL` and `LG_BACKPLANE_URL` optionally set the companion links in the gateway overview. They do not install those stacks or add application routes. Platform Edge’s Tailscale setup fills them in automatically.
+
+Bootstrap canonicalizes application URL hostnames and default ports. It appends a canonical `LG_LANGFUSE_URL` override when needed, so RustFS CORS uses the exact origin sent by browsers, while preserving existing env lines. If invoking Compose directly with shell URL overrides, use lowercase hostnames and omit `:80` for HTTP or `:443` for HTTPS. Non-default ports remain explicit.
