@@ -139,15 +139,15 @@ services, allowing an in-flight daemon stop to settle. The Compose health deadli
 that settle interval plus 300 seconds; status and retry-start commands each have a
 120-second limit, shortened to the remaining deadline. It then verifies gateway and
 Langfuse health before retention or success publication. Reading the local certificate authority’s public root
-allows another 120 seconds; each of the two HTTP probes has a 120-second retry window
+allows another 120 seconds; Local Mode runs two HTTP and two HTTPS probes, each with a 120-second retry window
 and five-second socket timeouts, so an in-flight request can overrun its retry window.
 If capture and resumption both fail, the error reports both.
 
 For a supervisor, budget the initial start, settle interval, health polling, optional
-CA read and both gateway probes: 910 seconds at the default shutdown grace before
-HTTP request overruns and process cleanup. Allow **at least 1080 seconds** before a
-forced kill, increasing this by every second added to `--stop-timeout`. Under systemd,
-set `TimeoutStopSec=1080` and `KillMode=mixed`: the initial stop signal must reach only
+CA read and all four Local Mode gateway probes: 1150 seconds at the default shutdown grace before
+HTTP request overruns and process cleanup. Allow **at least 1320 seconds** before a
+forced kill, increasing both budgets by every second added to `--stop-timeout`. Under systemd,
+set `TimeoutStopSec=1320` and `KillMode=mixed`: the initial stop signal must reach only
 the backup parent so it can resume services. A separate session does not escape the
 unit's cgroup. These are operational allowances, not a guaranteed RTO under stalled
 host I/O. Capture commands have no new 120-second limit because legitimate base backups

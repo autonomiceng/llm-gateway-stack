@@ -269,6 +269,11 @@ def access_settings(settings: dict[str, str]) -> dict[str, str]:
         raise Refused("invalid_access_settings", "use a DNS application domain; 127.0.0.1 is a Local Mode root alias")
     if not re.fullmatch(r"(?::[0-9]+)?", values.get("LG_PUBLIC_PORT_SUFFIX", "")):
         raise Refused("invalid_access_settings", "LG_PUBLIC_PORT_SUFFIX must be empty or :port")
+    bind = values.get("LG_BIND_HOST") or "127.0.0.1"
+    # Include bracketed and expanded IPv6 wildcard spellings accepted by Compose.
+    if mode == "proxy" and (bind == "0.0.0.0" or re.fullmatch(r"\[?[0:]*:[0:]*\]?", bind)):
+        raise Refused("invalid_access_settings", "proxy requires a loopback or specific-interface LG_BIND_HOST; "
+                      "see docs/operations/ingress.md")
     if (values["LG_SCHEME"] not in ("http", "https")
             or (mode == "public" and values["LG_SCHEME"] != "https")
             or (mode == "proxy" and not values.get("LG_TRUSTED_PROXIES", "").strip())

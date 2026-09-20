@@ -83,6 +83,7 @@ services:
       - "${LG_BIND_HOST:-127.0.0.1}:${LG_HTTPS_PORT:-443}:443"
     environment:
       LG_ACCESS_MODE: ${LG_ACCESS_MODE:-local}
+      LG_BIND_HOST: ${LG_BIND_HOST:-127.0.0.1}
       LG_HTTPS_PUBLISHED: "true"
       LG_TRUSTED_PROXIES: ${LG_TRUSTED_PROXIES:-}
       LG_CHECKPOINT_ALLOW: ${LG_CHECKPOINT_ALLOW:-127.0.0.0/8 ::1}
