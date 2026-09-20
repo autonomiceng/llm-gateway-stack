@@ -348,7 +348,7 @@ class BackupTests(unittest.TestCase):
                         service = args[-1]
                         output = json.dumps({'Service': service, 'State': 'exited', 'ExitCode': 137 if service == failed else 0})
                     elif args[:1] == ['logs']:
-                        output = backup.Stack.WORKER_DONE + '\nPrisma connection has been closed.\nShutdown complete'
+                        output = backup.Stack.WORKER_DONE + '\nPrisma connection has been closed.\nShutdown complete\nApplication shutdown complete.'
                     elif argv[-1] == 'SHOW archive_mode':
                         output = 'on'
                     elif argv[-2:-1] == ['-c'] or 'EVAL' in ' '.join(argv):
@@ -373,6 +373,24 @@ class BackupTests(unittest.TestCase):
                 self.assertIn('--since', dc.call_args.args)
             with patch.object(stack, 'dc', side_effect=['', 'Prisma connection has been closed.\nShutdown complete']):
                 stack.stop('langfuse-web', 120)
+
+    def test_litellm_requires_zero_exit_and_completed_lifespan_since_stop(self):
+        with tempfile.TemporaryDirectory() as directory:
+            stack, _, _ = runtime_fixture(Path(directory))
+            for logs in ('', 'Waiting for application shutdown.'):
+                with self.subTest(logs=logs), patch.object(stack, 'dc', side_effect=[
+                        '', json.dumps({'State': 'exited', 'ExitCode': 0}), logs]) as dc:
+                    with self.assertRaisesRegex(RuntimeError, 'litellm did not finish'):
+                        stack.stop('litellm', 120)
+                    self.assertIn('--since', dc.call_args.args)
+            with patch.object(stack, 'dc', side_effect=[
+                    '', json.dumps({'State': 'exited', 'ExitCode': 0}),
+                    'INFO:     Application shutdown complete.']):
+                stack.stop('litellm', 120)
+            with patch.object(stack, 'dc', side_effect=[
+                    '', json.dumps({'State': 'exited', 'ExitCode': 143})]):
+                with self.assertRaisesRegex(RuntimeError, 'exit 143'):
+                    stack.stop('litellm', 120)
 
     def test_failed_command_retains_private_diagnostics_without_argv_in_name(self):
         with tempfile.TemporaryDirectory() as directory:

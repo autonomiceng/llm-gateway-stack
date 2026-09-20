@@ -26,6 +26,9 @@ docker compose --env-file "$work/.env" config --format json > "$work/config.json
 python3 - "$work/config.json" <<'PY'
 import json, sys
 config = json.load(open(sys.argv[1]))
+assert config["services"]["caddy"].get("init") is True, "Caddy requires reaping for bounded status probes"
+litellm = config["services"]["litellm"]
+assert litellm.get("init") is True and litellm.get("stop_signal") == "SIGINT", "LiteLLM requires reaping and graceful interpreter exit"
 published = {name for name, svc in config["services"].items() if svc.get("ports")}
 if published != {"caddy"}:
     sys.exit(f"only caddy may publish ports, found {sorted(published)}")

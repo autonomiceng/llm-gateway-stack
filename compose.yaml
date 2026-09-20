@@ -72,6 +72,8 @@ services:
   caddy:
     image: ${LG_CADDY_IMAGE:-caddy:2.11.4@sha256:13ba145cba2f3e28fa801994876e4c086d1b95d5aa2a520a734765ffb6b12017}
     restart: unless-stopped
+    # Reap orphaned watchdogs from bounded status probes.
+    init: true
     logging: *logging
     pids_limit: 512
     mem_limit: 128m
@@ -127,6 +129,11 @@ services:
   litellm:
     image: ${LG_LITELLM_IMAGE:-ghcr.io/berriai/litellm:v1.101.0@sha256:d295634e09c648dcdb72c4cc2dd226f5fb87823a73e88cbbed6f205e4deb044b}
     restart: unless-stopped
+    # Reap orphaned watchdogs from bounded status probes.
+    init: true
+    # Uvicorn re-raises SIGTERM after shutdown, skipping Python exit flushes under init.
+    # SIGINT follows the same graceful shutdown and returns through its handled interrupt.
+    stop_signal: SIGINT
     logging: *logging
     pids_limit: 1024
     mem_limit: 2g
