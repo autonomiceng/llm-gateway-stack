@@ -13,7 +13,8 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'scripts'))
 import install_status_timer as installer
 import status_io as io
-AT = "2026-09-20T12:00:00Z"
+import status_observer as observer
+from test_status_observer import AT, FakeRunner
 
 
 class PublicationTests(unittest.TestCase):
@@ -119,6 +120,11 @@ class PublicationTests(unittest.TestCase):
         record.write_bytes(b'\xff')
         with self.assertRaises(io.Unavailable):
             io.read_task(self.root, env)
+        record.write_text('{bad')
+        doc = observer.collect(self.root, env, FakeRunner(), lambda: AT)
+        rows = {row['id']: row for row in doc['components']}
+        self.assertEqual(rows['bootstrap']['state'], 'unknown')
+        self.assertEqual(rows['litellm']['state'], 'healthy')
 
     def test_installer_selects_explicit_paths_and_is_reversible_without_overwriting(self):
         root = self.root / 'checkout café with $money% and "quotes"'
@@ -173,6 +179,10 @@ class PublicationTests(unittest.TestCase):
                 self.assertEqual(installer.main(), 0)
             expected = Path(value) if Path(value).is_absolute() else Path.home() / '.config'
             self.assertEqual(install.call_args.args[2], expected / 'systemd/user')
+    def test_config_environment_does_not_inherit_shell_selection_or_credentials(self):
+        with patch.dict(os.environ, {'LG_LITELLM_IMAGE': 'secret', 'COMPOSE_FILE': 'other',
+                                     'OPENAI_API_KEY': 'private', 'DOCKER_HOST': 'unix:///socket'}, clear=True):
+            self.assertEqual(observer.environment(), {'DOCKER_HOST': 'unix:///socket'})
 
 
 if __name__ == '__main__':
