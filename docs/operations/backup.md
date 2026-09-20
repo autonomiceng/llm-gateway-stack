@@ -184,10 +184,12 @@ Default drain timeout is 300 seconds;
 worker to log `Shutdown complete, exiting process` (its ClickHouse writer flush is done;
 the node process then hangs and is killed at the timeout, which is an upstream quirk) and
 Caddy, LiteLLM and Valkey to exit 0 so ingress drains and buffered spend, trace and queue writes finish.
+LiteLLM must also log `Application shutdown complete.` from this stop attempt; a second
+SIGINT can skip its lifespan flush while still exiting 0.
 Langfuse web waits 110 seconds before closing backend connections; capture requires
 both its `Prisma connection has been closed.` and `Shutdown complete` messages from
-this stop attempt. Its supervisor may then kill the remaining process. Missing web
-or worker completion evidence, or an unclean Caddy, LiteLLM or Valkey stop, aborts
+this stop attempt. Its supervisor may then kill the remaining process. Missing application
+completion evidence, or an unclean Caddy, LiteLLM or Valkey stop, aborts
 capture without a completed manifest. Rerun the backup; if unclean stops repeat, raise the shutdown grace with
 `--stop-timeout SECONDS` (default and fenced minimum 120). A forced kill of the backup process or host failure
 cannot execute cleanup: inspect the incomplete directory and start the fenced services manually.

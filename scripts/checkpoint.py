@@ -327,6 +327,11 @@ class Stack:
             code = container.get('ExitCode')
             if container.get('State') != 'exited' or code != 0:
                 raise RuntimeError(f'service {service} did not stop cleanly (exit {code}, state {str(container.get("State"))[:32]!r})')
+        if service == 'litellm':
+            # A second SIGINT can skip lifespan cleanup while still returning zero.
+            logs = self.dc('logs', '--since', started, '--no-log-prefix', service, label='fence-litellm-log')
+            if 'Application shutdown complete.' not in logs:
+                raise RuntimeError('litellm did not finish its shutdown flush; retry backup')
 
     def mount(self, service, target):
         return Path(next(v['source'] for v in self.config['services'][service]['volumes']

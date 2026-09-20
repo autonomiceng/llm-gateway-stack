@@ -131,6 +131,9 @@ services:
     restart: unless-stopped
     # Reap orphaned watchdogs from bounded status probes.
     init: true
+    # Uvicorn re-raises SIGTERM after shutdown, skipping Python exit flushes under init.
+    # SIGINT follows the same graceful shutdown and returns through its handled interrupt.
+    stop_signal: SIGINT
     logging: *logging
     pids_limit: 1024
     mem_limit: 2g
