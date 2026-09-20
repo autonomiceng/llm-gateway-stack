@@ -46,8 +46,9 @@ are one JSON line on stderr. Exit codes: 0 ready, 1 refused, 2 usage, 3 not read
   links. Bootstrap derives defaults from the mode.
   Backplane core-only remains directly accessible over HTTP; its standalone Caddy is optional.
   A stack behind Platform Edge does not publish an unused HTTPS port or share CA private keys.
-- Tailscale Serve is optional: its trusted HTTPS endpoint forwards to local HTTP. Console
-  sharing does not create application subdomains or change their configured public origins.
+- Tailscale Serve is optional: its trusted HTTPS endpoint forwards to local HTTP. Platform
+  Edge can configure explicit application URLs on separate ports of one machine hostname.
+  Sharing a console alone does not make application subdomains reachable.
 - On a shared host every stack joins the external Docker network `platform` with only its
   ingress target and metrics endpoints, under prefixed aliases (`lg-`, `bp-`, `ob-`, `pe-`).
   Datastores never join. The optional `platform-edge` project owns 80 and 443 and routes each
