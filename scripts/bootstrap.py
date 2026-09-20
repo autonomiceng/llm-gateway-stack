@@ -240,8 +240,9 @@ def ensure_network(runner: Runner, name: str = NETWORK) -> None:
         raise Refused("network_create_failed", created.stderr.strip())
 
 
-def compose_up(root: Path, env_file: Path, runner: Runner) -> None:
+def compose_up(root: Path, env_file: Path, runner: Runner, langfuse_origin: str) -> None:
     result = runner([
+        "env", "LG_LANGFUSE_URL=" + langfuse_origin,
         "docker", "compose", "--project-directory", str(root), "--env-file", str(env_file),
         "up", "--detach", "--wait", "--wait-timeout", "300",
     ])
@@ -293,6 +294,19 @@ def access_settings(settings: dict[str, str]) -> dict[str, str]:
     files = files.replace("${LG_ACCESS_MODE:-local}", mode).split(os.pathsep)
     if mode != "local" and not any(Path(name).name == f"compose.{mode}.yaml" for name in files):
         raise Refused("invalid_access_settings", f"COMPOSE_FILE must include compose.{mode}.yaml")
+    access_keys = {"LG_ACCESS_MODE", "LG_BIND_HOST", "LG_SCHEME", "LG_PUBLIC_DOMAIN", "LG_PUBLIC_PORT_SUFFIX",
+                   "LG_TRUSTED_PROXIES", "LG_LISTEN_SCHEME", "LG_TLS_ISSUER"}
+    access_keys.update("LG_" + app + "_URL" for app in ("CONSOLE", "LITELLM", "LANGFUSE", "S3", "GRAFANA", "BACKPLANE"))
+    environment = {key: value for key, value in values.items() if key in access_keys}
+    environment["LG_HTTPS_PUBLISHED"] = str(mode != "proxy").lower()
+    environment.setdefault("LG_TRUSTED_PROXIES", "")
+    origins = subprocess.run(
+        ["sh", str(Path(__file__).resolve().parent.parent / "docker/caddy/access-mode.sh"), "--origins"],
+        env=environment, capture_output=True, text=True,
+    )
+    if origins.returncode:
+        raise Refused("invalid_access_settings", origins.stderr.strip())
+    values.update(json.loads(origins.stdout))
     return values
 
 
@@ -398,7 +412,11 @@ def bootstrap(argv: list[str], runner: Runner = run) -> int:
         # Match Compose's shell precedence for operator settings as well as secrets.
         settings.update({key: value for key, value in os.environ.items()
                          if key in settings or key.startswith("LG_") or key == "COMPOSE_FILE"})
+        requested_langfuse = settings.get("LG_LANGFUSE_URL")
         settings = access_settings(settings)
+        raw_langfuse = requested_langfuse or (settings["LG_SCHEME"] + "://langfuse."
+                                             + settings["LG_PUBLIC_DOMAIN"]
+                                             + settings.get("LG_PUBLIC_PORT_SUFFIX", ""))
         allow_same_filesystem = backup_policy(settings)
         project = project_name(settings)
         prefix = os.environ.get("LG_VOLUME_PREFIX", settings.get("LG_VOLUME_PREFIX")) or PROJECT
@@ -422,6 +440,16 @@ def bootstrap(argv: list[str], runner: Runner = run) -> int:
             # record it instead of generating a different one.
             fresh.update({k: os.environ[k] for k in missing if os.environ.get(k)})
             write_env(env_file, lines, template, fresh)
+        # RustFS compares CORS origins literally. Preserve existing lines and append
+        # a canonical override only when normalization or a shell override needs it.
+        canonical_langfuse = settings["LG_LANGFUSE_URL"]
+        if raw_langfuse != canonical_langfuse or os.environ.get("LG_LANGFUSE_URL"):
+            saved_lines, _ = read_env(env_file)
+            saved_langfuse = next((unquote(m.group("value")) for line in reversed(saved_lines)
+                                   if (m := ENV_LINE.match(line))
+                                   and m.group("key") == "LG_LANGFUSE_URL"), "")
+            if saved_langfuse != canonical_langfuse:
+                write_env(env_file, saved_lines, template, {"LG_LANGFUSE_URL": canonical_langfuse})
         if args.render_only:
             print(json.dumps({"env": str(env_file), "project": project, "generated": sorted(missing)}))
             return 0
@@ -443,16 +471,13 @@ def bootstrap(argv: list[str], runner: Runner = run) -> int:
 
         ensure_network(runner, settings.get("LG_PLATFORM_NETWORK", NETWORK))
         ensure_volumes(runner, prefix)
-        compose_up(root, env_file, runner)
-        scheme = settings.get("LG_SCHEME", "http")
-        domain = settings.get("LG_PUBLIC_DOMAIN", "localhost")
-        origin = domain + settings.get("LG_PUBLIC_PORT_SUFFIX", "")
+        compose_up(root, env_file, runner, canonical_langfuse)
         probe_gateway(settings, ["docker", "compose", "--project-directory", str(root),
                                  "--env-file", str(env_file)], runner)
         print(json.dumps({
-            "console": f"{scheme}://{origin}/",
-            "litellm": f"{scheme}://litellm.{origin}/",
-            "langfuse": f"{scheme}://langfuse.{origin}/",
+            "console": settings["LG_CONSOLE_URL"] + "/",
+            "litellm": settings["LG_LITELLM_URL"] + "/",
+            "langfuse": settings["LG_LANGFUSE_URL"] + "/",
             "langfuseLogin": email,
             "next": "Log in to Langfuse with the email above and LANGFUSE_INIT_USER_PASSWORD from .env; "
                     "call the API with LITELLM_MASTER_KEY or create a virtual key in LiteLLM.",

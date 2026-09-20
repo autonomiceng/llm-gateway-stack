@@ -120,7 +120,7 @@
 	}
 	handle /origins.json {
 		header Content-Type application/json
-		respond `{"scheme":"{$LG_SCHEME}","domain":"{$LG_PUBLIC_DOMAIN}","port":"{$LG_PUBLIC_PORT_SUFFIX}"}`
+		respond `{"scheme":"{$LG_SCHEME}","domain":"{$LG_PUBLIC_DOMAIN}","port":"{$LG_PUBLIC_PORT_SUFFIX}","console":"{$LG_CONSOLE_URL}","litellm":"{$LG_LITELLM_URL}","langfuse":"{$LG_LANGFUSE_URL}","s3":"{$LG_S3_URL}","grafana":"{$LG_GRAFANA_URL}","backplane":"{$LG_BACKPLANE_URL}"}`
 	}
 	handle {
 		root * /srv/console
@@ -135,6 +135,8 @@
 			not remote_ip {$LG_OPERATOR_ALLOW:127.0.0.0/8 ::1}
 		}
 		respond @ui 404
+		# Normalize the UI path at its configured browser origin before the app redirects.
+		redir /ui {$LG_LITELLM_URL}/ui/?{query} 308
 		import app litellm:4000
 	}
 }
@@ -151,9 +153,35 @@
 	}
 }
 
+# Host matchers discard ports. Compare the complete authority from Edge instead.
+# Each alias imports the same restrictions as its existing hostname route.
+(proxy-origins) {
+	@console_origin expression `{http.request.hostport}.lowerAscii() == "{$LG_CONSOLE_AUTHORITY}"`
+	handle @console_origin {
+		import console
+	}
+	@litellm_origin expression `{http.request.hostport}.lowerAscii() == "{$LG_LITELLM_AUTHORITY}"`
+	handle @litellm_origin {
+		import litellm
+	}
+	@langfuse_origin expression `{http.request.hostport}.lowerAscii() == "{$LG_LANGFUSE_AUTHORITY}"`
+	handle @langfuse_origin {
+		import app langfuse-web:3000
+	}
+	@s3_origin expression `{http.request.hostport}.lowerAscii() == "{$LG_S3_AUTHORITY}"`
+	handle @s3_origin {
+		# Preserve Host, including the port, for S3 presigned signatures.
+		reverse_proxy rustfs:9000
+	}
+}
+
 (gateway) {
 	import access-log
 	import headers-{$LG_ACCESS_MODE:local}
+	import host-routes
+}
+
+(host-routes) {
 	@litellm host litellm.{$LG_PUBLIC_DOMAIN}
 	handle @litellm {
 		import litellm
@@ -231,7 +259,17 @@
 
 (mode-proxy) {
 	http://:80 {
-		import gateway
+		import access-log
+		route {
+			import proxy-origins
+			@configured host {$LG_PUBLIC_DOMAIN} litellm.{$LG_PUBLIC_DOMAIN} langfuse.{$LG_PUBLIC_DOMAIN} s3.{$LG_PUBLIC_DOMAIN} rustfs.{$LG_PUBLIC_DOMAIN} 127.0.0.1
+			handle @configured {
+				import host-routes
+			}
+			handle {
+				respond 404
+			}
+		}
 	}
 }
 

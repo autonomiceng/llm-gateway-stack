@@ -6,9 +6,14 @@
     const response = await fetch("/origins.json", { cache: "no-store" });
     if (!response.ok) throw new Error(String(response.status));
     const origin = await response.json();
-    const hostFor = (sub) => `${origin.scheme}://${sub}.${origin.domain}${origin.port}`;
+    const hostFor = (sub) => origin[sub] || `${origin.scheme}://${sub}.${origin.domain}${origin.port}`;
     for (const link of document.querySelectorAll("[data-link]")) {
-      link.href = hostFor(link.dataset.link) + (link.dataset.path || "/");
+      link.dataset.targetUrl = hostFor(link.dataset.link) + (link.dataset.path || "/");
+      const optional = link.closest?.("[data-optional]");
+      if (!optional || optional.dataset.ready === "true") {
+        link.href = link.dataset.targetUrl;
+        link.removeAttribute("aria-disabled");
+      }
     }
     for (const code of document.querySelectorAll("[data-url]")) {
       code.textContent = hostFor(code.dataset.url) + (code.dataset.path || "");
@@ -19,6 +24,18 @@
     const b = li.querySelector("[data-badge]");
     b.dataset.state = state;
     b.textContent = label;
+    if (li.hasAttribute("data-optional")) {
+      li.dataset.ready = String(state === "ok");
+      for (const link of li.querySelectorAll("[data-link]")) {
+        if (state === "ok" && link.dataset.targetUrl) {
+          link.href = link.dataset.targetUrl;
+          link.removeAttribute("aria-disabled");
+        } else {
+          link.removeAttribute("href");
+          link.setAttribute("aria-disabled", "true");
+        }
+      }
+    }
   };
   // A service this browser has seen healthy is "down" when it stops answering;
   // one it has never seen is "not installed". Optional cards only.

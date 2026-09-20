@@ -14,7 +14,7 @@ x-langfuse-env: &langfuse-env
   # Docker sets HOSTNAME to the container id and Next.js binds to it; bind everywhere
   # so the healthcheck can reach localhost.
   HOSTNAME: 0.0.0.0
-  NEXTAUTH_URL: ${LG_SCHEME:-http}://langfuse.${LG_PUBLIC_DOMAIN:-localhost}${LG_PUBLIC_PORT_SUFFIX:-}
+  NEXTAUTH_URL: ${LG_LANGFUSE_URL:-${LG_SCHEME:-http}://langfuse.${LG_PUBLIC_DOMAIN:-localhost}${LG_PUBLIC_PORT_SUFFIX:-}}
   NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:?run scripts/bootstrap.py to generate secrets}
   SALT: ${LANGFUSE_SALT:?run scripts/bootstrap.py to generate secrets}
   ENCRYPTION_KEY: ${LANGFUSE_ENCRYPTION_KEY:?run scripts/bootstrap.py to generate secrets}
@@ -36,8 +36,8 @@ x-langfuse-env: &langfuse-env
   LANGFUSE_S3_EVENT_UPLOAD_PREFIX: events/
   LANGFUSE_S3_MEDIA_UPLOAD_BUCKET: langfuse
   LANGFUSE_S3_MEDIA_UPLOAD_REGION: auto
-  # Browsers use presigned URLs, so the media endpoint is the public S3 hostname.
-  LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: ${LG_SCHEME:-http}://s3.${LG_PUBLIC_DOMAIN:-localhost}${LG_PUBLIC_PORT_SUFFIX:-}
+  # Browsers use presigned URLs, so the media endpoint is the external S3 origin.
+  LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: ${LG_S3_URL:-${LG_SCHEME:-http}://s3.${LG_PUBLIC_DOMAIN:-localhost}${LG_PUBLIC_PORT_SUFFIX:-}}
   LANGFUSE_S3_MEDIA_UPLOAD_INTERNAL_ENDPOINT: http://rustfs:9000
   LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID: ${RUSTFS_ACCESS_KEY}
   LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY: ${RUSTFS_SECRET_KEY}
@@ -47,7 +47,7 @@ x-langfuse-env: &langfuse-env
   LANGFUSE_S3_BATCH_EXPORT_BUCKET: langfuse
   LANGFUSE_S3_BATCH_EXPORT_REGION: auto
   LANGFUSE_S3_BATCH_EXPORT_ENDPOINT: http://rustfs:9000
-  LANGFUSE_S3_BATCH_EXPORT_EXTERNAL_ENDPOINT: ${LG_SCHEME:-http}://s3.${LG_PUBLIC_DOMAIN:-localhost}${LG_PUBLIC_PORT_SUFFIX:-}
+  LANGFUSE_S3_BATCH_EXPORT_EXTERNAL_ENDPOINT: ${LG_S3_URL:-${LG_SCHEME:-http}://s3.${LG_PUBLIC_DOMAIN:-localhost}${LG_PUBLIC_PORT_SUFFIX:-}}
   LANGFUSE_S3_BATCH_EXPORT_ACCESS_KEY_ID: ${RUSTFS_ACCESS_KEY}
   LANGFUSE_S3_BATCH_EXPORT_SECRET_ACCESS_KEY: ${RUSTFS_SECRET_KEY}
   LANGFUSE_S3_BATCH_EXPORT_FORCE_PATH_STYLE: "true"
@@ -94,6 +94,12 @@ services:
       LG_TLS_ISSUER: internal
       LG_LISTEN_SCHEME: dual
       LG_PUBLIC_PORT_SUFFIX: ${LG_PUBLIC_PORT_SUFFIX:-}
+      LG_CONSOLE_URL: ${LG_CONSOLE_URL:-}
+      LG_LITELLM_URL: ${LG_LITELLM_URL:-}
+      LG_LANGFUSE_URL: ${LG_LANGFUSE_URL:-}
+      LG_S3_URL: ${LG_S3_URL:-}
+      LG_GRAFANA_URL: ${LG_GRAFANA_URL:-}
+      LG_BACKPLANE_URL: ${LG_BACKPLANE_URL:-}
     volumes:
       - ./docker/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
       - ./docker/caddy/access-mode.sh:/etc/caddy/access-mode.sh:ro
@@ -131,6 +137,8 @@ services:
       - ./docker/litellm/cache_namespace_policy.py:/app/cache_namespace_policy.py:ro
     environment:
       DATABASE_URL: postgresql://litellm:${LITELLM_DB_PASSWORD:?run scripts/bootstrap.py to generate secrets}@postgres:5432/litellm
+      # Canonical browser origin for login redirects and secure cookies behind Edge.
+      PROXY_BASE_URL: ${LG_LITELLM_URL:-${LG_SCHEME:-http}://litellm.${LG_PUBLIC_DOMAIN:-localhost}${LG_PUBLIC_PORT_SUFFIX:-}}
       UI_USERNAME: ${UI_USERNAME:-admin}
       UI_PASSWORD: ${UI_PASSWORD:?run scripts/bootstrap.py to generate secrets}
       LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:?run scripts/bootstrap.py to generate secrets}
@@ -270,8 +278,8 @@ services:
       RUSTFS_CONSOLE_ADDRESS: ":9001"
       RUSTFS_OBS_LOG_DIRECTORY: ""
       RUSTFS_OBS_LOG_STDOUT_ENABLED: "true"
-      # Browsers PUT and GET media through presigned URLs on s3.<domain>.
-      RUSTFS_CORS_ALLOWED_ORIGINS: ${LG_SCHEME:-http}://langfuse.${LG_PUBLIC_DOMAIN:-localhost}${LG_PUBLIC_PORT_SUFFIX:-}
+      # Browsers PUT and GET presigned media from the configured Langfuse origin.
+      RUSTFS_CORS_ALLOWED_ORIGINS: ${LG_LANGFUSE_URL:-${LG_SCHEME:-http}://langfuse.${LG_PUBLIC_DOMAIN:-localhost}${LG_PUBLIC_PORT_SUFFIX:-}}
     volumes:
       - rustfs-data:/data
     healthcheck:

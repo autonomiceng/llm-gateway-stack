@@ -4,13 +4,16 @@ services:
       LG_SCHEME: ${LG_SCHEME:-https}
       LG_TLS_ISSUER: acme
       LG_LISTEN_SCHEME: https
+  litellm:
+    environment:
+      PROXY_BASE_URL: ${LG_LITELLM_URL:-${LG_SCHEME:-https}://litellm.${LG_PUBLIC_DOMAIN:-localhost}${LG_PUBLIC_PORT_SUFFIX:-}}
   langfuse-web:
     environment: &public-origin
-      NEXTAUTH_URL: ${LG_SCHEME:-https}://langfuse.${LG_PUBLIC_DOMAIN:-localhost}${LG_PUBLIC_PORT_SUFFIX:-}
-      LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: ${LG_SCHEME:-https}://s3.${LG_PUBLIC_DOMAIN:-localhost}${LG_PUBLIC_PORT_SUFFIX:-}
-      LANGFUSE_S3_BATCH_EXPORT_EXTERNAL_ENDPOINT: ${LG_SCHEME:-https}://s3.${LG_PUBLIC_DOMAIN:-localhost}${LG_PUBLIC_PORT_SUFFIX:-}
+      NEXTAUTH_URL: ${LG_LANGFUSE_URL:-${LG_SCHEME:-https}://langfuse.${LG_PUBLIC_DOMAIN:-localhost}${LG_PUBLIC_PORT_SUFFIX:-}}
+      LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: ${LG_S3_URL:-${LG_SCHEME:-https}://s3.${LG_PUBLIC_DOMAIN:-localhost}${LG_PUBLIC_PORT_SUFFIX:-}}
+      LANGFUSE_S3_BATCH_EXPORT_EXTERNAL_ENDPOINT: ${LG_S3_URL:-${LG_SCHEME:-https}://s3.${LG_PUBLIC_DOMAIN:-localhost}${LG_PUBLIC_PORT_SUFFIX:-}}
   langfuse-worker:
     environment: *public-origin
   rustfs:
     environment:
-      RUSTFS_CORS_ALLOWED_ORIGINS: ${LG_SCHEME:-https}://langfuse.${LG_PUBLIC_DOMAIN:-localhost}${LG_PUBLIC_PORT_SUFFIX:-}
+      RUSTFS_CORS_ALLOWED_ORIGINS: ${LG_LANGFUSE_URL:-${LG_SCHEME:-https}://langfuse.${LG_PUBLIC_DOMAIN:-localhost}${LG_PUBLIC_PORT_SUFFIX:-}}

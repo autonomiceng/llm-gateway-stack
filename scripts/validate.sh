@@ -40,6 +40,10 @@ echo "compose config: PASS"
 
 for mode in local public proxy; do
   LG_ACCESS_MODE=$mode docker compose --env-file "$work/.env" config --format json > "$work/$mode.json"
+  LG_ACCESS_MODE=$mode LG_CONSOLE_URL=https://darkforge.tail694fe2.ts.net:8446 \
+    LG_LITELLM_URL=https://darkforge.tail694fe2.ts.net:8443 \
+    LG_LANGFUSE_URL=https://darkforge.tail694fe2.ts.net:8444 LG_S3_URL=https://darkforge.tail694fe2.ts.net:8445 \
+    docker compose --env-file "$work/.env" config --format json > "$work/$mode-origins.json"
 done
 python3 - "$work" <<'PY'
 import json, pathlib, sys
@@ -51,16 +55,43 @@ for mode in ("local", "public", "proxy"):
     assert all(port["host_ip"] == gateway["environment"]["LG_BIND_HOST"] for port in gateway["ports"])
     scheme = "http" if mode == "local" else "https"
     assert gateway["environment"]["LG_SCHEME"] == scheme
-    assert services["langfuse-web"]["environment"]["NEXTAUTH_URL"] == f"{scheme}://langfuse.localhost"
+    assert services["litellm"]["environment"]["PROXY_BASE_URL"] == f"{scheme}://litellm.localhost"
+    configured = json.loads((pathlib.Path(sys.argv[1]) / f"{mode}-origins.json").read_text())["services"]
+    for current, langfuse, s3, litellm in (
+        (services, f"{scheme}://langfuse.localhost", f"{scheme}://s3.localhost", f"{scheme}://litellm.localhost"),
+        (configured, "https://darkforge.tail694fe2.ts.net:8444", "https://darkforge.tail694fe2.ts.net:8445",
+         "https://darkforge.tail694fe2.ts.net:8443"),
+    ):
+        assert current["litellm"]["environment"]["PROXY_BASE_URL"] == litellm
+        assert current["litellm"]["environment"]["LANGFUSE_HOST"] == "http://langfuse-web:3000"
+        for service in ("langfuse-web", "langfuse-worker"):
+            env = current[service]["environment"]
+            assert env["NEXTAUTH_URL"] == langfuse
+            assert env["LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT"] == s3
+            assert env["LANGFUSE_S3_BATCH_EXPORT_EXTERNAL_ENDPOINT"] == s3
+            for setting in ("EVENT_UPLOAD_ENDPOINT", "MEDIA_UPLOAD_INTERNAL_ENDPOINT", "BATCH_EXPORT_ENDPOINT"):
+                assert env[f"LANGFUSE_S3_{setting}"] == "http://rustfs:9000"
+        assert current["rustfs"]["environment"]["RUSTFS_CORS_ALLOWED_ORIGINS"] == langfuse
+    for service in services:
+        assert services[service].get("volumes") == configured[service].get("volumes")
+    for app, port in (("CONSOLE", 8446), ("LITELLM", 8443), ("LANGFUSE", 8444), ("S3", 8445)):
+        assert configured["caddy"]["environment"][f"LG_{app}_URL"] == f"https://darkforge.tail694fe2.ts.net:{port}"
 PY
-echo "access mode Compose defaults: PASS (3 configurations)"
+echo "access mode Compose origins: PASS (6 configurations)"
 
-for mode in "local http dual localhost internal true" "local https dual example.test internal true" "public https https example.com acme true" "proxy https http example.com none false"; do
+for mode in "local http dual localhost internal true" "local https dual example.test internal true" "public https https example.com acme true" "proxy https http example.com none false" "proxy https http gateway.test none false"; do
   read -r access scheme listen domain issuer published <<< "$mode"
   for console in off on; do
     for proxies in "" "172.30.0.0/24"; do
       if [[ "$access" == proxy && -z "$proxies" ]]; then continue; fi
-      docker run --rm -e "LG_RUSTFS_CONSOLE=$console" -e "LG_TRUSTED_PROXIES=$proxies" \
+      origins=()
+      if [[ "$domain" == gateway.test ]]; then
+        origins=(-e LG_CONSOLE_URL=https://darkforge.tail694fe2.ts.net:8446
+          -e LG_LITELLM_URL=https://darkforge.tail694fe2.ts.net:8443
+          -e LG_LANGFUSE_URL=https://darkforge.tail694fe2.ts.net:8444
+          -e LG_S3_URL=https://darkforge.tail694fe2.ts.net:8445)
+      fi
+      docker run --rm "${origins[@]}" -e "LG_RUSTFS_CONSOLE=$console" -e "LG_TRUSTED_PROXIES=$proxies" \
         -e "LG_ACCESS_MODE=$access" -e "LG_SCHEME=$scheme" -e "LG_HTTPS_PUBLISHED=$published" \
         -e "LG_OPERATOR_ALLOW=127.0.0.0/8 ::1" -e "LG_LISTEN_SCHEME=$listen" -e "LG_PUBLIC_DOMAIN=$domain" -e "LG_TLS_ISSUER=$issuer" \
         -v "$root/docker/caddy/Caddyfile:/etc/caddy/Caddyfile:ro" \
@@ -70,7 +101,7 @@ for mode in "local http dual localhost internal true" "local https dual example.
     done
   done
 done
-echo "Caddyfile: PASS (14 configurations)"
+echo "Caddyfile: PASS (16 configurations)"
 
 mapfile -t scripts < <(git ls-files '*.sh')
 shellcheck "${scripts[@]}"

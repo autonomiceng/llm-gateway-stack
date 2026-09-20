@@ -46,6 +46,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.send_header('Strict-Transport-Security', 'max-age=1000')
+        self.send_header('X-Smoke-Upstream', str(self.server.server_port))
+        self.send_header('X-Smoke-Path', self.path)
         self.end_headers()
         self.wfile.write(json.dumps(dict(self.headers)).encode())
     def log_message(self, *args):
@@ -68,12 +70,14 @@ http.server.HTTPServer(('', 4000), Handler).serve_forever()
         if self.gateway_started:
             docker("rm", "-f", GATEWAY)
 
-    def start(self, mode="local", trust=""):
+    def start(self, mode="local", trust="", origins=None, operators=None):
         domain = "localhost" if mode == "local" else "gateway.test"
         settings = bootstrap.access_settings({"LG_ACCESS_MODE": mode, "LG_PUBLIC_DOMAIN": domain,
-                                              "LG_TRUSTED_PROXIES": trust})
-        settings.update(LG_HTTPS_PUBLISHED=str(mode != "proxy").lower(), LG_OPERATOR_ALLOW=self.subnet,
-                        LG_PUBLIC_PORT_SUFFIX=f":{HTTPS_PORT}" if mode == "public" else "")
+                                              "LG_TRUSTED_PROXIES": trust,
+                                              "LG_PUBLIC_PORT_SUFFIX": f":{HTTPS_PORT}" if mode == "public" else "",
+                                              **(origins or {})})
+        settings.update(LG_HTTPS_PUBLISHED=str(mode != "proxy").lower(),
+                        LG_OPERATOR_ALLOW=self.subnet if operators is None else operators)
         args = ["run", "-d", "--name", GATEWAY, "--network", NETWORK,
                 "--log-driver", "journald", "--log-opt", "cache-disabled=true",
                 "-p", f"127.0.0.1:{HTTP_PORT}:80", "--tmpfs", "/data", "--tmpfs", "/config"]
@@ -129,17 +133,48 @@ http.server.HTTPServer(('', 4000), Handler).serve_forever()
         self.assertEqual(self.request("/", "untrusted.test")[1]["Location"], f"https://gateway.test:{HTTPS_PORT}/")
 
     def test_proxy_forwarding_and_http_only(self):
+        hostname = "darkforge.tail694fe2.ts.net"
+        origins = {f"LG_{app}_URL": f"https://{hostname}:{port}" for app, port in (
+            ("LITELLM", 8443), ("LANGFUSE", 8444), ("S3", 8445), ("CONSOLE", 8446))}
         for trust, expected in (("192.0.2.0/24", "http"), (self.subnet, "https")):
-            self.start("proxy", trust)
+            self.start("proxy", trust, origins=origins, operators="127.0.0.0/8 ::1")
             status, headers, body = self.request("/", "litellm.gateway.test",
                                                   headers={"X-Forwarded-Proto": "https"})
             self.assertEqual(status, 200)
             self.assertEqual(json.loads(body)["X-Forwarded-Proto"], expected)
+            for port, upstream in ((8443, "4000"), (8444, "3000"), (8445, "9000")):
+                authority = f"{hostname}:{port}"
+                path = "/langfuse/media/image.png?X-Amz-SignedHeaders=host&X-Amz-Signature=unchanged"
+                status, headers, body = self.request(path, authority, headers={"X-Forwarded-Proto": "https"})
+                self.assertEqual(status, 200)
+                self.assertEqual(headers["X-Smoke-Upstream"], upstream)
+                self.assertEqual(headers["X-Smoke-Path"], path)
+                self.assertEqual(json.loads(body)["Host"], authority)
+                self.assertEqual(json.loads(body)["X-Forwarded-Proto"], expected)
+            for port in (8446,):
+                status, headers, body = self.request("/origins.json", f"{hostname}:{port}")
+                self.assertEqual(status, 200)
+                for app in ("console", "litellm", "langfuse", "s3"):
+                    self.assertEqual(json.loads(body)[app], origins[f"LG_{app.upper()}_URL"])
+                self.assertNotIn("X-Smoke-Upstream", headers)
+            self.assertEqual(self.request("/origins.json", f"{hostname}:8447")[0], 404)
+            for path in ("/ui/", "/openapi.json", "/metrics"):
+                self.assertEqual(self.request(path, f"{hostname}:8443")[0], 404)
+            self.assertEqual(self.request("/health/readiness", f"{hostname}:8443")[2], b"")
+            self.assertEqual(self.request("/versions.json", f"{hostname}:8446")[0], 404)
+            self.assertEqual(self.request("/", "rustfs.gateway.test")[0], 404)
             ports = json.loads(docker("inspect", GATEWAY))[0]["HostConfig"]["PortBindings"]
             self.assertEqual(set(ports), {"80/tcp"})
             if trust != self.subnet:
                 docker("rm", "-f", GATEWAY)
                 self.gateway_started = False
+
+    def test_proxy_ui_redirect_keeps_https_origin(self):
+        origin = "https://darkforge.tail694fe2.ts.net:8443"
+        self.start("proxy", self.subnet, origins={"LG_LITELLM_URL": origin})
+        status, headers, _ = self.request("/ui?view=models", "darkforge.tail694fe2.ts.net:8443")
+        self.assertEqual(status, 308)
+        self.assertEqual(headers["Location"], origin + "/ui/?view=models")
 
     def test_ip_root_and_configured_application_origins(self):
         self.start()
@@ -147,7 +182,9 @@ http.server.HTTPServer(('', 4000), Handler).serve_forever()
             self.assertEqual(self.request("/", "127.0.0.1", tls)[0], 200)
         status, headers, body = self.request("/origins.json", "arbitrary.test")
         self.assertEqual(status, 200)
-        self.assertEqual(json.loads(body), {"scheme": "http", "domain": "localhost", "port": ""})
+        self.assertEqual(json.loads(body), {
+            "scheme": "http", "domain": "localhost", "port": "", "console": "http://localhost",
+            "litellm": "http://litellm.localhost", "langfuse": "http://langfuse.localhost", "s3": "http://s3.localhost", "grafana": "http://grafana.localhost", "backplane": "http://backplane.localhost"})
 
     def test_access_logs_redact_credentials(self):
         self.start()
