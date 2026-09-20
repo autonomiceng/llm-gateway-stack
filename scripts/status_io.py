@@ -97,7 +97,7 @@ def read_json(text, limit=65536):
 
 
 @contextmanager
-def directory(path, mode=0o755):
+def directory(path, mode=0o755, *, create=True, ancestors=False):
     """Walk with directory descriptors so swapped symlinks cannot redirect writes."""
     if mode & 0o022:
         raise Unavailable()
@@ -107,9 +107,22 @@ def directory(path, mode=0o755):
     leaf_created = False
     try:
         for index, part in enumerate(parts):
+            if ancestors:
+                info = os.fstat(fd)
+                # systemd reopens unit paths by name; other users must not replace their tree.
+                if (info.st_uid not in (0, os.getuid())
+                        or info.st_mode & 0o022 and not info.st_mode & stat.S_ISVTX):
+                    raise Unavailable()
             try:
                 child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
             except FileNotFoundError:
+                if ancestors or not create:
+                    # Sticky ancestors permit traversal of trusted existing children, not creation.
+                    info = os.fstat(fd)
+                    if info.st_uid != os.getuid() or info.st_mode & 0o022:
+                        raise Unavailable()
+                if not create:
+                    raise
                 os.mkdir(part, mode=mode, dir_fd=fd)
                 child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
                 leaf_created = index == len(parts) - 1

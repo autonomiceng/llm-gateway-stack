@@ -37,7 +37,7 @@ systemctl --user status llm-gateway-status.timer
 ```
 
 The installer writes `llm-gateway-status.service` and `.timer` to the user's
-systemd directory and enables the timer. It refuses existing units. One timer
+systemd directory and enables the timer. One timer
 selects one checkout/env pair per user. It does not configure lingering: for
 observations after logout, the host operator must enable the installation user's
 systemd lingering according to host policy. Without a running user manager the
@@ -54,9 +54,50 @@ rm "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/llm-gateway-status.service" \
 systemctl --user daemon-reload
 ```
 
-Existing documents expire normally after removal. If installation fails after
-writing units, first disable the retained timer and service with `systemctl --user disable --now` as above, then inspect or remove that pair before retrying. No host unit is enabled
-by repository development, validation or bootstrap.
+Existing documents expire normally after removal. No host unit is enabled by
+repository development, validation or bootstrap.
+
+Replace `--install` with `--check` for a read-only preflight. It checks the user
+manager and accepts an absent pair or the exact generated pair for the same
+selection. It creates no directories, units, env files or private copies. A fresh
+check permits an env file that the owning bootstrap has not created yet.
+Existing units require the original env file.
+
+Unit enumeration can exit nonzero for an absent name. The installer then requires
+`show` to confirm `LoadState=not-found` with empty fragment and drop-in paths.
+An unavailable manager or inconclusive response still refuses before writing.
+
+Both check and install refuse foreign loaded or installed unit fragments, drop-ins,
+partial or malformed pairs, symlinks, hard links, non-private unit files, and unsafe
+unit destinations. Install checks the manager **before** creating a user override.
+Unit names alone never establish ownership. New units are private, and both the
+files and containing directory are fsynced. Existing directory permissions and
+systemd argument quoting are preserved.
+
+The timer repeatedly executes the selected checkout's Python code, the installing
+interpreter, Docker CLI, and Compose configuration as the installation user with
+its Docker access. Anyone who can modify those files or replace a directory on
+their paths gains that authority, as with bootstrap and Compose themselves. Keep
+these inputs writable only by the installation user or root; shared checkouts
+writable by other users are unsupported. The installer protects its generated
+unit destination; it does not verify the entire code and configuration chain.
+Use a checkout path without symlink components so the observer can publish status.
+
+Unit-directory ancestors must be owned by root or the installation user and must
+not be group- or other-writable, except trusted sticky directories with existing
+trusted children. Every new component requires a parent owned by the installation
+user with no group/other write permission; the final unit directory has the same
+strict rule. Symlink ancestors are refused. These checks apply only to timer units,
+not general status publication. Inspect unsafe ancestors with the host administrator;
+the installer never changes existing directory permissions.
+
+Repeat the same `--install` command after an interrupted activation. An exact
+pair is not rewritten. After reload, the installer verifies both loaded fragments
+and absence of drop-ins, then enables the timer and verifies enabled and active
+state. Activation failure retains the pair. A partial pair or different selection
+requires inspection through the owning recovery procedure; the installer never
+disables, deletes or overwrites installed units. Do not change the selection or
+unit files concurrently. Host and disposable acceptance remain separate from these checks.
 
 Status recording is best-effort and never replaces a bootstrap failure. Both
 `data/` and its status directories must have safe ownership and permissions for
