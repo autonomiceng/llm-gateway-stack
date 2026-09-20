@@ -1,5 +1,6 @@
 ---
 status: accepted
+amended_by: ADR-0015 (access modes and runtime logging)
 date: 2026-09-17
 ---
 

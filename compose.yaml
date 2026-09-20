@@ -6,10 +6,9 @@
 name: llm-gateway-stack
 
 x-logging: &logging
-  driver: json-file
+  driver: journald
   options:
-    max-size: "10m"
-    max-file: "3"
+    cache-disabled: "true"
 
 x-langfuse-env: &langfuse-env
   # Docker sets HOSTNAME to the container id and Next.js binds to it; bind everywhere
@@ -77,22 +76,27 @@ services:
     pids_limit: 512
     mem_limit: 128m
     mem_reservation: 32m
+    entrypoint: ["/bin/sh", "/etc/caddy/access-mode.sh"]
+    command: ["caddy", "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]
     ports:
       - "${LG_BIND_HOST:-127.0.0.1}:${LG_HTTP_PORT:-80}:80"
       - "${LG_BIND_HOST:-127.0.0.1}:${LG_HTTPS_PORT:-443}:443"
     environment:
+      LG_ACCESS_MODE: ${LG_ACCESS_MODE:-local}
+      LG_BIND_HOST: ${LG_BIND_HOST:-127.0.0.1}
+      LG_HTTPS_PUBLISHED: "true"
       LG_TRUSTED_PROXIES: ${LG_TRUSTED_PROXIES:-}
       LG_CHECKPOINT_ALLOW: ${LG_CHECKPOINT_ALLOW:-127.0.0.0/8 ::1}
       LG_OPERATOR_ALLOW: ${LG_OPERATOR_ALLOW:-127.0.0.0/8 ::1}
       LG_RUSTFS_CONSOLE: ${LG_RUSTFS_CONSOLE:-off}
       LG_SCHEME: ${LG_SCHEME:-http}
       LG_PUBLIC_DOMAIN: ${LG_PUBLIC_DOMAIN:-localhost}
-      LG_TLS_ISSUER: ${LG_TLS_ISSUER:-none}
-      # Scheme Caddy listens on. Behind platform-edge the public scheme is https
-      # while this Caddy listens on plain http; set LG_LISTEN_SCHEME=http there.
-      LG_LISTEN_SCHEME: ${LG_LISTEN_SCHEME:-${LG_SCHEME:-http}}
+      LG_TLS_ISSUER: internal
+      LG_LISTEN_SCHEME: dual
+      LG_PUBLIC_PORT_SUFFIX: ${LG_PUBLIC_PORT_SUFFIX:-}
     volumes:
       - ./docker/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./docker/caddy/access-mode.sh:/etc/caddy/access-mode.sh:ro
       - ./docker/caddy/console:/srv/console:ro
       - ./data/console:/srv/state:ro
       - caddy-data:/data
@@ -224,6 +228,7 @@ services:
       - clickhouse-data:/var/lib/clickhouse
       - clickhouse-logs:/var/log/clickhouse-server
       - ./docker/clickhouse/backups.xml:/etc/clickhouse-server/config.d/backups.xml:ro
+      - ./docker/clickhouse/logging.xml:/etc/clickhouse-server/config.d/logging.xml:ro
       - type: bind
         source: ${LG_BACKUP_DIR:?set LG_BACKUP_DIR to a separate mounted filesystem}
         target: /backup
@@ -263,6 +268,8 @@ services:
       LG_RUSTFS_CONSOLE: ${LG_RUSTFS_CONSOLE:-off}
       RUSTFS_CONSOLE_ENABLE: "false"
       RUSTFS_CONSOLE_ADDRESS: ":9001"
+      RUSTFS_OBS_LOG_DIRECTORY: ""
+      RUSTFS_OBS_LOG_STDOUT_ENABLED: "true"
       # Browsers PUT and GET media through presigned URLs on s3.<domain>.
       RUSTFS_CORS_ALLOWED_ORIGINS: ${LG_SCHEME:-http}://langfuse.${LG_PUBLIC_DOMAIN:-localhost}${LG_PUBLIC_PORT_SUFFIX:-}
     volumes:

@@ -31,10 +31,23 @@ are one JSON line on stderr. Exit codes: 0 ready, 1 refused, 2 usage, 3 not read
 
 ## Network and ingress
 
-- Each stack ships its own Caddy and publishes only Caddy. Everything else is private.
-- One `PUBLIC_DOMAIN` per stack with fixed subdomains. Default `localhost`, plain HTTP on
-  loopback. Public mode is scheme `https`, bind `0.0.0.0`, issuer `acme` or `internal`.
-  Hostnames do not change between modes.
+- Each stack ships its own Caddy for HTTP/HTTPS. Backplane also retains a direct loopback
+  API port, with Caddy optional. Datastores stay private.
+- One `PUBLIC_DOMAIN` per stack with fixed application subdomains. Fresh standalone Caddy
+  installations default to `ACCESS_MODE=local`: HTTP and self-signed HTTPS on loopback,
+  without redirecting HTTP or telling browsers to require HTTPS. For direct HTTPS,
+  install the local certificate authority’s public root on client devices.
+  `public` uses automatically renewed trusted HTTPS certificates and HTTP redirects; choose the external bind address explicitly.
+  `proxy` means another gateway handles HTTPS and forwards HTTP to this stack.
+  Application browser URLs are configured separately.
+  Application hostnames do not change between modes. IP/alternate-host console access does
+  not imply arbitrary application aliases.
+- Each application has one configured browser URL for authentication and generated
+  links. Bootstrap derives defaults from the mode.
+  Backplane core-only remains directly accessible over HTTP; its standalone Caddy is optional.
+  A stack behind Platform Edge does not publish an unused HTTPS port or share CA private keys.
+- Tailscale Serve is optional: its trusted HTTPS endpoint forwards to local HTTP. Console
+  sharing does not create application subdomains or change their configured public origins.
 - On a shared host every stack joins the external Docker network `platform` with only its
   ingress target and metrics endpoints, under prefixed aliases (`lg-`, `bp-`, `ob-`, `pe-`).
   Datastores never join. The optional `platform-edge` project owns 80 and 443 and routes each
@@ -48,8 +61,14 @@ are one JSON line on stderr. Exit codes: 0 ready, 1 refused, 2 usage, 3 not read
   configuration, taken with ingestion fenced. `backup.sh`, `restore.sh`, and a drill script
   that proves the pair. RPO and RTO are stated in `docs/operations/backup.md`. Encryption and
   off-host replication of the backup mount are the operator's job.
-- Telemetry: container logs and each stack's `/metrics` go to the observability stack over
-  the platform network. Domain data (LLM traces, backplane audit) stays where it lives.
+- Runtime logs go to stdout/stderr. Linux deployments use Docker journald with its extra
+  log cache disabled; no application-managed or Docker JSON runtime log files. The host
+  controls journal persistence and retention. Non-journald hosts need an explicit supported
+  logging override. Caddy access logs are structured JSON with credential redaction.
+- Observability is optional: Alloy discovers container logs through Docker and scrapes
+  configured metrics endpoints over the platform network. Collection failures never prevent
+  another stack from starting. Domain data (LLM traces, backplane audit), WAL, backups and
+  protected one-off recovery diagnostics remain durable where specified.
 - Health: each stack exposes health routes through Caddy for the console and bootstrap.
   Use container healthchecks where supported. Observability’s distroless backends are
   probed by Caddy’s aggregate healthcheck and bootstrap/smoke HTTP assertions.

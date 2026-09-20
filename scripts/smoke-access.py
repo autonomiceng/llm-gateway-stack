@@ -1,0 +1,170 @@
+#!/usr/bin/env python3
+"""Disposable gateway contract, without observability or application databases."""
+import http.client
+import json
+import os
+from pathlib import Path
+import ssl
+import subprocess
+import sys
+import time
+import unittest
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import bootstrap
+
+ROOT = Path(__file__).resolve().parent.parent
+PROJECT = os.environ.get("SMOKE_PROJECT", f"llm-gateway-smoke-access-{os.getpid()}")
+if not PROJECT.startswith("llm-gateway-smoke-"):
+    raise SystemExit("use a unique SMOKE_PROJECT beginning llm-gateway-smoke-")
+HTTP_PORT = int(os.environ.get("SMOKE_HTTP_PORT", "18080"))
+HTTPS_PORT = int(os.environ.get("SMOKE_HTTPS_PORT", "18443"))
+NETWORK = PROJECT + "-access"
+GATEWAY = NETWORK + "-gateway"
+BACKEND = NETWORK + "-backend"
+IMAGES = {}
+service = ""
+for line in (ROOT / "compose.yaml").read_text().splitlines():
+    if line.startswith("  ") and not line.startswith("   ") and line.endswith(":"):
+        service = line.strip(": ")
+    if line.strip().startswith("image: "):
+        IMAGES[service] = line.split("image: ", 1)[1]
+
+
+def docker(*args):
+    return subprocess.run(["docker", *args], check=True, text=True, capture_output=True).stdout
+
+
+class AccessSmoke(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        docker("network", "create", NETWORK)
+        cls.addClassCleanup(docker, "network", "rm", NETWORK)
+        backend = """
+import http.server, json, threading
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header('Strict-Transport-Security', 'max-age=1000')
+        self.end_headers()
+        self.wfile.write(json.dumps(dict(self.headers)).encode())
+    def log_message(self, *args):
+        pass
+for port in (3000, 9000):
+    threading.Thread(target=http.server.HTTPServer(('', port), Handler).serve_forever, daemon=True).start()
+http.server.HTTPServer(('', 4000), Handler).serve_forever()
+"""
+        docker("run", "-d", "--name", BACKEND, "--network", NETWORK,
+               "--network-alias", "litellm", "--network-alias", "langfuse-web", "--network-alias", "rustfs",
+               "--log-driver", "journald", "--log-opt", "cache-disabled=true",
+               "--entrypoint", "python3", IMAGES["litellm"], "-u", "-c", backend)
+        cls.addClassCleanup(docker, "rm", "-f", BACKEND)
+        cls.subnet = json.loads(docker("network", "inspect", NETWORK))[0]["IPAM"]["Config"][0]["Subnet"]
+
+    def setUp(self):
+        self.gateway_started = False
+
+    def tearDown(self):
+        if self.gateway_started:
+            docker("rm", "-f", GATEWAY)
+
+    def start(self, mode="local", trust=""):
+        domain = "localhost" if mode == "local" else "gateway.test"
+        settings = bootstrap.access_settings({"LG_ACCESS_MODE": mode, "LG_PUBLIC_DOMAIN": domain,
+                                              "LG_TRUSTED_PROXIES": trust})
+        settings.update(LG_HTTPS_PUBLISHED=str(mode != "proxy").lower(), LG_OPERATOR_ALLOW=self.subnet,
+                        LG_PUBLIC_PORT_SUFFIX=f":{HTTPS_PORT}" if mode == "public" else "")
+        args = ["run", "-d", "--name", GATEWAY, "--network", NETWORK,
+                "--log-driver", "journald", "--log-opt", "cache-disabled=true",
+                "-p", f"127.0.0.1:{HTTP_PORT}:80", "--tmpfs", "/data", "--tmpfs", "/config"]
+        if mode != "proxy":
+            args += ["-p", f"127.0.0.1:{HTTPS_PORT}:443"]
+        for key, value in settings.items():
+            args += ["-e", f"{key}={value}"]
+        args += ["-v", f"{ROOT / 'docker/caddy'}:/etc/caddy:ro",
+                 "-v", f"{ROOT / 'docker/caddy/console'}:/srv/console:ro",
+                 "--entrypoint", "/bin/sh", IMAGES["caddy"], "/etc/caddy/access-mode.sh",
+                 "caddy", "run", "--config", "/etc/caddy/Caddyfile"]
+        docker(*args)
+        self.gateway_started = True
+        for attempt in range(60):
+            try:
+                if self.request("/health/litellm", domain)[0] == 200:
+                    if mode != "local" or self.request("/health/litellm", domain, tls=True)[0] == 200:
+                        return
+            except (OSError, subprocess.CalledProcessError):
+                pass
+            time.sleep(0.5)
+        self.fail("gateway did not start; inspect the disposable container logs")
+
+    def request(self, path, host="localhost", tls=False, headers=None):
+        if tls:
+            root = docker("exec", GATEWAY, "cat", "/data/caddy/pki/authorities/local/root.crt")
+            context = ssl.create_default_context(cadata=root)
+            connection = bootstrap.LocalHTTPSConnection(host, HTTPS_PORT, "127.0.0.1", context)
+        else:
+            connection = http.client.HTTPConnection("127.0.0.1", HTTP_PORT, timeout=5)
+        try:
+            connection.request("GET", path, headers={"Host": host, **(headers or {})})
+            response = connection.getresponse()
+            return response.status, dict(response.getheaders()), response.read()
+        finally:
+            connection.close()
+
+    def test_local_protocols_without_redirect_or_hsts(self):
+        self.start()
+        for tls in (False, True):
+            for host, path in (("localhost", "/"), ("litellm.localhost", "/health/readiness")):
+                status, headers, body = self.request(path, host, tls)
+                self.assertEqual(status, 200)
+                self.assertNotIn("Location", headers)
+                self.assertNotIn("Strict-Transport-Security", headers)
+
+    def test_public_redirect_and_health_exception(self):
+        self.start("public")
+        status, headers, body = self.request("/v1/models", "litellm.gateway.test")
+        self.assertEqual(status, 308)
+        self.assertEqual(headers["Location"], f"https://litellm.gateway.test:{HTTPS_PORT}/v1/models")
+        self.assertEqual(self.request("/health/litellm", "gateway.test")[0], 200)
+        self.assertEqual(self.request("/", "untrusted.test")[1]["Location"], f"https://gateway.test:{HTTPS_PORT}/")
+
+    def test_proxy_forwarding_and_http_only(self):
+        for trust, expected in (("192.0.2.0/24", "http"), (self.subnet, "https")):
+            self.start("proxy", trust)
+            status, headers, body = self.request("/", "litellm.gateway.test",
+                                                  headers={"X-Forwarded-Proto": "https"})
+            self.assertEqual(status, 200)
+            self.assertEqual(json.loads(body)["X-Forwarded-Proto"], expected)
+            ports = json.loads(docker("inspect", GATEWAY))[0]["HostConfig"]["PortBindings"]
+            self.assertEqual(set(ports), {"80/tcp"})
+            if trust != self.subnet:
+                docker("rm", "-f", GATEWAY)
+                self.gateway_started = False
+
+    def test_ip_root_and_configured_application_origins(self):
+        self.start()
+        for tls in (False, True):
+            self.assertEqual(self.request("/", "127.0.0.1", tls)[0], 200)
+        status, headers, body = self.request("/origins.json", "arbitrary.test")
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body), {"scheme": "http", "domain": "localhost", "port": ""})
+
+    def test_access_logs_redact_credentials(self):
+        self.start()
+        self.request("/?X-Amz-Signature=secret-query", headers={
+            "Authorization": "Bearer secret-authorization", "Cookie": "secret-cookie", "X-Api-Key": "secret-key"})
+        records = []
+        for attempt in range(20):
+            result = subprocess.run(["docker", "logs", GATEWAY], check=True, capture_output=True, text=True)
+            for secret in ("secret-query", "secret-authorization", "secret-cookie", "secret-key"):
+                self.assertNotIn(secret, result.stdout + result.stderr)
+            records = [json.loads(line) for line in result.stdout.splitlines() if line.startswith("{")]
+            if any(record.get("request", {}).get("uri") == "/?REDACTED" for record in records):
+                break
+            time.sleep(0.1)
+        self.assertTrue(any(record.get("request", {}).get("uri") == "/?REDACTED" for record in records))
+        self.assertTrue(result.stderr)
+
+
+if __name__ == "__main__":
+    unittest.main()

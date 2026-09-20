@@ -1,28 +1,53 @@
-# Stack Gateway. One Caddyfile for Local Mode and Public Mode (ADR-0014).
-# Local:  LG_SCHEME=http  LG_PUBLIC_DOMAIN=localhost      -> http://litellm.localhost
-# Public: LG_SCHEME=https LG_PUBLIC_DOMAIN=example.com    -> https://litellm.example.com
-# Behind platform-edge: LG_SCHEME=https, LG_LISTEN_SCHEME=http, LG_TLS_ISSUER=none
-# Static config only: no Docker socket, no caddy-docker-proxy.
 {
 	admin off
 	skip_install_trust
+	# IP clients omit SNI; Docker forwards to a container address, not loopback.
+	default_sni 127.0.0.1
+	auto_https disable_redirects
+	log default {
+		output stderr
+		format filter {
+			wrap json
+			fields {
+				request>headers delete
+				request>uri regexp \?.* ?REDACTED
+				resp_headers delete
+			}
+		}
+	}
 	# Empty standalone; set to the platform subnet only when behind platform-edge.
 	servers {
 		trusted_proxies static {$LG_TRUSTED_PROXIES}
+		trusted_proxies_strict
 	}
 }
 
-(ca-none) {
-}
-
-(ca-acme) {
-	tls {
-		issuer acme
+(log-format) {
+	format filter {
+		wrap json
+		fields {
+			request>headers delete
+			request>uri regexp \?.* ?REDACTED
+			resp_headers delete
+		}
 	}
 }
 
-(ca-internal) {
-	tls internal
+(access-log) {
+	log {
+		output stdout
+		import log-format
+	}
+}
+
+(headers-local) {
+	header -Strict-Transport-Security
+}
+
+(headers-public) {
+}
+
+(headers-proxy) {
 }
 
 (status-only) {
@@ -64,8 +89,7 @@
 }
 
 # Stack Console and the health paths it polls. Health answers carry no secrets.
-{$LG_LISTEN_SCHEME}://{$LG_PUBLIC_DOMAIN} {
-	import ca-{$LG_TLS_ISSUER}
+(console) {
 	handle /health/litellm {
 		import health litellm:4000 /health/readiness
 	}
@@ -94,14 +118,17 @@
 		}
 		respond 404
 	}
+	handle /origins.json {
+		header Content-Type application/json
+		respond `{"scheme":"{$LG_SCHEME}","domain":"{$LG_PUBLIC_DOMAIN}","port":"{$LG_PUBLIC_PORT_SUFFIX}"}`
+	}
 	handle {
 		root * /srv/console
 		file_server
 	}
 }
 
-{$LG_LISTEN_SCHEME}://litellm.{$LG_PUBLIC_DOMAIN} {
-	import ca-{$LG_TLS_ISSUER}
+(litellm) {
 	route {
 		@ui {
 			path_regexp (?i)^/+(ui.*|openapi\.json)$
@@ -112,35 +139,107 @@
 	}
 }
 
-{$LG_LISTEN_SCHEME}://langfuse.{$LG_PUBLIC_DOMAIN} {
-	import ca-{$LG_TLS_ISSUER}
-	import app langfuse-web:3000
-}
-
-# S3 API: browsers fetch presigned media and export URLs here.
-{$LG_LISTEN_SCHEME}://s3.{$LG_PUBLIC_DOMAIN} {
-	import ca-{$LG_TLS_ISSUER}
-	reverse_proxy rustfs:9000
-}
-
 (rustfs-off) {
+	respond 404
 }
 
 (rustfs-on) {
-	{$LG_LISTEN_SCHEME}://rustfs.{$LG_PUBLIC_DOMAIN} {
-		import ca-{$LG_TLS_ISSUER}
-		route {
-			@denied not remote_ip {$LG_OPERATOR_ALLOW:127.0.0.0/8 ::1}
-			respond @denied 404
-			import app rustfs:9001
-		}
+	route {
+		@denied not remote_ip {$LG_OPERATOR_ALLOW:127.0.0.0/8 ::1}
+		respond @denied 404
+		import app rustfs:9001
 	}
 }
 
-import rustfs-{$LG_RUSTFS_CONSOLE:off}
+(gateway) {
+	import access-log
+	import headers-{$LG_ACCESS_MODE:local}
+	@litellm host litellm.{$LG_PUBLIC_DOMAIN}
+	handle @litellm {
+		import litellm
+	}
+	@langfuse host langfuse.{$LG_PUBLIC_DOMAIN}
+	handle @langfuse {
+		import app langfuse-web:3000
+	}
+	@s3 host s3.{$LG_PUBLIC_DOMAIN}
+	handle @s3 {
+		reverse_proxy rustfs:9000
+	}
+	@rustfs host rustfs.{$LG_PUBLIC_DOMAIN}
+	handle @rustfs {
+		import rustfs-{$LG_RUSTFS_CONSOLE:off}
+	}
+	handle {
+		import console
+	}
+}
+
+(https-sites) {
+	https://{$LG_PUBLIC_DOMAIN}, https://litellm.{$LG_PUBLIC_DOMAIN}, https://langfuse.{$LG_PUBLIC_DOMAIN}, https://s3.{$LG_PUBLIC_DOMAIN} {
+		tls {
+			issuer {$LG_TLS_ISSUER}
+		}
+		import gateway
+	}
+	import https-rustfs-{$LG_RUSTFS_CONSOLE:off}
+}
+
+(https-rustfs-off) {
+}
+
+(https-rustfs-on) {
+	https://rustfs.{$LG_PUBLIC_DOMAIN} {
+		tls {
+			issuer {$LG_TLS_ISSUER}
+		}
+		import gateway
+	}
+}
+
+(mode-local) {
+	http://:80 {
+		import gateway
+	}
+	https://127.0.0.1 {
+		tls internal
+		import gateway
+	}
+	import https-sites
+}
+
+(mode-public) {
+	http://:80 {
+		import access-log
+		@health {
+			host {$LG_PUBLIC_DOMAIN}
+			path /health/*
+		}
+		handle @health {
+			import console
+		}
+		@apps host litellm.{$LG_PUBLIC_DOMAIN} langfuse.{$LG_PUBLIC_DOMAIN} s3.{$LG_PUBLIC_DOMAIN} rustfs.{$LG_PUBLIC_DOMAIN}
+		handle @apps {
+			redir https://{host}{$LG_PUBLIC_PORT_SUFFIX}{uri} 308
+		}
+		handle {
+			redir https://{$LG_PUBLIC_DOMAIN}{$LG_PUBLIC_PORT_SUFFIX}{uri} 308
+		}
+	}
+	import https-sites
+}
+
+(mode-proxy) {
+	http://:80 {
+		import gateway
+	}
+}
+
+import mode-{$LG_ACCESS_MODE:local}
 
 # Unpublished listener: healthcheck via loopback, checkpoint scrape via lg-gateway:8081.
 http://:8081 {
+	import access-log
 	handle /metrics {
 		@denied not remote_ip {$LG_CHECKPOINT_ALLOW:127.0.0.0/8 ::1}
 		respond @denied 404

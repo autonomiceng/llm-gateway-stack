@@ -17,7 +17,7 @@ import checkpoint
 
 class ReviewFixTests(unittest.TestCase):
     def test_https_probes_use_local_address_and_verified_public_hostname(self):
-        settings = {'LG_SCHEME': 'https', 'LG_PUBLIC_DOMAIN': 'gateway.test',
+        settings = {'LG_ACCESS_MODE': 'public', 'LG_SCHEME': 'https', 'LG_PUBLIC_DOMAIN': 'gateway.test',
                     'LG_TLS_ISSUER': 'acme', 'LG_BIND_HOST': '0.0.0.0', 'LG_HTTPS_PORT': '18453'}
         with patch.object(bootstrap, 'wait_ready') as wait:
             bootstrap.probe_gateway(settings, [], Mock())
@@ -38,7 +38,7 @@ class ReviewFixTests(unittest.TestCase):
 
     def test_restore_trusts_own_internal_ca_and_uses_http_behind_edge(self):
         stack = Mock()
-        env = {'LG_SCHEME': 'https', 'LG_LISTEN_SCHEME': 'https',
+        env = {'LG_ACCESS_MODE': 'local', 'LG_SCHEME': 'https', 'LG_LISTEN_SCHEME': 'dual',
                'LG_PUBLIC_DOMAIN': 'gateway.test', 'LG_TLS_ISSUER': 'internal'}
         stack.config = {'services': {'caddy': {'environment': env, 'ports': [
             {'target': 80, 'published': 18090, 'host_ip': '127.0.0.1'},
@@ -57,18 +57,19 @@ class ReviewFixTests(unittest.TestCase):
                 'exec', '-T', 'caddy', 'cat', '/data/caddy/pki/authorities/local/root.crt'])
             stack.runner.reset_mock()
             wait.reset_mock()
-            env['LG_LISTEN_SCHEME'] = 'http'
+            env['LG_ACCESS_MODE'] = 'proxy'
+            env['LG_TRUSTED_PROXIES'] = '172.30.0.0/24'
             checkpoint.health(stack)
             stack.runner.assert_not_called()
             self.assertEqual(wait.call_args.args[0], 'http://127.0.0.1:18090/health/langfuse')
             self.assertIsNone(wait.call_args.kwargs['context'])
-            env['LG_LISTEN_SCHEME'] = 'https'
+            env['LG_ACCESS_MODE'] = 'local'
             stack.runner.return_value = subprocess.CompletedProcess([], 1, '', 'private error')
             wait.reset_mock()
             with self.assertRaises(bootstrap.Refused) as error:
                 checkpoint.health(stack)
             self.assertEqual(error.exception.code, 'internal_ca_unavailable')
-            wait.assert_not_called()
+            self.assertEqual(wait.call_count, 2)
 
     def run_preflight(self, root, backup_root):
         scripts = root / 'scripts'

@@ -166,7 +166,7 @@ class PersistenceReviewTests(unittest.TestCase):
                     while True:
                         try:
                             state = Path(f'/proc/{child}/stat').read_text().split()[2]
-                        except FileNotFoundError:
+                        except (FileNotFoundError, ProcessLookupError):
                             break
                         if state == 'Z':
                             break

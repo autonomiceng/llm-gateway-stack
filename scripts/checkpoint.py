@@ -279,7 +279,8 @@ class Stack:
             'LG_POSTGRES_DATA_DIR', 'LG_VOLUME_PREFIX', 'LG_BACKUP_DIR', 'COMPOSE_PROJECT_NAME',
             'LG_ALLOW_SAME_FILESYSTEM_BACKUP')
             if key in os.environ and os.environ[key] != settings.get(key))
-        self.command = ['docker', 'compose', '-f', str(ROOT / 'compose.yaml'), '--project-directory', str(ROOT),
+        # Preserve the same mode files and operator overrides used by bootstrap.
+        self.command = ['docker', 'compose', '--project-directory', str(ROOT),
                         '--env-file', str(self.env_file)]
         self.config = json.loads(self.dc('config', '--format', 'json'))
         self.images = image_refs(ROOT / 'compose.yaml')

@@ -201,6 +201,128 @@ class BootstrapTests(unittest.TestCase):
         bootstrap.ensure_network(run)
         self.assertEqual(len(run.calls), 1)
 
+    def test_access_mode_defaults_and_conflicts(self):
+        for mode, scheme, listener, issuer in (
+            ("local", "http", "dual", "internal"),
+            ("public", "https", "https", "acme"),
+            ("proxy", "https", "http", "none"),
+        ):
+            with self.subTest(mode=mode):
+                values = bootstrap.access_settings({"LG_ACCESS_MODE": mode, "LG_PUBLIC_DOMAIN": "gateway.test",
+                                                    "LG_TRUSTED_PROXIES": "172.30.0.0/24"})
+                self.assertEqual(tuple(values[key] for key in ("LG_SCHEME", "LG_LISTEN_SCHEME", "LG_TLS_ISSUER")),
+                                 (scheme, listener, issuer))
+                environment = {**values, "LG_HTTPS_PUBLISHED": str(mode != "proxy").lower()}
+                result = subprocess.run(["sh", str(self.template.parent / "docker/caddy/access-mode.sh"), "true"],
+                                        env=environment, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(bootstrap.access_settings({})["LG_ACCESS_MODE"], "local")
+        for values in (
+            {"LG_ACCESS_MODE": "invalid"},
+            {"LG_SCHEME": "ftp"},
+            {"LG_ACCESS_MODE": "public"},
+            {"LG_ACCESS_MODE": "public", "LG_PUBLIC_DOMAIN": "gateway.test", "LG_SCHEME": "http"},
+            {"LG_ACCESS_MODE": "proxy"},
+            {"LG_ACCESS_MODE": "proxy", "LG_TRUSTED_PROXIES": "172.30.0.0/24", "COMPOSE_FILE": "compose.yaml"},
+            {"LG_PUBLIC_DOMAIN": "127.0.0.1"},
+            {"LG_PUBLIC_DOMAIN": 'untrusted"host'},
+        ):
+            with self.subTest(values=values), self.assertRaises(bootstrap.Refused):
+                bootstrap.access_settings(values)
+
+    def test_public_port_suffix_range_matches_gateway_entrypoint(self):
+        for suffix, valid in (("", True), (":1", True), (":65535", True), (":80", True),
+                              (":0", False), (":0000", False), (":65536", False),
+                              (":" + "9" * 5000, False), (":bad", False), (":", False)):
+            with self.subTest(suffix=suffix[:20]):
+                settings = {"LG_ACCESS_MODE": "local", "LG_PUBLIC_PORT_SUFFIX": suffix}
+                if valid:
+                    bootstrap.access_settings(settings)
+                else:
+                    with self.assertRaises(bootstrap.Refused) as raised:
+                        bootstrap.access_settings(settings)
+                    self.assertEqual(raised.exception.code, "invalid_access_settings")
+                result = subprocess.run([
+                    "sh", str(self.template.parent / "docker/caddy/access-mode.sh"), "true",
+                ], env={**settings, "LG_SCHEME": "http", "LG_LISTEN_SCHEME": "dual",
+                        "LG_TLS_ISSUER": "internal", "LG_PUBLIC_DOMAIN": "gateway.test"},
+                    capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0 if valid else 1)
+
+    def test_proxy_wildcard_binds_refused_before_bootstrap_or_gateway_start(self):
+        for bind in ("0.0.0.0", "::", "[::]", "0:0:0:0:0:0:0:0", "[0:0:0:0:0:0:0:0]",
+                     "[0000::0]", "::0000", "::0.0.0.0", "[0:0:0:0:0:0:0.0.0.0]", "::ffff:0:0", "::ffff:0.0.0.0", "[::FFFF:0:0]",
+                     "[0:0:0:0:0:ffff:0.0.0.0]", "0:0:0:0:0:ffff:0:0", "0000::FFFF:0000:0000",
+                     "0:0::0:ffff:0:0", "0:0:0:0:0:ffff::", "0:0:0:0:0:ffff:0::",
+                     "[0:0:0:0:0:ffff::0]"):
+            with self.subTest(bind=bind):
+                settings = {"LG_ACCESS_MODE": "proxy", "LG_BIND_HOST": bind,
+                            "LG_TRUSTED_PROXIES": "172.30.0.0/24"}
+                runner = runner_with()
+                with patch.dict(os.environ, settings, clear=True), \
+                     patch.object(bootstrap.shutil, "which", return_value="docker"), \
+                     self.assertRaises(bootstrap.Refused) as raised:
+                    bootstrap.bootstrap(["--env-file", str(self.env)], runner=runner)
+                self.assertEqual(raised.exception.code, "invalid_access_settings")
+                self.assertIn("LG_BIND_HOST", raised.exception.detail)
+                self.assertEqual(runner.calls, [])
+                self.assertFalse(self.env.exists())
+                # Supply direct Compose's environment independently of bootstrap.
+                result = subprocess.run([
+                    "sh", str(self.template.parent / "docker/caddy/access-mode.sh"), "printf", "gateway-started",
+                ], env={**settings, "LG_SCHEME": "https", "LG_LISTEN_SCHEME": "http",
+                        "LG_TLS_ISSUER": "none", "LG_PUBLIC_DOMAIN": "gateway.test",
+                        "LG_HTTPS_PUBLISHED": "false"}, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("LG_BIND_HOST", result.stderr)
+                self.assertEqual(result.stdout, "")
+
+    def test_proxy_explicit_interfaces_and_standalone_wildcards_remain_supported(self):
+        cases = [("proxy", bind) for bind in (None, "", "127.0.0.1", "192.0.2.10", "::1", "[::1]",
+                                               "[2001:db8::10]", "::ffff:127.0.0.1", "[::ffff:c000:20a]",
+                                               "ffff::", "0:ffff::")]
+        cases += [(mode, bind) for mode in ("local", "public") for bind in ("0.0.0.0", "::", "[::]")]
+        for mode, bind in cases:
+            with self.subTest(mode=mode, bind=bind):
+                settings = {"LG_ACCESS_MODE": mode, "LG_PUBLIC_DOMAIN": "gateway.test",
+                            "LG_TRUSTED_PROXIES": "172.30.0.0/24" if mode == "proxy" else ""}
+                if bind is not None:
+                    settings["LG_BIND_HOST"] = bind
+                values = bootstrap.access_settings(settings)
+                self.assertEqual(values.get("LG_BIND_HOST"), bind)
+                result = subprocess.run([
+                    "sh", str(self.template.parent / "docker/caddy/access-mode.sh"), "printf", "gateway-started",
+                ], env={**values, "LG_HTTPS_PUBLISHED": str(mode != "proxy").lower()},
+                    capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout, "gateway-started")
+
+    def test_gateway_probes_normalize_bracketed_ipv6_bind_addresses(self):
+        for bind, address in (("[::1]", "::1"), ("[2001:db8::10]", "2001:db8::10"),
+                              ("::1", "::1"), ("[::]", "::1"), ("::", "::1"),
+                              ("0.0.0.0", "127.0.0.1"), ("127.0.0.1", "127.0.0.1")):
+            with self.subTest(bind=bind), patch.object(bootstrap, "wait_ready") as wait, \
+                 patch.object(bootstrap.ssl, "create_default_context"):
+                bootstrap.probe_gateway({"LG_BIND_HOST": bind}, ["docker", "compose"], runner_with())
+                urls = [bootstrap.urllib.parse.urlsplit(call.args[0]) for call in wait.call_args_list]
+                self.assertEqual([url.hostname for url in urls], [address] * 4)
+                self.assertEqual([url.port for url in urls], [80, 80, 443, 443])
+                self.assertEqual([url.scheme for url in urls], ["http", "http", "https", "https"])
+                self.assertTrue(all(call.kwargs["host"] == "localhost" for call in wait.call_args_list))
+
+    def test_local_readiness_checks_both_protocols_with_own_ca(self):
+        runner = runner_with()
+        with patch.object(bootstrap, "wait_ready") as wait, \
+             patch.object(bootstrap.ssl.SSLContext, "load_verify_locations") as trust:
+            bootstrap.probe_gateway({"LG_ACCESS_MODE": "local", "LG_HTTP_PORT": "18080",
+                                     "LG_HTTPS_PORT": "18443"}, ["docker", "compose"], runner)
+        self.assertEqual([call.args[0] for call in wait.call_args_list], [
+            "http://127.0.0.1:18080/health/litellm", "http://127.0.0.1:18080/health/langfuse",
+            "https://127.0.0.1:18443/health/litellm", "https://127.0.0.1:18443/health/langfuse",
+        ])
+        trust.assert_called_once()
+        self.assertTrue(wait.call_args.kwargs["context"].check_hostname)
+
 
 if __name__ == "__main__":
     unittest.main()

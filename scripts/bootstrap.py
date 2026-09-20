@@ -249,6 +249,53 @@ def compose_up(root: Path, env_file: Path, runner: Runner) -> None:
         raise Refused("compose_up_failed", (result.stderr or result.stdout).strip()[-2000:])
 
 
+def access_settings(settings: dict[str, str]) -> dict[str, str]:
+    values = dict(settings)
+    mode = values.get("LG_ACCESS_MODE") or "local"
+    defaults = {
+        "local": ("http", "dual", "internal"),
+        "public": ("https", "https", "acme"),
+        "proxy": ("https", "http", "none"),
+    }
+    if mode not in defaults:
+        raise Refused("invalid_access_mode", "LG_ACCESS_MODE must be local, public or proxy")
+    values["LG_ACCESS_MODE"] = mode
+    values["LG_SCHEME"] = values.get("LG_SCHEME") or defaults[mode][0]
+    values["LG_LISTEN_SCHEME"], values["LG_TLS_ISSUER"] = defaults[mode][1:]
+    values.setdefault("LG_PUBLIC_DOMAIN", "localhost")
+    if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9.-]*", values["LG_PUBLIC_DOMAIN"]):
+        raise Refused("invalid_access_settings", "LG_PUBLIC_DOMAIN must be a DNS hostname")
+    if re.fullmatch(r"[0-9.]+", values["LG_PUBLIC_DOMAIN"]):
+        raise Refused("invalid_access_settings", "use a DNS application domain; 127.0.0.1 is a Local Mode root alias")
+    suffix = values.get("LG_PUBLIC_PORT_SUFFIX", "")
+    if not re.fullmatch(r"(?::[0-9]+)?", suffix):
+        raise Refused("invalid_access_settings", "LG_PUBLIC_PORT_SUFFIX must be empty or :port")
+    port = suffix[1:].lstrip("0")
+    if suffix and (not port or len(port) > 5 or int(port) > 65535):
+        raise Refused("invalid_access_settings", "LG_PUBLIC_PORT_SUFFIX must use a port from 1 to 65535")
+    bind = values.get("LG_BIND_HOST") or "127.0.0.1"
+    # Docker also unmaps IPv4-mapped unspecified addresses to the IPv4 wildcard.
+    mapped_wildcard = re.fullmatch(
+        r"\[?(?:[0:]*::[0:]*ffff:(?:0+:0+|0\.0\.0\.0)|"
+        r"(?:0+:){5}ffff:(?:0+:0+|0\.0\.0\.0|:|:0+|0+::))\]?", bind, re.IGNORECASE)
+    if mode == "proxy" and (bind == "0.0.0.0" or re.fullmatch(r"\[?[0:.]*:[0:.]*\]?", bind)
+                            or mapped_wildcard):
+        raise Refused("invalid_access_settings", "proxy requires a loopback or specific-interface LG_BIND_HOST; "
+                      "see docs/operations/ingress.md")
+    if (values["LG_SCHEME"] not in ("http", "https")
+            or (mode == "public" and values["LG_SCHEME"] != "https")
+            or (mode == "proxy" and not values.get("LG_TRUSTED_PROXIES", "").strip())
+            or (mode == "public" and (values["LG_PUBLIC_DOMAIN"] == "localhost"
+                                      or values["LG_PUBLIC_DOMAIN"].endswith(".localhost")))):
+        raise Refused("invalid_access_settings", "invalid public origin or missing proxy trust; "
+                      "see docs/operations/ingress.md")
+    files = values.get("COMPOSE_FILE", "compose.yaml:compose.${LG_ACCESS_MODE:-local}.yaml")
+    files = files.replace("${LG_ACCESS_MODE:-local}", mode).split(os.pathsep)
+    if mode != "local" and not any(Path(name).name == f"compose.{mode}.yaml" for name in files):
+        raise Refused("invalid_access_settings", f"COMPOSE_FILE must include compose.{mode}.yaml")
+    return values
+
+
 class LocalHTTPSConnection(http.client.HTTPSConnection):
     """Connect to the local listener while verifying the public TLS hostname."""
 
@@ -291,26 +338,28 @@ def wait_ready(url: str, timeout: float = 120.0, host: str | None = None,
 
 
 def probe_gateway(settings, command, runner):
-    # Behind platform-edge, probe the stack listener, where TLS has already terminated.
-    scheme = settings.get("LG_LISTEN_SCHEME") or settings.get("LG_SCHEME", "http")
+    settings = access_settings(settings)
     domain = settings.get("LG_PUBLIC_DOMAIN", "localhost")
     bind = settings.get("LG_BIND_HOST", "127.0.0.1")
+    bind = bind[1:-1] if bind.startswith("[") and bind.endswith("]") else bind
     address = "127.0.0.1" if bind in ("0.0.0.0", "127.0.0.1", "") else bind
     if address == "::":
         address = "::1"
-    port = settings.get("LG_HTTPS_PORT" if scheme == "https" else "LG_HTTP_PORT") or ("443" if scheme == "https" else "80")
-    context = None
-    if scheme == "https":
-        context = ssl.create_default_context()
-        if settings.get("LG_TLS_ISSUER") == "internal":
-            result = runner(command + ["exec", "-T", "caddy", "cat",
-                                       "/data/caddy/pki/authorities/local/root.crt"])
-            if result.returncode:
-                raise Refused("internal_ca_unavailable", "cannot read Caddy's internal root certificate")
-            context.load_verify_locations(cadata=result.stdout)
-    local = f"{scheme}://{'[' + address + ']' if ':' in address else address}:{port}"
-    for path in ("/health/litellm", "/health/langfuse"):
-        wait_ready(local + path, host=domain, context=context)
+    schemes = ("http", "https") if settings["LG_ACCESS_MODE"] == "local" else (settings["LG_LISTEN_SCHEME"],)
+    for scheme in schemes:
+        port = settings.get("LG_HTTPS_PORT" if scheme == "https" else "LG_HTTP_PORT") or ("443" if scheme == "https" else "80")
+        context = None
+        if scheme == "https":
+            context = ssl.create_default_context()
+            if settings["LG_TLS_ISSUER"] == "internal":
+                result = runner(command + ["exec", "-T", "caddy", "cat",
+                                           "/data/caddy/pki/authorities/local/root.crt"])
+                if result.returncode:
+                    raise Refused("internal_ca_unavailable", "cannot read Caddy's internal root certificate")
+                context.load_verify_locations(cadata=result.stdout)
+        local = f"{scheme}://{'[' + address + ']' if ':' in address else address}:{port}"
+        for path in ("/health/litellm", "/health/langfuse"):
+            wait_ready(local + path, host=domain, context=context)
 
 
 def bootstrap(argv: list[str], runner: Runner = run) -> int:
@@ -347,7 +396,9 @@ def bootstrap(argv: list[str], runner: Runner = run) -> int:
             for m in (ENV_LINE.match(line) for line in (lines or template.read_text().splitlines())) if m
         }
         # Match Compose's shell precedence for operator settings as well as secrets.
-        settings.update({key: os.environ[key] for key in settings if key in os.environ})
+        settings.update({key: value for key, value in os.environ.items()
+                         if key in settings or key.startswith("LG_") or key == "COMPOSE_FILE"})
+        settings = access_settings(settings)
         allow_same_filesystem = backup_policy(settings)
         project = project_name(settings)
         prefix = os.environ.get("LG_VOLUME_PREFIX", settings.get("LG_VOLUME_PREFIX")) or PROJECT

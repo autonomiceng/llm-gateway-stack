@@ -21,8 +21,10 @@ that reads or writes `.env` keeps every unmanaged line as it was and appends, ne
 
 ## docker/caddy
 
-One Caddyfile for both modes; the mode is three environment variables. Test a change with
-`caddy validate` in http, acme and internal modes (validate.sh does this). The console under
+One Caddyfile for local, public and proxy modes; the template selects the matching small
+Compose override. Test a change with `caddy validate` in all modes (validate.sh does this)
+and the isolated gateway contract in `scripts/smoke-access.py` (smoke.sh runs it).
+The console under
 `docker/caddy/console/` is static: no build step, no framework, no continuous animation.
 Health paths on the root hostname are the only paths that reach an app without its hostname.
 
