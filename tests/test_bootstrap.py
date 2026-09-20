@@ -230,6 +230,25 @@ class BootstrapTests(unittest.TestCase):
             with self.subTest(values=values), self.assertRaises(bootstrap.Refused):
                 bootstrap.access_settings(values)
 
+    def test_public_port_suffix_range_matches_gateway_entrypoint(self):
+        for suffix, valid in (("", True), (":1", True), (":65535", True), (":000080", True),
+                              (":0", False), (":0000", False), (":65536", False),
+                              (":" + "9" * 5000, False), (":bad", False), (":", False)):
+            with self.subTest(suffix=suffix[:20]):
+                settings = {"LG_ACCESS_MODE": "local", "LG_PUBLIC_PORT_SUFFIX": suffix}
+                if valid:
+                    bootstrap.access_settings(settings)
+                else:
+                    with self.assertRaises(bootstrap.Refused) as raised:
+                        bootstrap.access_settings(settings)
+                    self.assertEqual(raised.exception.code, "invalid_access_settings")
+                result = subprocess.run([
+                    "sh", str(self.template.parent / "docker/caddy/access-mode.sh"), "true",
+                ], env={**settings, "LG_SCHEME": "http", "LG_LISTEN_SCHEME": "dual",
+                        "LG_TLS_ISSUER": "internal", "LG_PUBLIC_DOMAIN": "gateway.test"},
+                    capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0 if valid else 1)
+
     def test_proxy_wildcard_binds_refused_before_bootstrap_or_gateway_start(self):
         for bind in ("0.0.0.0", "::", "[::]", "0:0:0:0:0:0:0:0", "[0:0:0:0:0:0:0:0]",
                      "[0000::0]", "::0000", "::0.0.0.0", "[0:0:0:0:0:0:0.0.0.0]", "::ffff:0:0", "::ffff:0.0.0.0", "[::FFFF:0:0]",
