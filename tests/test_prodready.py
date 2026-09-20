@@ -25,8 +25,9 @@ class ProductionReadinessTests(unittest.TestCase):
             calls.append(argv)
             return subprocess.CompletedProcess(argv, 0, '\n'.join(names[:2]), '')
 
-        bootstrap.ensure_volumes(runner, 'isolated')
-        self.assertEqual(calls[1:], [['docker', 'volume', 'create', name] for name in names[2:]])
+        bootstrap.ensure_volumes(runner, 'isolated', 'selected-project')
+        self.assertEqual(calls[1:], [['docker', 'volume', 'create', '--label',
+                                          'com.docker.compose.project=selected-project', name] for name in names[2:]])
         compose = (ROOT / 'compose.yaml').read_text()
         for suffix in bootstrap.VOLUMES:
             self.assertIn(f'  {suffix}:\n    external: true\n    name: ${{LG_VOLUME_PREFIX:-llm-gateway-stack}}-{suffix}', compose)
