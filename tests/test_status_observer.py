@@ -297,10 +297,10 @@ class ObserverTests(unittest.TestCase):
         self.assertEqual(public.read_text(), 'old observation')
 
 
-    def test_named_context_endpoint_wins_over_host_and_default_reports_host(self):
-        # Docker context inspect resolves the default context's DOCKER_HOST too.
+    def test_conflicting_connection_settings_cannot_authorize_local_probes(self):
+        # Require local evidence from both explicit selection and context inspection.
         for context, endpoint, expected in (
-            ('local-rootful', 'unix:///var/run/docker.sock', 'selected_default'),
+            ('local-rootful', 'unix:///var/run/docker.sock', None),
             ('remote', 'ssh://operator@remote', None),
             ('default', 'tcp://remote.invalid:2375', None),
         ):
