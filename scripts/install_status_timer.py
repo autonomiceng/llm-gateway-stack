@@ -98,7 +98,7 @@ def main():
     unit_dir = config / 'systemd/user'
     try:
         install(args.checkout, args.env_file, unit_dir)
-    except (OSError, Unavailable):
+    except (OSError, UnicodeError, Unavailable):
         print('status timer installation failed; inspect the user units before retrying', file=sys.stderr)
         return 1
     print('Status timer enabled. An active user manager with Docker access is required; '
