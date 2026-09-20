@@ -73,11 +73,11 @@ def install(root, env_file, unit_dir, runner=run):
                 handle = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
                                  0o600, dir_fd=fd)
                 written.append(name)
-                with os.fdopen(handle, 'w') as stream:
+                with os.fdopen(handle, 'w', encoding='utf-8') as stream:
                     stream.write(text)
                     stream.flush()
                     os.fsync(stream.fileno())
-        except OSError:
+        except (OSError, UnicodeError):
             for name in written:
                 os.unlink(name, dir_fd=fd)
             raise
@@ -92,7 +92,10 @@ def main():
     parser.add_argument('--install', action='store_true', required=True,
                         help='write user units and enable the timer now')
     args = parser.parse_args()
-    unit_dir = Path(os.environ.get('XDG_CONFIG_HOME', Path.home() / '.config')) / 'systemd/user'
+    config = Path(os.environ.get('XDG_CONFIG_HOME', ''))
+    if not config.is_absolute():
+        config = Path.home() / '.config'
+    unit_dir = config / 'systemd/user'
     try:
         install(args.checkout, args.env_file, unit_dir)
     except (OSError, Unavailable):

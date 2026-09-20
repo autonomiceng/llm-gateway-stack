@@ -69,7 +69,7 @@ class PublicationTests(unittest.TestCase):
                 pass
 
     def test_bad_json_and_size_limits_do_not_publish_a_partial_document(self):
-        for text in ('{"a":1,"a":2}', 'NaN', '{broken', '[' * 5000, '"' + 'x' * 65536 + '"'):
+        for text in ('{"a":1,"a":2}', 'NaN', '1e999', '-1e999', '{broken', '[' * 5000, '"' + 'x' * 65536 + '"'):
             with self.subTest(text=text[:20]), self.assertRaises(io.Unavailable):
                 io.read_json(text)
         with io.directory(self.root) as fd:
@@ -102,9 +102,12 @@ class PublicationTests(unittest.TestCase):
         self.assertEqual(stat.S_IMODE(record.stat().st_mode), 0o600)
         self.assertEqual(stat.S_IMODE(record.parent.stat().st_mode), 0o700)
         self.assertEqual(io.read_task(self.root, env)['lastExecutionAt'], AT)
+        record.write_bytes(b'\xff')
+        with self.assertRaises(io.Unavailable):
+            io.read_task(self.root, env)
 
     def test_installer_selects_explicit_paths_and_is_reversible_without_overwriting(self):
-        root = self.root / 'checkout with $money% and "quotes"'
+        root = self.root / 'checkout café with $money% and "quotes"'
         (root / 'scripts').mkdir(parents=True)
         (root / 'scripts/status_observer.py').touch()
         (root / 'compose.yaml').touch()
@@ -130,6 +133,32 @@ class PublicationTests(unittest.TestCase):
             with self.assertRaises(io.Unavailable):
                 installer.quote(value)
 
+    def test_partial_unit_write_rolls_back_without_enabling_timer(self):
+        (self.root / 'scripts').mkdir()
+        (self.root / 'scripts/status_observer.py').touch()
+        (self.root / 'compose.yaml').touch()
+        env = self.root / '.env'
+        env.touch()
+        unit_dir = self.root / 'units'
+        original = os.open
+        def opened(path, *args, **kwargs):
+            if path == installer.NAME + '.timer':
+                raise OSError('injected second write failure')
+            return original(path, *args, **kwargs)
+        calls = []
+        with patch.object(installer.os, 'open', side_effect=opened), self.assertRaises(OSError):
+            installer.install(self.root, env, unit_dir, lambda *args, **kwargs: calls.append(args))
+        self.assertEqual(list(unit_dir.iterdir()), [])
+        self.assertEqual(calls, [])
+
+    def test_xdg_relative_and_empty_values_use_home_config(self):
+        argv = ['installer', '--checkout', str(self.root), '--env-file', str(self.root / '.env'), '--install']
+        for value in ('', 'relative', str(self.root / 'absolute')):
+            with patch.dict(os.environ, {'XDG_CONFIG_HOME': value}), patch.object(sys, 'argv', argv), \
+                    patch.object(installer, 'install') as install, patch('builtins.print'):
+                self.assertEqual(installer.main(), 0)
+            expected = Path(value) if Path(value).is_absolute() else Path.home() / '.config'
+            self.assertEqual(install.call_args.args[2], expected / 'systemd/user')
 
 
 if __name__ == '__main__':

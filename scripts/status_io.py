@@ -1,6 +1,7 @@
 """Bounded private reads and atomic publication for the host status observer."""
 
 import json
+import math
 import os
 import selectors
 import stat
@@ -76,8 +77,14 @@ def read_json(text, limit=65536):
             result[key] = value
         return result
 
+    def finite(text):
+        value = float(text)
+        if not math.isfinite(value):
+            raise Unavailable()
+        return value
+
     try:
-        return json.loads(text, object_pairs_hook=unique,
+        return json.loads(text, object_pairs_hook=unique, parse_float=finite,
                           parse_constant=lambda _: (_ for _ in ()).throw(Unavailable()))
     except (ValueError, RecursionError) as error:
         raise Unavailable() from error
@@ -149,10 +156,13 @@ def read_task(root, env_file):
     with directory(root / 'data' / 'status', 0o700) as fd:
         regular(fd, 'bootstrap.json')
         handle = os.open('bootstrap.json', os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd)
-        with os.fdopen(handle) as stream:
+        with os.fdopen(handle, encoding='utf-8') as stream:
             if stat.S_IMODE(os.fstat(stream.fileno()).st_mode) & 0o077:
                 raise Unavailable()
-            record = read_json(stream.read(65537))
+            try:
+                record = read_json(stream.read(65537))
+            except UnicodeError as error:
+                raise Unavailable() from error
     if not isinstance(record, dict) or record.get('envFile') != str(env_file):
         raise Unavailable()
     return record
