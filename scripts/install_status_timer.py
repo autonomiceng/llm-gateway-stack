@@ -99,7 +99,7 @@ def main():
     try:
         install(args.checkout, args.env_file, unit_dir)
     except (OSError, UnicodeError, Unavailable):
-        print('status timer installation failed; inspect the user units before retrying', file=sys.stderr)
+        print('status timer installation failed; disable --now the retained timer and service before inspecting or removing their unit files', file=sys.stderr)
         return 1
     print('Status timer enabled. An active user manager with Docker access is required; '
           'enable lingering separately for observation after logout.')

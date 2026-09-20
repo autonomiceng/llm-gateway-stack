@@ -92,8 +92,11 @@ class PublicationTests(unittest.TestCase):
             self.assertEqual(str(raised.exception), '')
             self.assertLess(time.monotonic() - started, 2)
         self.assertEqual(io.run([sys.executable, '-c', 'print("ok")']), 'ok\n')
+        for code in (125, 126, 127):
+            with self.subTest(code=code), self.assertRaises(io.Unsupported):
+                io.run([sys.executable, '-c', f'raise SystemExit({code})'])
         with self.assertRaises(io.Unsupported):
-            io.run([sys.executable, '-c', 'raise SystemExit(127)'])
+            io.run(['/nonexistent-status-probe'])
 
     def test_task_records_are_private_and_malformed_records_do_not_break_siblings(self):
         env = self.root / '.env'

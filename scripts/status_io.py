@@ -18,7 +18,7 @@ class Unavailable(Exception):
 
 
 class Unsupported(Unavailable):
-    """The installed image does not provide this known probe executable."""
+    """The probe could not execute or yield readable evidence about the component."""
 
 
 def now():
@@ -52,7 +52,7 @@ def run(argv, *, timeout=4, limit=65536, cwd=None, env=None):
                             if key.fileobj is process.stdout:
                                 output.extend(chunk)
                 code = process.wait(timeout=max(0.001, deadline - time.monotonic()))
-                if code in (126, 127):
+                if code in (125, 126, 127):
                     raise Unsupported()
                 if code:
                     raise Unavailable()
@@ -61,7 +61,9 @@ def run(argv, *, timeout=4, limit=65536, cwd=None, env=None):
                 if process.poll() is None:
                     process.kill()  # Only the child captured at spawn.
                 process.wait()
-    except (OSError, UnicodeError, subprocess.SubprocessError) as error:
+    except (OSError, UnicodeError) as error:
+        raise Unsupported() from error
+    except subprocess.SubprocessError as error:
         raise Unavailable() from error
 
 
