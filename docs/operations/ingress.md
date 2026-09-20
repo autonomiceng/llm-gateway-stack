@@ -36,7 +36,7 @@ Issuer and listener scheme are derived from the mode and are not operator settin
 
 ## Public Mode
 
-Set DNS A or AAAA records for the four default hostnames to this host, open ports 80 and 443, and in `.env`:
+Set DNS A or AAAA records for the five default hostnames (root, LiteLLM, Langfuse, S3, and `rustfs.<LG_PUBLIC_DOMAIN>`) to this host, open ports 80 and 443, and in `.env`:
 
 ```sh
 LG_PUBLIC_DOMAIN=gateway.example.com
@@ -98,10 +98,11 @@ LG_CONSOLE_URL=https://darkforge.tail694fe2.ts.net:8446
 LG_LITELLM_URL=https://darkforge.tail694fe2.ts.net:8443
 LG_LANGFUSE_URL=https://darkforge.tail694fe2.ts.net:8444
 LG_S3_URL=https://darkforge.tail694fe2.ts.net:8445
+LG_RUSTFS_URL=https://darkforge.tail694fe2.ts.net:8449
 ```
 
 Keep the template's `COMPOSE_FILE` setting. Set `LG_TRUSTED_PROXIES` to Edge's address
-and choose a free loopback `LG_HTTP_PORT`. Platform Edge must serve HTTPS on these four
+and choose a free loopback `LG_HTTP_PORT`. Platform Edge must serve HTTPS on these five
 ports and forward each request to `lg-gateway:80`. It must preserve the complete `Host`,
 including the port, and set `X-Forwarded-Proto` to `https`. Rewriting the S3 Host breaks
 presigned media and export links. Opening firewall ports alone does not configure Edge.

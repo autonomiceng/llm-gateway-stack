@@ -7,11 +7,16 @@
     if (!response.ok) throw new Error(String(response.status));
     const origin = await response.json();
     const consoleLink = document.querySelector('[data-rustfs-console]');
-    consoleLink.hidden = origin.rustfsConsole !== 'on';
-    document.querySelector('[data-rustfs-disabled]').hidden = !consoleLink.hidden;
+    const consoleEnabled = origin.rustfsConsole === 'on';
+    document.querySelector('[data-rustfs-disabled]').hidden = consoleEnabled;
     const hostFor = (sub) => origin[sub] || `${origin.scheme}://${sub}.${origin.domain}${origin.port}`;
     for (const link of document.querySelectorAll("[data-link]")) {
       link.dataset.targetUrl = hostFor(link.dataset.link) + (link.dataset.path || "/");
+      if (link === consoleLink && !consoleEnabled) {
+        link.removeAttribute("href");
+        link.setAttribute("aria-disabled", "true");
+        continue;
+      }
       const optional = link.closest?.("[data-optional]");
       if (!optional || optional.dataset.ready === "true") {
         link.href = link.dataset.targetUrl;

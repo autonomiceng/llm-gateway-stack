@@ -257,6 +257,20 @@
 	import https-sites
 }
 
+(public-rustfs-off) {
+	@rustfs host rustfs.{$LG_PUBLIC_DOMAIN}
+	handle @rustfs {
+		respond 404
+	}
+}
+
+(public-rustfs-on) {
+	@rustfs host rustfs.{$LG_PUBLIC_DOMAIN}
+	handle @rustfs {
+		redir https://{host}{$LG_PUBLIC_PORT_SUFFIX}{uri} 308
+	}
+}
+
 (mode-public) {
 	http://:80 {
 		import access-log
@@ -267,7 +281,8 @@
 		handle @health {
 			import console
 		}
-		@apps host litellm.{$LG_PUBLIC_DOMAIN} langfuse.{$LG_PUBLIC_DOMAIN} s3.{$LG_PUBLIC_DOMAIN} rustfs.{$LG_PUBLIC_DOMAIN}
+		import public-rustfs-{$LG_RUSTFS_CONSOLE:on}
+		@apps host litellm.{$LG_PUBLIC_DOMAIN} langfuse.{$LG_PUBLIC_DOMAIN} s3.{$LG_PUBLIC_DOMAIN}
 		handle @apps {
 			redir https://{host}{$LG_PUBLIC_PORT_SUFFIX}{uri} 308
 		}

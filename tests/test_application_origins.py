@@ -105,10 +105,11 @@ const fs = require('node:fs');
     const links = ['litellm', 'langfuse', 's3', 'grafana', 'backplane', 'rustfs'].map(link => ({
       dataset: {link, path: '/ui/'}, disabled: true,
       closest: () => ['grafana', 'backplane'].includes(link) ? {dataset: {ready: 'true'}} : null,
-      removeAttribute(name) { if (name === 'aria-disabled') this.disabled = false; }
+      removeAttribute(name) { if (name === 'aria-disabled') this.disabled = false; if (name === 'href') delete this.href; },
+      setAttribute(name) { if (name === 'aria-disabled') this.disabled = true; }
     }));
     const codes = ['litellm', 'langfuse', 's3', 'grafana', 'backplane', 'rustfs'].map(url => ({dataset: {url}}));
-    const consoleLink = {}; const disabled = {}; let poll;
+    const consoleLink = links.find(l => l.dataset.link === 'rustfs'); const disabled = {}; let poll;
     const context = {AbortSignal, location: {protocol: 'https:', host: 'unrelated.test'},
       fetch: async path => ({ok: true, json: async () => path === '/origins.json' ? origins : {}}),
       document: {querySelectorAll: s => s === '[data-link]' ? links : s === '[data-url]' ? codes : [],
@@ -120,11 +121,14 @@ const fs = require('node:fs');
     for (const el of links) assert.equal(el.disabled, false, 'ready links must be accessible after origins load');
     for (const el of codes) assert.equal(el.textContent,
       explicit ? origins[el.dataset.url] : `http://${el.dataset.url}.localhost:8080`);
-    assert.equal(consoleLink.hidden, false);
+    assert.equal(consoleLink.disabled, false);
     origins.rustfsConsole = 'off'; origins.backplane = 'https://new.test:8448';
     await poll();
-    assert.equal(consoleLink.hidden, true); assert.equal(disabled.hidden, false);
+    assert.equal(consoleLink.href, undefined); assert.equal(consoleLink.disabled, true); assert.equal(disabled.hidden, false);
     assert.equal(links.find(l => l.dataset.link === 'backplane').href, 'https://new.test:8448/ui/');
+    origins.rustfsConsole = 'on'; await poll();
+    assert.equal(consoleLink.disabled, false); assert.equal(disabled.hidden, true);
+    assert.ok(consoleLink.href.endsWith('/ui/'));
   }
 })();
 '''

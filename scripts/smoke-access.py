@@ -131,7 +131,16 @@ http.server.HTTPServer(('', 4000), Handler).serve_forever()
         self.assertEqual(status, 308)
         self.assertEqual(headers["Location"], f"https://litellm.gateway.test:{HTTPS_PORT}/v1/models")
         self.assertEqual(self.request("/health/litellm", "gateway.test")[0], 200)
+        self.assertEqual(self.request("/", "rustfs.gateway.test")[1]["Location"], f"https://rustfs.gateway.test:{HTTPS_PORT}/")
         self.assertEqual(self.request("/", "untrusted.test")[1]["Location"], f"https://gateway.test:{HTTPS_PORT}/")
+
+    def test_public_disabled_rustfs_does_not_redirect(self):
+        self.start("public", origins={"LG_RUSTFS_CONSOLE": "off"})
+        for path in ("/", "/rustfs/console/"):
+            status, headers, _ = self.request(path, "rustfs.gateway.test")
+            self.assertEqual(status, 404)
+            self.assertNotIn("Location", headers)
+        self.assertEqual(self.request("/", "litellm.gateway.test")[0], 308)
 
     def test_proxy_forwarding_and_http_only(self):
         hostname = "darkforge.tail694fe2.ts.net"

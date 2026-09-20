@@ -28,7 +28,6 @@
           <p>OpenAI-compatible API, virtual keys, budgets, routing.</p>
           <dl>
             <dt>API</dt><dd><code data-url="litellm">…</code></dd>
-            <dt>Admin</dt><dd><a data-link="litellm" data-path="/ui/">/ui/</a></dd>
             <dt>Version</dt><dd data-version="litellm">…</dd>
           </dl>
         </li>
@@ -45,12 +44,12 @@
         </li>
         <li data-service="rustfs" data-host="rustfs">
           <div class="row">
-            <h2>Object storage</h2>
+            <h2><a data-rustfs-console data-link="rustfs" data-path="/rustfs/console/" aria-disabled="true">Object storage</a></h2>
             <span class="badge" data-badge>checking</span>
           </div>
           <p>RustFS holds Langfuse events, media and exports.</p>
+          <p data-rustfs-disabled hidden>Admin console is disabled.</p>
           <dl>
-            <dt>Admin</dt><dd><a data-rustfs-console data-link="rustfs" data-path="/rustfs/console/">Open RustFS</a><span data-rustfs-disabled hidden>Disabled in this installation (LG_RUSTFS_CONSOLE=off).</span></dd>
             <dt>S3</dt><dd><code data-url="s3">…</code></dd>
             <dt>Version</dt><dd data-version="rustfs">…</dd>
           </dl>
