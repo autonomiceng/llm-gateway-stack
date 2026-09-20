@@ -124,15 +124,21 @@ its pins or storage settings. Stop and remove leftover one-off project container
 
 Every configured image, including helpers, must be available locally before backup.
 Tags are resolved through Docker's local `RepoDigests` and checked against the local image
-content ID. When several registry digests are available, capture prefers the configured
-repository. If that repository has no digest, capture records an available registry
-identity for the same image; inspect the manifest and retain access to that registry.
-Local images without a registry digest are refused before capture or fencing;
-publish and pull the image, then recreate the affected service before backing it up.
-Checkpoint helpers never pull images during capture. Keep recorded registry digests
-available for recovery and pull them before restore. Restore checks every required image
-before creating target storage. Do not retag or prune images during
-a Checkpoint operation. Overrides still need compatible commands, UIDs and data layouts.
+content ID. Capture prefers a matching repository reference when several are available.
+Docker may attach RepoDigests to unpublished local builds and aliases: this proves local
+immutable identity, not registry publication or continued availability. Images without a
+verifiable immutable reference are refused before fencing; publish and pull the exact
+image or select a reproducible image and reconcile the deployment before retrying.
+
+Image custody is external to the data Checkpoint. Retain the recorded references in a
+registry, or a protected image archive whose load was tested on the recovery host's Docker
+store type and platform. After loading, all captured immutable references must resolve;
+a tag-only load without those references is unsupported. A same-host roundtrip does not
+qualify a different engine/store type or architecture. An unpublished alias cannot be
+pulled from a registry. Never infer an off-host image backup from a successful data
+Checkpoint. Helpers never pull during capture, and restore checks every required image
+before creating target storage. Do not retag or prune images during a Checkpoint operation.
+Overrides still need compatible commands, UIDs and data layouts.
 
 The default fence stops Caddy, LiteLLM and Langfuse web in that order with a 120-second
 shutdown grace per service. The worker stays running until three consecutive two-second

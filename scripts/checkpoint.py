@@ -333,7 +333,7 @@ class Stack:
                          if v['target'] == target))
 
     def capture_images(self):
-        """Resolve local tags to restorable registry digests before any fencing."""
+        """Resolve locally verifiable immutable references before any fencing."""
         self.image_ids = {}
         refs = {}
         for service, ref in image_refs(self.config).items():
@@ -344,7 +344,7 @@ class Stack:
             candidates = sorted((value for value in json.loads(digests) or [] if immutable(value)),
                                 key=lambda value: (image_repository(value) != image_repository(ref), value))
             if not immutable(ref) and not candidates:
-                raise RuntimeError(f'{service}: image has no registry digest; publish and pull it before backup')
+                raise RuntimeError(f'{service}: image has no verifiable immutable reference; publish and pull it before backup')
             refs[service] = ref if immutable(ref) else candidates[0]
             resolved_id = checked(['docker', 'image', 'inspect', refs[service], '--format', '{{.Id}}'],
                                   self.runner, diagnostics=self.backups / '.diagnostics', label='capture-identity')
@@ -352,6 +352,8 @@ class Stack:
                 raise RuntimeError(f'immutable image content differs from configured image: {service}')
             self.image_ids[service] = image_id
         self.images = refs
+        if any(not immutable(ref) for ref in image_refs(self.config).values()):
+            print('Image custody is external: retain recorded references in a registry or a tested off-host image archive; publication was not checked.', file=sys.stderr, flush=True)
 
     def attest_runtime(self):
         """Refuse checkout/runtime drift before fencing or creating capture artifacts."""
