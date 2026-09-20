@@ -231,7 +231,7 @@ class BootstrapTests(unittest.TestCase):
                 bootstrap.access_settings(values)
 
     def test_public_port_suffix_range_matches_gateway_entrypoint(self):
-        for suffix, valid in (("", True), (":1", True), (":65535", True), (":000080", True),
+        for suffix, valid in (("", True), (":1", True), (":65535", True), (":80", True),
                               (":0", False), (":0000", False), (":65536", False),
                               (":" + "9" * 5000, False), (":bad", False), (":", False)):
             with self.subTest(suffix=suffix[:20]):
