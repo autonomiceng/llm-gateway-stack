@@ -232,7 +232,10 @@ class BootstrapTests(unittest.TestCase):
 
     def test_proxy_wildcard_binds_refused_before_bootstrap_or_gateway_start(self):
         for bind in ("0.0.0.0", "::", "[::]", "0:0:0:0:0:0:0:0", "[0:0:0:0:0:0:0:0]",
-                     "[0000::0]", "::0000"):
+                     "[0000::0]", "::0000", "::0.0.0.0", "[0:0:0:0:0:0:0.0.0.0]", "::ffff:0:0", "::ffff:0.0.0.0", "[::FFFF:0:0]",
+                     "[0:0:0:0:0:ffff:0.0.0.0]", "0:0:0:0:0:ffff:0:0", "0000::FFFF:0000:0000",
+                     "0:0::0:ffff:0:0", "0:0:0:0:0:ffff::", "0:0:0:0:0:ffff:0::",
+                     "[0:0:0:0:0:ffff::0]"):
             with self.subTest(bind=bind):
                 settings = {"LG_ACCESS_MODE": "proxy", "LG_BIND_HOST": bind,
                             "LG_TRUSTED_PROXIES": "172.30.0.0/24"}
@@ -257,7 +260,8 @@ class BootstrapTests(unittest.TestCase):
 
     def test_proxy_explicit_interfaces_and_standalone_wildcards_remain_supported(self):
         cases = [("proxy", bind) for bind in (None, "", "127.0.0.1", "192.0.2.10", "::1", "[::1]",
-                                               "[2001:db8::10]")]
+                                               "[2001:db8::10]", "::ffff:127.0.0.1", "[::ffff:c000:20a]",
+                                               "ffff::", "0:ffff::")]
         cases += [(mode, bind) for mode in ("local", "public") for bind in ("0.0.0.0", "::", "[::]")]
         for mode, bind in cases:
             with self.subTest(mode=mode, bind=bind):

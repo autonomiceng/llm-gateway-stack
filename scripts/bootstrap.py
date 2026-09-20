@@ -270,8 +270,12 @@ def access_settings(settings: dict[str, str]) -> dict[str, str]:
     if not re.fullmatch(r"(?::[0-9]+)?", values.get("LG_PUBLIC_PORT_SUFFIX", "")):
         raise Refused("invalid_access_settings", "LG_PUBLIC_PORT_SUFFIX must be empty or :port")
     bind = values.get("LG_BIND_HOST") or "127.0.0.1"
-    # Include bracketed and expanded IPv6 wildcard spellings accepted by Compose.
-    if mode == "proxy" and (bind == "0.0.0.0" or re.fullmatch(r"\[?[0:]*:[0:]*\]?", bind)):
+    # Docker also unmaps IPv4-mapped unspecified addresses to the IPv4 wildcard.
+    mapped_wildcard = re.fullmatch(
+        r"\[?(?:[0:]*::[0:]*ffff:(?:0+:0+|0\.0\.0\.0)|"
+        r"(?:0+:){5}ffff:(?:0+:0+|0\.0\.0\.0|:|:0+|0+::))\]?", bind, re.IGNORECASE)
+    if mode == "proxy" and (bind == "0.0.0.0" or re.fullmatch(r"\[?[0:.]*:[0:.]*\]?", bind)
+                            or mapped_wildcard):
         raise Refused("invalid_access_settings", "proxy requires a loopback or specific-interface LG_BIND_HOST; "
                       "see docs/operations/ingress.md")
     if (values["LG_SCHEME"] not in ("http", "https")

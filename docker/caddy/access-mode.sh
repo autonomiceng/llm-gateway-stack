@@ -18,15 +18,18 @@ case "$LG_ACCESS_MODE" in
     case "$LG_PUBLIC_DOMAIN" in localhost|*.localhost|127.*|*:*|"") refuse "public requires a DNS domain" ;; esac
     ;;
   proxy)
-    # Reject IPv4 and all bracketed/expanded IPv6 wildcard spellings.
+    # Reject native and IPv4-mapped wildcard spellings, including compressed IPv6.
     bind=${LG_BIND_HOST:-127.0.0.1}
     case "$bind" in
       0.0.0.0) refuse "proxy requires a loopback or specific-interface LG_BIND_HOST" ;;
       *:*) case "$bind" in
-        *[!0:\[\]]*) ;;
+        *[!0:.\[\]]*) ;;
         *) refuse "proxy requires a loopback or specific-interface LG_BIND_HOST" ;;
       esac ;;
     esac
+    if printf '%s\n' "$bind" | grep -Eiq '^\[?([0:]*::[0:]*ffff:(0+:0+|0\.0\.0\.0)|(0+:){5}ffff:(0+:0+|0\.0\.0\.0|:|:0+|0+::))\]?$'; then
+      refuse "proxy requires a loopback or specific-interface LG_BIND_HOST"
+    fi
     [ "$LG_LISTEN_SCHEME" = http ] && [ "$LG_TLS_ISSUER" = none ] || refuse "behind another gateway, use HTTP only; include compose.proxy.yaml"
     [ "$LG_HTTPS_PUBLISHED" = false ] || refuse "proxy requires compose.proxy.yaml"
     [ -n "$LG_TRUSTED_PROXIES" ] || refuse "proxy requires LG_TRUSTED_PROXIES"
