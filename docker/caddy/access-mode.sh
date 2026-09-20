@@ -6,7 +6,11 @@ case "$LG_PUBLIC_DOMAIN" in ""|*[!a-zA-Z0-9.-]*) refuse LG_PUBLIC_DOMAIN ;; esac
 case "$LG_PUBLIC_DOMAIN" in *[!0-9.]*) ;; *) refuse "use a DNS application domain; 127.0.0.1 is a local root alias" ;; esac
 case "${LG_PUBLIC_PORT_SUFFIX:-}" in
   "") ;;
-  :*) case "${LG_PUBLIC_PORT_SUFFIX#:}" in ""|*[!0-9]*) refuse LG_PUBLIC_PORT_SUFFIX ;; esac ;;
+  :*)
+    case "${LG_PUBLIC_PORT_SUFFIX#:}" in ""|*[!0-9]*) refuse LG_PUBLIC_PORT_SUFFIX ;; esac
+    port=$(printf '%s' "${LG_PUBLIC_PORT_SUFFIX#:}" | sed 's/^0*//')
+    [ -n "$port" ] && [ "${#port}" -le 5 ] && [ "$port" -le 65535 ] || refuse LG_PUBLIC_PORT_SUFFIX
+    ;;
   *) refuse LG_PUBLIC_PORT_SUFFIX ;;
 esac
 case "$LG_ACCESS_MODE" in
