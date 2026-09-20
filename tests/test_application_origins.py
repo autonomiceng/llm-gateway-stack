@@ -108,11 +108,21 @@ const fs = require('node:fs');
       removeAttribute(name) { if (name === 'aria-disabled') this.disabled = false; if (name === 'href') delete this.href; },
       setAttribute(name) { if (name === 'aria-disabled') this.disabled = true; }
     }));
-    const codes = ['litellm', 'langfuse', 's3', 'grafana', 'backplane', 'rustfs'].map(url => ({dataset: {url}}));
+    const element = () => ({children: [], classList: {add() {}},
+      setAttribute(name, value) { this[name] = value; },
+      addEventListener(name, handler) { this[name] = handler; },
+      append(...children) { this.children.push(...children); },
+      querySelector(selector) { return this.children.find(c => selector === '.copy' && c.className === 'copy'); }});
+    const codes = ['litellm', 'langfuse', 's3', 'grafana', 'backplane', 'rustfs'].map(url => ({
+      dataset: {url}, parentElement: element(), closest: () => ({querySelector: () => ({textContent: url})})
+    }));
+    let copied, clearFeedback;
+
     const consoleLink = links.find(l => l.dataset.link === 'rustfs'); const disabled = {}; let poll;
-    const context = {AbortSignal, location: {protocol: 'https:', host: 'unrelated.test'},
+    const context = {AbortSignal, navigator: {clipboard: {writeText: async value => {copied = value;}}},
+      setTimeout: fn => {clearFeedback = fn; return 1;}, clearTimeout() {}, location: {protocol: 'https:', host: 'unrelated.test'},
       fetch: async path => ({ok: true, json: async () => path === '/origins.json' ? origins : {}}),
-      document: {querySelectorAll: s => s === '[data-link]' ? links : s === '[data-url]' ? codes : [],
+      document: {createElement: element, querySelectorAll: s => s === '[data-link]' ? links : s === '[data-url]' ? codes : [],
                  querySelector: s => s === '[data-rustfs-console]' ? consoleLink : s === '[data-rustfs-disabled]' ? disabled : ({})}, setInterval: fn => {poll = fn;}};
     vm.runInNewContext(fs.readFileSync(process.argv[1], 'utf8'), context);
     await new Promise(setImmediate);
@@ -129,6 +139,16 @@ const fs = require('node:fs');
     origins.rustfsConsole = 'on'; await poll();
     assert.equal(consoleLink.disabled, false); assert.equal(disabled.hidden, true);
     assert.ok(consoleLink.href.endsWith('/ui/'));
+    const endpoint = codes.find(c => c.dataset.url === 'backplane');
+    const copy = endpoint.parentElement.querySelector('.copy');
+    const feedback = endpoint.parentElement.children.find(c => c.className === 'copy-status');
+    assert.equal(copy.disabled, false);
+    await copy.click();
+    assert.equal(copied, 'https://new.test:8448', 'copy must use refreshed endpoint');
+    assert.equal(feedback.textContent, 'Copied'); clearFeedback(); assert.equal(feedback.textContent, '');
+    context.navigator.clipboard.writeText = async () => { throw new Error('denied'); };
+    await copy.click(); assert.equal(feedback.textContent, 'Select the address to copy');
+
   }
 })();
 '''
