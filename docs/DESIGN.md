@@ -85,8 +85,9 @@ See [ingress](operations/ingress.md) for ports, explicit application hostnames a
 ## Stack
 
 Caddy 2.11, LiteLLM 1.101, Langfuse 4.37, PostgreSQL 18, ClickHouse 26.8 LTS, RustFS 1.0,
-Valkey 9.1. All pinned by digest in `compose.yaml`. Python 3 standard library for scripts.
-No build step anywhere; every image is pulled.
+Valkey 9.1. Default images are pinned by digest in `compose.yaml`; optional `LG_*_IMAGE` settings
+replace complete references through native Compose interpolation. Python 3 standard library for scripts.
+No repository build step; prepare operator images separately.
 
 ## Explicitly not built
 

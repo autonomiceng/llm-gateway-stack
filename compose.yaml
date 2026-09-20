@@ -1,5 +1,5 @@
 # LLM Gateway Stack (ADR-0014). One file, no profiles needed for a full install.
-# Images are pinned as tag plus digest; Renovate raises bumps, humans merge them.
+# Default images are pinned as tag plus digest; Renovate raises bumps, humans merge them.
 # Every published port belongs to Caddy. Everything else is private to this project
 # or, for ingress and metrics targets, reachable on the shared `platform`
 # network under an lg- prefixed alias.
@@ -70,7 +70,7 @@ x-langfuse-depends: &langfuse-depends
 
 services:
   caddy:
-    image: caddy:2.11.4@sha256:13ba145cba2f3e28fa801994876e4c086d1b95d5aa2a520a734765ffb6b12017
+    image: ${LG_CADDY_IMAGE:-caddy:2.11.4@sha256:13ba145cba2f3e28fa801994876e4c086d1b95d5aa2a520a734765ffb6b12017}
     restart: unless-stopped
     logging: *logging
     pids_limit: 512
@@ -125,7 +125,7 @@ services:
         aliases: [lg-gateway]
 
   litellm:
-    image: ghcr.io/berriai/litellm:v1.101.0@sha256:d295634e09c648dcdb72c4cc2dd226f5fb87823a73e88cbbed6f205e4deb044b
+    image: ${LG_LITELLM_IMAGE:-ghcr.io/berriai/litellm:v1.101.0@sha256:d295634e09c648dcdb72c4cc2dd226f5fb87823a73e88cbbed6f205e4deb044b}
     restart: unless-stopped
     logging: *logging
     pids_limit: 1024
@@ -176,7 +176,7 @@ services:
         aliases: [lg-litellm]
 
   langfuse-web:
-    image: langfuse/langfuse:4.37.0@sha256:06c0eaaef81035e06a9f6ed5fe343e187c1dde970b722c9a20269612742e4f68
+    image: ${LG_LANGFUSE_WEB_IMAGE:-langfuse/langfuse:4.37.0@sha256:06c0eaaef81035e06a9f6ed5fe343e187c1dde970b722c9a20269612742e4f68}
     # Upstream waits 110s before closing its backend connections.
     stop_grace_period: 120s
     restart: unless-stopped
@@ -205,7 +205,7 @@ services:
       start_period: 90s
 
   langfuse-worker:
-    image: langfuse/langfuse-worker:4.37.0@sha256:f1a9806779c4e5ca9414d2f5337405aed4516fa4b830cfe676f2fd887cc4ceae
+    image: ${LG_LANGFUSE_WORKER_IMAGE:-langfuse/langfuse-worker:4.37.0@sha256:f1a9806779c4e5ca9414d2f5337405aed4516fa4b830cfe676f2fd887cc4ceae}
     restart: unless-stopped
     logging: *logging
     pids_limit: 1024
@@ -221,7 +221,7 @@ services:
       start_period: 90s
 
   clickhouse:
-    image: clickhouse/clickhouse-server:26.8.6.5@sha256:a73b5c0fb6f88e02357aead0906ad53882b07e4d202327489798844ba745e64d
+    image: ${LG_CLICKHOUSE_IMAGE:-clickhouse/clickhouse-server:26.8.6.5@sha256:a73b5c0fb6f88e02357aead0906ad53882b07e4d202327489798844ba745e64d}
     restart: unless-stopped
     logging: *logging
     pids_limit: 4096
@@ -251,7 +251,7 @@ services:
       start_period: 30s
 
   rustfs:
-    image: rustfs/rustfs:1.0.0@sha256:8cc9801755448b71a786705ce76692c77e14936cccd87cf2fc31842e58f4d1ff
+    image: ${LG_RUSTFS_IMAGE:-rustfs/rustfs:1.0.0@sha256:8cc9801755448b71a786705ce76692c77e14936cccd87cf2fc31842e58f4d1ff}
     restart: unless-stopped
     logging: *logging
     pids_limit: 512
@@ -292,7 +292,7 @@ services:
 
   # Creates the langfuse bucket once RustFS answers. Idempotent.
   rustfs-init:
-    image: amazon/aws-cli:2.32.0@sha256:bb82c6ce5c78cd8aad48d0003ab097c858cda14f9ce389c2345c50cce0104efd
+    image: ${LG_AWS_CLI_IMAGE:-amazon/aws-cli:2.32.0@sha256:bb82c6ce5c78cd8aad48d0003ab097c858cda14f9ce389c2345c50cce0104efd}
     restart: "no"
     logging: *logging
     pids_limit: 512
@@ -323,7 +323,7 @@ services:
         echo "rustfs did not accept a bucket in 120s" >&2; exit 1
 
   valkey:
-    image: valkey/valkey:9.1.2@sha256:c123e3715db63d06d4ad6964884037aa0d5d4d703939b9929954112889708e1d
+    image: ${LG_VALKEY_IMAGE:-valkey/valkey:9.1.2@sha256:c123e3715db63d06d4ad6964884037aa0d5d4d703939b9929954112889708e1d}
     restart: unless-stopped
     logging: *logging
     pids_limit: 512
@@ -353,7 +353,7 @@ services:
       VALKEY_PASSWORD: ${VALKEY_PASSWORD}
 
   postgres:
-    image: postgres:18.6@sha256:4ef4dbc939d61acea57712655ddb4b4ab27419c913f94cca0cd57cb3ea3c2280
+    image: ${LG_POSTGRES_IMAGE:-postgres:18.6@sha256:4ef4dbc939d61acea57712655ddb4b4ab27419c913f94cca0cd57cb3ea3c2280}
     restart: unless-stopped
     logging: *logging
     pids_limit: 512
@@ -398,7 +398,7 @@ services:
       retries: 20
 
   valkey-exporter:
-    image: oliver006/redis_exporter:v1.80.1@sha256:bac9872da2b48e6eebbffb11517a5dcda59958eda51e1e4231eeb5dd516b4a5f
+    image: ${LG_VALKEY_EXPORTER_IMAGE:-oliver006/redis_exporter:v1.80.1@sha256:bac9872da2b48e6eebbffb11517a5dcda59958eda51e1e4231eeb5dd516b4a5f}
     restart: unless-stopped
     logging: *logging
     pids_limit: 512
@@ -419,7 +419,7 @@ services:
         aliases: [lg-valkey-exporter]
 
   postgres-exporter:
-    image: prometheuscommunity/postgres-exporter:v0.19.0@sha256:e8a170b85eab07c75c2b0f3aa2806be5c2fe5bba46fd0336914e1f36572cde08
+    image: ${LG_POSTGRES_EXPORTER_IMAGE:-prometheuscommunity/postgres-exporter:v0.19.0@sha256:e8a170b85eab07c75c2b0f3aa2806be5c2fe5bba46fd0336914e1f36572cde08}
     restart: unless-stopped
     logging: *logging
     pids_limit: 512

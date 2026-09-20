@@ -18,9 +18,9 @@ engineer.
 
 Decision:
 
-- One `compose.yaml` at the repo root. Images are pinned inline as `image:tag@sha256`.
+- One `compose.yaml` at the repo root. Default images are pinned inline as `${LG_COMPONENT_IMAGE:-image:tag@sha256}`.
   Renovate raises version PRs; a human merges them; nothing deploys automatically.
-- Newest stable that passes the smoke contract. No floating tags. A written maintenance
+- Newest stable that passes the smoke contract for default pins. A written maintenance
   procedure replaces the orchestrator: read the notes, take a backup, apply in order, verify,
   and know the rollback boundary for each store.
 - Hostnames in every mode. Caddy is the only published entry. `http://litellm.localhost`
@@ -32,6 +32,15 @@ Decision:
 - Langfuse 4 in `events_only` mode; LiteLLM reports through `langfuse_otel`.
 - Migration of the pre-2026 production installation is a separate effort with its own
   handoff document. This repo does not ship adoption tooling.
+
+Amended 2026-09-20: every service, including helpers, accepts an optional complete image
+reference in `.env` through native Compose interpolation. Empty values use the unchanged
+inline default; shell precedence and Compose overlays still apply. Operator references may
+use mutable or local tags. Langfuse web and worker keep separate references and must use
+matching versions. This narrowly replaces the literal-only image policy, without a
+release manifest, env-default file, or command wrapper. Checkpoints record immutable
+registry identities; images without one are refused before capture or fencing. Restore
+requires the recorded immutable references. Default pins alone carry the Smoke Contract.
 
 Consequence: existing installations cannot upgrade in place. Every rename and one-way step
 is listed in `docs/operations/migrating-pre-2026-installs.md`. The stack promises fresh

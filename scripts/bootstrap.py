@@ -59,7 +59,6 @@ PREFIXED: dict[str, tuple[str, int]] = {
 MANAGED = set(SECRETS) | set(PREFIXED) | {"UI_USERNAME"}
 # Compose project names of earlier generations whose data must not be silently reused.
 LEGACY_PROJECTS = ("llm-gateway", "litellm-langfuse")
-IMAGE_LINE = re.compile(r"^\s+image:\s+(?P<ref>\S+)\s*$")
 ENV_LINE = re.compile(r"^(?:export\s+)?(?P<key>[A-Z][A-Z0-9_]*)=(?P<value>.*)$")
 
 
@@ -181,25 +180,22 @@ def installation_state(root: Path, data_dir: Path, runner: Runner, project: str 
     return found
 
 
-def images(compose: Path) -> dict[str, str]:
-    """Service name to image tag, read from compose.yaml without a YAML parser."""
-    out: dict[str, str] = {}
-    service = ""
-    for line in compose.read_text(encoding="utf-8").splitlines():
-        head = re.match(r"^  (?P<name>[a-z][a-z0-9-]*):\s*$", line)
-        if head:
-            service = head.group("name")
-        match = IMAGE_LINE.match(line)
-        if match and service:
-            ref = match.group("ref").split("@", 1)[0]
-            out[service] = ref.rsplit(":", 1)[-1]
-    return out
+def images(command: list[str], runner: Runner = run) -> dict[str, str]:
+    """Resolve service images with the caller's Compose environment and overlays."""
+    result = runner(command + ["config", "--format", "json"])
+    if result.returncode:
+        raise Refused("compose_config_failed", "cannot resolve image metadata; check Compose settings")
+    return {name: service["image"] for name, service in json.loads(result.stdout)["services"].items()}
 
 
-def write_versions(root: Path, compose: Path) -> None:
+def write_versions(root: Path, compose: Path, refs: dict[str, str]) -> None:
     console = root / "data" / "console"
     console.mkdir(parents=True, exist_ok=True)
-    tags = images(compose)
+    tags = {}
+    for service, ref in refs.items():
+        name, _, digest = ref.partition("@")
+        tags[service] = (name.rsplit(":", 1)[-1] if ":" in name.rsplit("/", 1)[-1]
+                         else digest or "latest")
     doc = {
         "pinnedAt": datetime.fromtimestamp(compose.stat().st_mtime, timezone.utc).isoformat(),
         "images": {
@@ -467,7 +463,10 @@ def bootstrap(argv: list[str], runner: Runner = run) -> int:
         # which the image creates underneath as 18/docker with mode 0700.
         data_dir.mkdir(parents=True, exist_ok=True, mode=0o755)
         os.chmod(data_dir, 0o755)
-        write_versions(root, compose)
+        write_versions(root, compose, images([
+            "env", "LG_LANGFUSE_URL=" + canonical_langfuse,
+            "docker", "compose", "--project-directory", str(root), "--env-file", str(env_file),
+        ], runner))
 
         ensure_network(runner, settings.get("LG_PLATFORM_NETWORK", NETWORK))
         ensure_volumes(runner, prefix)

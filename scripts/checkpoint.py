@@ -70,17 +70,12 @@ def checked(argv, runner=run, *, diagnostics, label='command', timeout=None):
     return result.stdout.strip()
 
 
-def image_refs(compose):
-    refs = {}
-    service = ''
-    for line in compose.read_text().splitlines():
-        match = re.match(r'^  ([a-z][a-z0-9-]*):\s*$', line)
-        if match:
-            service = match[1]
-        match = re.match(r'^    image:\s+(\S+)\s*$', line)
-        if match:
-            refs[service] = match[1]
-    return refs
+def image_refs(config):
+    return {name: service['image'] for name, service in config['services'].items()}
+
+
+def immutable(ref):
+    return re.fullmatch(r'[^@\s]+@sha256:[0-9a-f]{64}', ref) is not None
 
 
 def inventory(directory):
@@ -100,12 +95,12 @@ def inventory(directory):
     return out
 
 
-def manifest(directory, compose, env_file, commit, timestamp, fenced, restore_point, timeline_id):
+def manifest(directory, images, env_file, commit, timestamp, fenced, restore_point, timeline_id):
     # Record names only. Never serialize the resolved Compose environment.
     keys = sorted(set(re.findall(r'^([A-Z][A-Z0-9_]*)=', env_file.read_text(), re.M)))
     return {
         'version': 1, 'timestamp': timestamp, 'git_commit': commit,
-        'images': image_refs(compose), 'env_keys': keys, 'fenced': fenced,
+        'images': images, 'env_keys': keys, 'fenced': fenced,
         'postgres_restore_point': restore_point, 'postgres_timeline_id': timeline_id,
         'clickhouse_database': 'default',
         'artifacts': inventory(directory),
@@ -283,9 +278,7 @@ class Stack:
         self.command = ['docker', 'compose', '--project-directory', str(ROOT),
                         '--env-file', str(self.env_file)]
         self.config = json.loads(self.dc('config', '--format', 'json'))
-        self.images = image_refs(ROOT / 'compose.yaml')
-        if {k: v['image'] for k, v in self.config['services'].items()} != self.images:
-            raise RuntimeError('resolved images differ from compose.yaml; remove overrides')
+        self.images = image_refs(self.config)
         self.project = self.config['name']
         self.volumes = [v['name'] for v in self.config['volumes'].values()]
         self.prefix = os.environ.get('LG_VOLUME_PREFIX', settings.get('LG_VOLUME_PREFIX')) or bootstrap.PROJECT
@@ -332,8 +325,29 @@ class Stack:
         return Path(next(v['source'] for v in self.config['services'][service]['volumes']
                          if v['target'] == target))
 
+    def capture_images(self):
+        """Resolve local tags to restorable registry digests before any fencing."""
+        self.image_ids = {}
+        refs = {}
+        for service, ref in image_refs(self.config).items():
+            output = checked(['docker', 'image', 'inspect', ref, '--format',
+                              '{{.Id}} {{json .RepoDigests}}'], self.runner,
+                             diagnostics=self.backups / '.diagnostics', label='capture-image')
+            image_id, digests = output.split(' ', 1)
+            candidates = sorted(value for value in json.loads(digests) or [] if immutable(value))
+            if not immutable(ref) and not candidates:
+                raise RuntimeError(f'{service}: image has no registry digest; publish and pull it before backup')
+            refs[service] = ref if immutable(ref) else candidates[0]
+            resolved_id = checked(['docker', 'image', 'inspect', refs[service], '--format', '{{.Id}}'],
+                                  self.runner, diagnostics=self.backups / '.diagnostics', label='capture-identity')
+            if resolved_id != image_id:
+                raise RuntimeError(f'immutable image content differs from configured image: {service}')
+            self.image_ids[service] = image_id
+        self.images = refs
+
     def attest_runtime(self):
         """Refuse checkout/runtime drift before fencing or creating capture artifacts."""
+        self.capture_images()
         diagnostics = self.backups / '.diagnostics'
         ids = checked(['docker', 'ps', '-aq', '--filter',
                        f'label=com.docker.compose.project={self.project}'], self.runner,
@@ -351,10 +365,7 @@ class Stack:
             expected = self.config['services'][service]
             if container['Config']['Image'] != expected['image']:
                 raise RuntimeError(f'running image differs from resolved Compose: {service}')
-            image_id = checked(['docker', 'image', 'inspect', expected['image'],
-                                '--format', '{{.Id}}'], self.runner,
-                               diagnostics=diagnostics, label='capture-image')
-            if container['Image'] != image_id:
+            if container['Image'] != self.image_ids[service]:
                 raise RuntimeError(f'running image content differs from resolved Compose: {service}')
             mounts = {}
             for mount in expected.get('volumes', []):
@@ -380,7 +391,7 @@ class Stack:
                        '--password "$CLICKHOUSE_PASSWORD" --query "$1"', 'sh', sql)
 
     def helper(self, service, script, *args, mounts=(), user='0', env=()):
-        return self.dc('run', '--rm', '--no-deps', '-T', '--user', user,
+        return self.dc('run', '--pull', 'never', '--rm', '--no-deps', '-T', '--user', user,
                        *env, *mounts, '--entrypoint', 'sh', service, '-ec', script, 'sh', *args)
 
     def queue_depth(self):
@@ -536,7 +547,7 @@ def backup(stack, no_fence, timeout, stop_timeout=120):
             chmod 640 "$dest/clickhouse/backup.zip"
             sync -f "$dest"
         ''', 'sh', f'/backup/{stamp}', first, last, str(os.getuid()), str(os.getgid()))
-        doc = manifest(dest, ROOT / 'compose.yaml', stack.env_file,
+        doc = manifest(dest, stack.images, stack.env_file,
                        checked(['git', '-C', str(ROOT), 'rev-parse', 'HEAD'],
                                diagnostics=stack.backups / '.diagnostics', label='git-revision'),
                        datetime.now(timezone.utc).isoformat(), not no_fence, point, int(first[:8], 16))
@@ -618,8 +629,9 @@ def wait_healthy(stack, services, timeout=300, settle=0):
 
 def verify_checkpoint(source, images):
     doc = json.loads((source / 'manifest.json').read_text())
-    if doc['version'] != 1 or doc['images'] != images or doc['clickhouse_database'] != 'default':
-        raise RuntimeError('restore requires the same image pins and Checkpoint format')
+    if (doc['version'] != 1 or doc['images'] != images or not all(map(immutable, images.values()))
+            or doc['clickhouse_database'] != 'default'):
+        raise RuntimeError('restore requires the same immutable image references and Checkpoint format')
     if not re.fullmatch(r'checkpoint_\d{8}T\d{12}Z', doc['postgres_restore_point']):
         raise RuntimeError('invalid restore point')
     timeline = doc.get('postgres_timeline_id')
@@ -674,7 +686,7 @@ def restore(stack, source, allow_unfenced=False):
     if not stack.data.exists():
         stack.data.mkdir(parents=True, mode=0o755)
         os.chmod(stack.data, 0o755)
-    bootstrap.write_versions(ROOT, ROOT / 'compose.yaml')
+    bootstrap.write_versions(ROOT, ROOT / 'compose.yaml', stack.images)
     check_empty(stack.data, stack.project, stack.images['postgres'], stack.runner,
                 diagnostics=stack.backups / '.diagnostics', volumes=stack.volumes)
     bootstrap.ensure_volumes(stack.runner, stack.prefix)

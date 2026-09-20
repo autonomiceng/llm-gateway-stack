@@ -12,6 +12,11 @@ docker compose version >/dev/null
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
+# Validate repository defaults independently of the invoking installation.
+for key in $(compgen -e); do
+  case "$key" in LG_*|LANGFUSE_*|RUSTFS_*|CLICKHOUSE_*|VALKEY_*|POSTGRES_*|LITELLM_*|UI_USERNAME|UI_PASSWORD|NEXTAUTH_SECRET|SALT|COMPOSE_*) unset "$key";; esac
+done
+export COMPOSE_FILE="$root/compose.yaml:$root/compose.local.yaml"
 export LG_BACKUP_DIR="$work/backups" LANGFUSE_INIT_USER_EMAIL=validate@gateway.test
 python3 scripts/bootstrap.py --env-file "$work/.env" --render-only >/dev/null
 echo "env render: PASS"
@@ -38,7 +43,31 @@ if shared != {"caddy", "litellm", "valkey-exporter", "postgres-exporter"}:
 PY
 echo "compose config: PASS"
 
+python3 - "$work" <<'PYIMAGES'
+import json, os, pathlib, subprocess, sys
+work = pathlib.Path(sys.argv[1])
+command = ["docker", "compose", "--env-file", str(work / ".env"), "config", "--format", "json"]
+def images(environment):
+    result = subprocess.run(command, env=environment, capture_output=True, text=True)
+    assert result.returncode == 0, "image override Compose resolution failed"
+    return {name: service["image"] for name, service in json.loads(result.stdout)["services"].items()}
+defaults = images(os.environ)
+cases = {"litellm": ("LG_LITELLM_IMAGE", "localhost:5000/experiment/gateway:trial"),
+         "postgres": ("LG_POSTGRES_IMAGE", "mirror.test/store@sha256:" + "a" * 64),
+         "rustfs-init": ("LG_AWS_CLI_IMAGE", "local-helper:trial")}
+with (work / ".env").open("a") as handle:
+    for key, value in cases.values():
+        handle.write(f"{key}={value}\n")
+assert images(os.environ) == {**defaults, **{name: ref for name, (_, ref) in cases.items()}}
+assert images({**os.environ, **{key: "" for key, _ in cases.values()}}) == defaults
+# Leave subsequent default gates on the original settings.
+lines = (work / ".env").read_text().splitlines()
+(work / ".env").write_text("\n".join(lines[:-len(cases)]) + "\n")
+print("image overrides: PASS (app/store/helper, complete refs and empty shell fallback)")
+PYIMAGES
+
 for mode in local public proxy; do
+  export COMPOSE_FILE="$root/compose.yaml:$root/compose.$mode.yaml"
   LG_ACCESS_MODE=$mode docker compose --env-file "$work/.env" config --format json > "$work/$mode.json"
   LG_ACCESS_MODE=$mode LG_CONSOLE_URL=https://darkforge.tail694fe2.ts.net:8446 \
     LG_LITELLM_URL=https://darkforge.tail694fe2.ts.net:8443 \
@@ -78,6 +107,7 @@ for mode in ("local", "public", "proxy"):
         assert configured["caddy"]["environment"][f"LG_{app}_URL"] == f"https://darkforge.tail694fe2.ts.net:{port}"
 PY
 echo "access mode Compose origins: PASS (6 configurations)"
+export COMPOSE_FILE="$root/compose.yaml:$root/compose.local.yaml"
 
 for mode in "local http dual localhost internal true" "local https dual example.test internal true" "public https https example.com acme true" "proxy https http example.com none false" "proxy https http gateway.test none false"; do
   read -r access scheme listen domain issuer published <<< "$mode"

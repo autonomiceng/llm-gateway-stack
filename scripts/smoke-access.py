@@ -28,7 +28,7 @@ for line in (ROOT / "compose.yaml").read_text().splitlines():
     if line.startswith("  ") and not line.startswith("   ") and line.endswith(":"):
         service = line.strip(": ")
     if line.strip().startswith("image: "):
-        IMAGES[service] = line.split("image: ", 1)[1]
+        IMAGES[service] = line.split(":-", 1)[1].removesuffix("}")
 
 
 def docker(*args):

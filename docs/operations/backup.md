@@ -8,7 +8,7 @@ scripts/restore.sh /mnt/backups/20260917T020000000000Z
 ```
 
 Both commands accept `--env-file /path/to/.env`. They use that installation's Compose
-project, image pins and storage paths. `COMPOSE_PROJECT_NAME` selects another project.
+project, effective images and storage paths. `COMPOSE_PROJECT_NAME` selects another project.
 Do not run Compose changes or other backup tools concurrently. The scripts lock the
 env file and backup repository against bootstrap and another Checkpoint operation.
 Backup attempts also lock checkout-wide console status, including attempts using
@@ -97,9 +97,10 @@ Postgres with archiving disabled. External volume names require the offline migr
 
 Each UTC timestamp directory contains:
 
-- `manifest.json`: completion timestamp, Git commit, every full image reference from
-  `compose.yaml`, env key names, fencing status, named Postgres restore point, timeline id, and byte
-  size plus SHA-256 for every artifact file.
+- `manifest.json`: completion timestamp, Git commit, every effective immutable image
+  reference resolved through Compose and local Docker image metadata, env key names,
+  fencing status, named Postgres restore point, timeline id, and byte size plus SHA-256
+  for every artifact file.
 - `postgres/`: `pg_basebackup` tar files, streaming WAL and PostgreSQL backup manifest.
 - `wal/`: archived WAL through the named restore point at the Checkpoint's end.
 - `clickhouse/backup.zip`: native `BACKUP DATABASE default`, Langfuse's database in
@@ -120,6 +121,14 @@ image reference, image content ID, and persistent mounts with resolved Compose. 
 refuses drift, including changed volume prefixes or Postgres paths. Take the Checkpoint
 from the checkout and settings that started the running installation, before updating
 its pins or storage settings. Stop and remove leftover one-off project containers first.
+
+Every configured image, including helpers, must be available locally before backup.
+Tags are resolved through Docker's local `RepoDigests` and checked against the local image
+content ID. Local images without a registry digest are refused before capture or fencing;
+publish and pull the image, then recreate the affected service before backing it up.
+Checkpoint helpers never pull images during capture. Keep recorded registry digests
+available for recovery and pull them before restore. Do not retag or prune images during
+a Checkpoint operation. Overrides still need compatible commands, UIDs and data layouts.
 
 The default fence stops Caddy, LiteLLM and Langfuse web in that order with a 120-second
 shutdown grace per service. The worker stays running until three consecutive two-second
@@ -187,7 +196,11 @@ run after an uncatchable kill.
 ## Fresh restore
 
 Fence the old installation and all its writers first. Keep its data and archive intact.
-Use the exact image pins recorded in the manifest. Restore refuses a running project,
+Use the exact immutable image references recorded in the manifest, setting the matching
+`LG_*_IMAGE` variables in the target `.env` when needed. Tag overrides are captured as
+registry digest references; restore refuses mutable tags even when they currently resolve
+to the right content. Existing v1 Checkpoints with digest pins remain supported.
+Restore refuses a running project,
 any non-empty Postgres data directory, or **any non-empty project or configured external volume**, including
 Caddy and log volumes. It does not delete existing data to make a restore fit.
 A manifest with `fenced: false` is refused unless `--allow-unfenced` explicitly accepts

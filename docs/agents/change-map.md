@@ -4,7 +4,8 @@ Read only the section for the files you touch, then run the gates in CONTRIBUTIN
 
 ## compose.yaml or an image pin
 
-Images are `tag@sha256`, nothing else. A version bump is a Renovate PR or a hand edit that
+Default images use `${LG_COMPONENT_IMAGE:-tag@sha256}`; preserve the full-reference override
+when changing a pin. Empty overrides select the default. A version bump is a Renovate PR or a hand edit that
 resolves the digest with `docker buildx imagetools inspect <ref> --format '{{.Manifest.Digest}}'`.
 Either way the smoke contract runs before merge. Langfuse web and worker move together.
 Majors of Postgres, ClickHouse and Langfuse are one-way for data: read

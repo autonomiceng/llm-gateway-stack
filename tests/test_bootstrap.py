@@ -83,16 +83,60 @@ class BootstrapTests(unittest.TestCase):
         self.assertTrue(any("postgres data" in f for f in found))
         self.assertTrue(any("valkey-data" in f for f in found))
 
-    def test_versions_json_reads_tags_from_compose(self):
+    def test_versions_json_uses_effective_compose_metadata_without_secrets(self):
         compose = Path(__file__).resolve().parent.parent / "compose.yaml"
-        bootstrap.write_versions(self.root, compose)
+        refs = {"langfuse-web": "mirror.test/langfuse:4.37.1@sha256:" + "a" * 64,
+                "litellm": "local/gateway:vtrial", "postgres": "registry:5000/store@sha256:" + "b" * 64}
+        command = ["docker", "compose", "--env-file", str(self.env)]
+        calls = []
+        def runner(argv):
+            calls.append(argv)
+            return subprocess.CompletedProcess(argv, 0, json.dumps({"services": {
+                name: {"image": ref, "environment": {"PASSWORD": "private-secret"}}
+                for name, ref in refs.items()}}), "")
+        with patch.dict(os.environ, {"COMPOSE_FILE": "compose.yaml:custom.yaml", "LG_LITELLM_IMAGE": "local/gateway:vtrial"}):
+            resolved = bootstrap.images(command, runner)
+        self.assertEqual(resolved, refs)
+        self.assertEqual(calls, [command + ["config", "--format", "json"]])
+        bootstrap.write_versions(self.root, compose, resolved)
         doc = json.loads((self.root / "data" / "console" / "versions.json").read_text())
-        match = re.search(r"^  langfuse-web:\n\s+image: [^\s@]+:([^\s@]+)@", compose.read_text(), re.M)
-        self.assertIsNotNone(match)
-        self.assertEqual(doc["images"]["langfuse"], match[1])
-        self.assertRegex(doc["images"]["langfuse"], r"^\d+\.\d+\.\d+$")
-        self.assertNotIn("sha256", json.dumps(doc))
-        self.assertFalse(doc["images"]["litellm"].startswith("v"))
+        self.assertEqual(doc["images"]["langfuse"], "4.37.1")
+        self.assertEqual(doc["images"]["litellm"], "trial")
+        self.assertEqual(doc["images"]["postgres"], "sha256:" + "b" * 64)
+        self.assertNotIn("private-secret", json.dumps(doc))
+        with self.assertRaises(bootstrap.Refused) as raised:
+            bootstrap.images(command, lambda argv: subprocess.CompletedProcess(argv, 1, "private-secret", "private-secret"))
+        self.assertNotIn("private-secret", raised.exception.detail)
+
+    def test_validation_isolates_exported_installation_settings(self):
+        capture = self.root / "capture.json"
+        docker = self.root / "docker"
+        docker.write_text("""#!/usr/bin/env python3
+import json, os, sys
+from pathlib import Path
+if sys.argv[1:] == ['compose', 'version']:
+    sys.exit(0)
+Path(os.environ['TEST_CAPTURE']).write_text(json.dumps({key: value for key, value in os.environ.items()
+    if key.startswith(('LG_', 'COMPOSE_')) or key == 'NEXTAUTH_SECRET'}))
+sys.exit(19)
+""")
+        docker.chmod(0o755)
+        shellcheck = self.root / "shellcheck"
+        shellcheck.write_text("#!/bin/sh\nexit 0\n")
+        shellcheck.chmod(0o755)
+        dirty = {"LG_CADDY_IMAGE": "local:trial", "LG_POSTGRES_IMAGE": "local:trial",
+                 "LG_ACCESS_MODE": "proxy", "COMPOSE_FILE": "/installation/custom.yaml",
+                 "COMPOSE_PROFILES": "installed", "COMPOSE_ENV_FILES": "/installation/.env",
+                 "NEXTAUTH_SECRET": "private-secret", "LG_BACKUP_DIR": "/installation/backups"}
+        result = subprocess.run(["bash", str(self.template.parent / "scripts/validate.sh")],
+                                env={**os.environ, **dirty, "PATH": str(self.root) + os.pathsep + os.environ['PATH'],
+                                     "TEST_CAPTURE": str(capture)}, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 19)
+        actual = json.loads(capture.read_text())
+        for key in dirty:
+            self.assertNotEqual(actual.get(key), dirty[key], key)
+        self.assertEqual(actual['COMPOSE_FILE'], f"{self.template.parent}/compose.yaml:{self.template.parent}/compose.local.yaml")
+        self.assertNotIn("private-secret", result.stdout + result.stderr)
 
     def test_installation_state_follows_compose_project_name(self):
         found = bootstrap.installation_state(
@@ -168,7 +212,8 @@ class BootstrapTests(unittest.TestCase):
                 warning = io.StringIO()
                 with patch.dict(os.environ, shell, clear=True), redirect_stderr(warning), \
                      patch.object(bootstrap.shutil, "which", return_value="docker"), \
-                     patch.object(bootstrap, "write_versions"), patch.object(bootstrap, "probe_gateway"):
+                     patch.object(bootstrap, "write_versions"), patch.object(bootstrap, "images", return_value={}), \
+                     patch.object(bootstrap, "probe_gateway"):
                     if error:
                         with self.assertRaises(bootstrap.Refused) as raised:
                             bootstrap.bootstrap(["--env-file", str(self.env)], runner=runner)

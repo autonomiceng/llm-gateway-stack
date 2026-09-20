@@ -8,8 +8,10 @@ This file, `docs/conventions.md`, is the shared reference.
 
 - `compose.yaml` at the root with `name:` set. Optional pieces are `profiles:`; overlay files
   only where a profile cannot express it. `docker compose up` with no flags starts the core.
-- Images pinned inline as `image:tag@sha256`. Renovate proposes bumps; a human merges after
-  the stack's smoke contract passes. No floating tags, no `latest`.
+- Shipped image defaults are pinned inline as `image:tag@sha256`. Renovate proposes bumps;
+  a human merges after the stack's smoke contract passes. Complete image references may
+  override these defaults through stack-prefixed env settings for unvalidated local
+  experiments. Shipped defaults use no floating tags or `latest`.
 - `.env.example` lists every operator setting: one comment line, then the assignment. No
   secrets in the template; bootstrap generates them. Stack-owned settings carry a prefix
   (`LG_`, `BP_`, `OB_`, `PE_`); upstream applications keep their upstream variable names.
