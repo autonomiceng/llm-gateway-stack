@@ -34,6 +34,24 @@ class PublicationTests(unittest.TestCase):
         self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o700)
         self.assertEqual(json.loads((target / 'status.json').read_text()), {'first': True})
         self.assertEqual([p.name for p in target.iterdir()], ['status.json'])
+        state = self.root / 'private-state'
+        mask = os.umask(0o077)
+        try:
+            with io.directory(state / 'status', 0o700):
+                pass
+            with io.directory(state / 'console') as fd:
+                io.publish(fd, 'status.json', {'public': True})
+        finally:
+            os.umask(mask)
+        self.assertEqual(stat.S_IMODE(state.stat().st_mode), 0o700)
+        self.assertEqual(stat.S_IMODE((state / 'status').stat().st_mode), 0o700)
+        self.assertEqual(stat.S_IMODE((state / 'console').stat().st_mode), 0o755)
+        self.assertEqual(stat.S_IMODE((state / 'console/status.json').stat().st_mode), 0o644)
+        with self.assertRaises(io.Unavailable):
+            with io.directory(state / 'writable', 0o775):
+                pass
+        self.assertFalse((state / 'writable').exists())
+
 
     def test_symlink_directory_and_file_are_refused_without_touching_target(self):
         real = self.root / 'real'
