@@ -31,7 +31,8 @@ are one JSON line on stderr. Exit codes: 0 ready, 1 refused, 2 usage, 3 not read
 
 ## Network and ingress
 
-- Each stack ships its own Caddy and publishes only Caddy. Everything else is private.
+- Each stack ships its own Caddy for HTTP/HTTPS. Backplane also retains a direct loopback
+  API port, with Caddy optional. Datastores stay private.
 - One `PUBLIC_DOMAIN` per stack with fixed application subdomains. Fresh standalone Caddy
   installations default to `ACCESS_MODE=local`: HTTP and self-signed HTTPS on loopback,
   without redirecting HTTP or telling browsers to require HTTPS. For direct HTTPS,
