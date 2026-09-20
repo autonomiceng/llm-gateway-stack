@@ -7,6 +7,8 @@ from pathlib import Path
 import ssl
 import subprocess
 import sys
+import tempfile
+from email.utils import parsedate_to_datetime
 import time
 import unittest
 
@@ -66,6 +68,8 @@ http.server.HTTPServer(('', 4000), Handler).serve_forever()
 
     def setUp(self):
         self.gateway_started = False
+        self.state = tempfile.TemporaryDirectory(prefix=PROJECT)
+        self.addCleanup(self.state.cleanup)
 
     def tearDown(self):
         if self.gateway_started:
@@ -86,7 +90,8 @@ http.server.HTTPServer(('', 4000), Handler).serve_forever()
             args += ["-p", f"127.0.0.1:{HTTPS_PORT}:443"]
         for key, value in settings.items():
             args += ["-e", f"{key}={value}"]
-        args += ["-v", f"{ROOT / 'docker/caddy'}:/etc/caddy:ro",
+        args += ["-v", f"{self.state.name}:/srv/state:ro",
+                 "-v", f"{ROOT / 'docker/caddy'}:/etc/caddy:ro",
                  "-v", f"{ROOT / 'docker/caddy/console'}:/srv/console:ro",
                  "--entrypoint", "/bin/sh", IMAGES["caddy"], "/etc/caddy/access-mode.sh",
                  "caddy", "run", "--config", "/etc/caddy/Caddyfile"]
@@ -115,6 +120,54 @@ http.server.HTTPServer(('', 4000), Handler).serve_forever()
             return response.status, dict(response.getheaders()), response.read()
         finally:
             connection.close()
+
+    def test_observer_caddy_probe_is_independent_of_public_routes(self):
+        self.start()
+        info = json.loads(docker("inspect", GATEWAY))[0]
+        ip = info["NetworkSettings"]["Networks"][NETWORK]["IPAddress"]
+        connection = http.client.HTTPConnection(ip, 8081, timeout=5)
+        try:
+            connection.request("GET", "/health/status")
+            response = connection.getresponse()
+            self.assertEqual((response.status, response.read()), (200, b"ok"))
+        finally:
+            connection.close()
+
+    def test_public_status_transport_and_frozen_evidence(self):
+        frozen = {"schemaVersion": 1, "stack": "gateway", "generatedAt": "2026-09-20T12:00:00Z",
+                  "configurationObservedAt": "2026-09-20T11:00:00Z",
+                  "configurationValidForSeconds": 120, "telemetry": "unknown",
+                  "components": [{"id": "postgres", "kind": "service", "configured": True,
+                                  "state": "healthy", "observedAt": "2026-09-20T11:00:00Z",
+                                  "validForSeconds": 120}]}
+        path = Path(self.state.name) / "status.json"
+        for mode, host in (("local", "localhost"), ("proxy", "gateway.test")):
+            path.write_text(json.dumps(frozen))
+            self.start(mode, self.subnet if mode == "proxy" else "", operators="127.0.0.0/8 ::1")
+            for tls in ((False, True) if mode == "local" else (False,)):
+                for method in ("GET", "HEAD"):
+                    status, headers, body = self.request("/status.json", host, tls, method=method,
+                        headers={"Authorization": "Bearer secret", "Cookie": "session=secret",
+                                 "If-Modified-Since": "Fri, 01 Jan 2100 00:00:00 GMT",
+                                 "If-None-Match": "*", "Range": "bytes=0-5"})
+                    self.assertEqual(status, 200)
+                    self.assertEqual(headers["Content-Type"], "application/json")
+                    self.assertEqual(headers["Cache-Control"], "no-store")
+                    self.assertLess(abs(parsedate_to_datetime(headers["Date"]).timestamp() - time.time()), 5)
+                    self.assertNotIn("X-Smoke-Upstream", headers)
+                    self.assertNotIn("ETag", headers)
+                    self.assertEqual(json.loads(body) if method == "GET" else body,
+                                     frozen if method == "GET" else b"")
+                status, headers, body = self.request("/status.json", host, tls, method="POST")
+                self.assertEqual((status, body), (405, b""))
+                self.assertEqual(headers["Allow"], "GET, HEAD")
+            path.unlink()
+            status, headers, body = self.request("/status.json", host)
+            self.assertEqual((status, body), (404, b""))
+            self.assertEqual(headers["Content-Type"], "application/json")
+            self.assertEqual(headers["Cache-Control"], "no-store")
+            docker("rm", "-f", GATEWAY)
+            self.gateway_started = False
 
     def test_local_protocols_without_redirect_or_hsts(self):
         self.start()

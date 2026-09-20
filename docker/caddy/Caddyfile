@@ -96,6 +96,29 @@
 	respond 404
 }
 (console) {
+	handle /status.json {
+		route {
+			request_header -Authorization
+			request_header -Cookie
+			header Content-Type application/json
+			header Cache-Control "no-store"
+			@status_method not method GET HEAD
+			header @status_method Allow "GET, HEAD"
+			respond @status_method "" 405
+			root * /srv/state
+			# No conditional 304 can make an old observation look refreshed.
+			request_header -If-Modified-Since
+			request_header -Range
+			request_header -If-Range
+			request_header -If-None-Match
+			header -ETag
+			header -Last-Modified
+			file_server {
+				pass_thru
+			}
+			respond "" 404
+		}
+	}
 	handle /health/rustfs-console {
 		import console-health-{$LG_RUSTFS_CONSOLE:on}
 	}
@@ -196,7 +219,22 @@
 	}
 }
 
+(status-errors) {
+	handle_errors {
+		@status_error path /status.json
+		handle @status_error {
+			header Content-Type application/json
+			header Cache-Control "no-store"
+			respond "" {err.status_code}
+		}
+		handle {
+			respond "" {err.status_code}
+		}
+	}
+}
+
 (gateway) {
+	import status-errors
 	import access-log
 	import headers-{$LG_ACCESS_MODE:local}
 	import host-routes
@@ -295,6 +333,7 @@
 
 (mode-proxy) {
 	http://:80 {
+		import status-errors
 		import access-log
 		route {
 			import proxy-origins
@@ -314,6 +353,9 @@ import mode-{$LG_ACCESS_MODE:local}
 # Unpublished listener: healthcheck via loopback, checkpoint scrape via lg-gateway:8081.
 http://:8081 {
 	import access-log
+	handle /health/status {
+		respond "ok" 200
+	}
 	handle /metrics {
 		@denied not remote_ip {$LG_CHECKPOINT_ALLOW:127.0.0.0/8 ::1}
 		respond @denied 404

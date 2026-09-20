@@ -20,6 +20,9 @@ _Avoid_: Landing page, service router, public port set
 The page the Stack Gateway serves at the root hostname: links to every application, live
 health, and the configured image versions from the last bootstrap or restore. It has no
 login and no write actions.
+The public status document intentionally discloses allowlisted configured/runtime
+versions and image digests in every access mode. This extends the prior operator-only
+version metadata posture; `/versions.json` itself remains operator-restricted.
 _Avoid_: Dashboard, admin UI, launchpad
 
 **Local Mode**:
