@@ -77,6 +77,8 @@ See [ingress](operations/ingress.md) for ports, explicit application hostnames a
 
 - Bootstrap: `scripts/bootstrap.py`. Generates secrets once, refuses to invent secrets over
   existing data, creates the platform network, starts the stack, waits for readiness.
+  Newly created external volumes carry the Compose project label so interrupted installs
+  can identify them. Existing volumes retain their names, labels and contents.
 - Validate: `scripts/validate.sh` for static checks; `scripts/smoke.sh` boots the pinned
   images and proves the Smoke Contract.
 - Backup and restore: `scripts/backup.sh`, `scripts/restore.sh`, `docs/operations/backup.md`.

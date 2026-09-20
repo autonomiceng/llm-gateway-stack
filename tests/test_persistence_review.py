@@ -239,7 +239,7 @@ class PersistenceReviewTests(unittest.TestCase):
         env_file = self.root / '.env'
         env_file.write_text('LG_BACKUP_DIR=backups\n')
         stack = Mock(data=data, backups=backups, images=doc['images'], env_file=env_file,
-                     config={'networks': {'platform': {'name': 'drill-platform'}}})
+                     project='restore-project', prefix='restore-data', config={'networks': {'platform': {'name': 'drill-platform'}}})
         stack.runner.return_value = subprocess.CompletedProcess([], 0, '', '')
         copytree = shutil.copytree
 
@@ -249,10 +249,15 @@ class PersistenceReviewTests(unittest.TestCase):
                 (dest / 'objects/media/saved').write_bytes(b'corruption')
 
         with patch.object(checkpoint, 'ROOT', self.root), \
-             patch.object(bootstrap, 'write_versions'), patch.object(bootstrap, 'ensure_volumes'), patch.object(bootstrap, 'ensure_network'), \
+             patch.object(bootstrap, 'write_versions'), patch.object(bootstrap, 'ensure_network'), \
              patch.object(checkpoint, 'check_empty'), patch.object(shutil, 'copytree', side_effect=corrupt_copy):
             with self.assertRaisesRegex(RuntimeError, 'restore copy checksum'):
                 checkpoint.restore(stack, source)
+        created = [call.args[0] for call in stack.runner.call_args_list
+                   if call.args[0][:3] == ['docker', 'volume', 'create']]
+        self.assertEqual({command[-1] for command in created}, set(bootstrap.volume_names('restore-data')))
+        self.assertTrue(all(command[command.index('--label') + 1] == 'com.docker.compose.project=restore-project'
+                            for command in created))
         # Only the archive-empty preflight helper ran. No extraction or store startup.
         self.assertFalse((backups / doc['postgres_restore_point'].removeprefix('checkpoint_')).exists())
         stack.helper.assert_called_once()

@@ -225,14 +225,15 @@ def volume_names(prefix: str) -> list[str]:
     return [f"{prefix}-{name}" for name in VOLUMES]
 
 
-def ensure_volumes(runner: Runner, prefix: str = PROJECT) -> None:
+def ensure_volumes(runner: Runner, prefix: str = PROJECT, project: str = PROJECT) -> None:
     result = runner(["docker", "volume", "ls", "--format", "{{.Name}}"])
     if result.returncode:
         raise Refused("docker_unavailable", result.stderr.strip())
     existing = set(result.stdout.split())
     for name in volume_names(prefix):
         if name not in existing:
-            result = runner(["docker", "volume", "create", name])
+            result = runner(["docker", "volume", "create", "--label",
+                             "com.docker.compose.project=" + project, name])
             if result.returncode:
                 raise Refused("volume_create_failed", result.stderr.strip())
 
@@ -482,7 +483,7 @@ def bootstrap(argv: list[str], runner: Runner = run) -> int:
             ], runner))
 
             ensure_network(runner, settings.get("LG_PLATFORM_NETWORK", NETWORK))
-            ensure_volumes(runner, prefix)
+            ensure_volumes(runner, prefix, project)
             compose_up(root, env_file, runner, canonical_langfuse)
             probe_gateway(settings, ["docker", "compose", "--project-directory", str(root),
                                      "--env-file", str(env_file)], runner)
