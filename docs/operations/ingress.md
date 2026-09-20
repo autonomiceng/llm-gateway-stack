@@ -1,6 +1,6 @@
 # Ingress and access modes
 
-Caddy is the only published entry. Every application has a fixed hostname under one domain:
+Caddy is the only published entry. By default, applications use these hostnames under one domain:
 
 | Hostname | Upstream |
 | --- | --- |
@@ -86,6 +86,49 @@ Caddy preserves trusted `X-Forwarded-Proto`; an untrusted caller cannot assert i
 Running behind another gateway requires a nonempty trust list. Trust only networks you control; private
 address space can include other tenants. Standalone modes normally leave it empty.
 
+## One Tailscale hostname with separate ports
+
+In Proxy Mode, set full browser origins when the applications share one hostname:
+
+```dotenv
+LG_ACCESS_MODE=proxy
+LG_CONSOLE_URL=https://darkforge.tail694fe2.ts.net:8446
+LG_LITELLM_URL=https://darkforge.tail694fe2.ts.net:8443
+LG_LANGFUSE_URL=https://darkforge.tail694fe2.ts.net:8444
+LG_S3_URL=https://darkforge.tail694fe2.ts.net:8445
+```
+
+Keep the template's `COMPOSE_FILE` setting. Set `LG_TRUSTED_PROXIES` to Edge's address
+and choose a free loopback `LG_HTTP_PORT`. Platform Edge must serve HTTPS on these four
+ports and forward each request to `lg-gateway:80`. It must preserve the complete `Host`,
+including the port, and set `X-Forwarded-Proto` to `https`. Rewriting the S3 Host breaks
+presigned media and export links. Opening firewall ports alone does not configure Edge.
+
+Each URL must contain `http://` or `https://`, a DNS hostname or IPv4 address, and an
+optional port from 1 to 65535. Omit trailing slashes, paths, credentials, queries and
+fragments. Use ordinary decimal ports without leading zeroes. Public Mode requires HTTPS.
+Applications must have distinct authorities, meaning hostname plus port; default ports
+80 for HTTP and 443 for HTTPS are treated as omitted. A URL cannot claim another
+application's existing hostname, including the optional RustFS admin hostname.
+
+Empty values keep the existing scheme, domain and port defaults in every mode. These
+settings choose browser origins; they do not publish additional Docker ports or issue
+certificates for extra hostnames. Proxy Mode routes the configured authorities exactly
+and retains the existing hostname routes. Local and Public Mode retain their existing
+listeners and certificate names.
+
+Langfuse uses its URL for login and the S3 URL for browser media and export links. RustFS
+allows browser media requests from the configured Langfuse origin. Internal ingestion
+continues over the Compose network. LiteLLM receives its URL as the documented
+[`PROXY_BASE_URL`](https://docs.litellm.ai/docs/proxy/config_settings), which controls its
+external origin for redirects and secure cookies. `PUBLIC_URL` is not used. The Stack
+Console reads these URLs from `/origins.json`.
+
+The existing access rules still apply. LiteLLM API calls need their usual keys; users
+need their usual app login. LiteLLM `/ui*` remains operator-restricted, and trusting Edge
+alone does not grant UI access. Any deliberate operator access through Edge requires
+its socket address in `LG_OPERATOR_ALLOW` and matching access restrictions at Edge.
+
 ## Operator access
 
 `LG_OPERATOR_ALLOW` is a space-separated list of socket peer CIDRs, default
@@ -117,3 +160,5 @@ in `LG_OPERATOR_ALLOW` so that healthcheck continues to work.
 The observability stack must configure the checkpoint scrape plus
 `lg-valkey-exporter:9121` (job `llm-gateway-valkey`) and `lg-postgres-exporter:9187`
 (job `llm-gateway-postgres`); verify these jobs before relying on their alerts.
+
+`LG_GRAFANA_URL` and `LG_BACKPLANE_URL` optionally set the companion links in the gateway overview. They do not install those stacks or add application routes. Platform Edge’s Tailscale setup fills them in automatically.
