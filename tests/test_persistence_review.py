@@ -43,7 +43,7 @@ def checkpoint_fixture(root, member=None):
             payload = path.read_bytes()
             artifacts[path.relative_to(root).as_posix()] = {
                 'size': len(payload), 'sha256': hashlib.sha256(payload).hexdigest()}
-    doc = {'version': 1, 'images': {'postgres': 'postgres:pinned'}, 'clickhouse_database': 'default',
+    doc = {'version': 1, 'images': {'postgres': 'postgres:pinned@sha256:' + 'a' * 64}, 'clickhouse_database': 'default',
            'postgres_restore_point': 'checkpoint_20260918T010000000000Z',
            'postgres_timeline_id': 1, 'fenced': True, 'artifacts': artifacts}
     (root / 'manifest.json').write_text(json.dumps(doc))
@@ -240,6 +240,7 @@ class PersistenceReviewTests(unittest.TestCase):
         env_file.write_text('LG_BACKUP_DIR=backups\n')
         stack = Mock(data=data, backups=backups, images=doc['images'], env_file=env_file,
                      config={'networks': {'platform': {'name': 'drill-platform'}}})
+        stack.runner.return_value = subprocess.CompletedProcess([], 0, '', '')
         copytree = shutil.copytree
 
         def corrupt_copy(src, dest, *args, **kwargs):
@@ -403,6 +404,36 @@ class PersistenceReviewTests(unittest.TestCase):
                     with self.assertRaisesRegex(RuntimeError, 'checksum|symlinks|timeline'):
                         checkpoint.verify_checkpoint(source, doc['images'])
 
+    def test_restore_requires_manifest_immutable_identity_before_mutation(self):
+        source = self.root / 'source'
+        doc = checkpoint_fixture(source)
+        self.assertEqual(checkpoint.verify_checkpoint(source, doc['images']), doc)
+        for ref in ('postgres:trial', 'postgres@sha256:' + 'b' * 64):
+            stack = Mock(images={'postgres': ref})
+            with self.subTest(ref=ref), patch.object(bootstrap, 'ensure_network') as network:
+                with self.assertRaisesRegex(RuntimeError, 'same immutable image'):
+                    checkpoint.restore(stack, source)
+                network.assert_not_called()
+                stack.dc.assert_not_called()
+                stack.data.mkdir.assert_not_called()
+        doc['images']['postgres'] = 'postgres:trial'
+        (source / 'manifest.json').write_text(json.dumps(doc))
+        with self.assertRaisesRegex(RuntimeError, 'same immutable image'):
+            checkpoint.verify_checkpoint(source, doc['images'])
+
+    def test_restore_refuses_missing_image_before_creating_target_storage(self):
+        source = self.root / 'source'
+        doc = checkpoint_fixture(source)
+        stack = Mock(images=doc['images'], backups=self.root / 'backups')
+        stack.backups.mkdir()
+        stack.runner.return_value = subprocess.CompletedProcess([], 1, '', 'image unavailable')
+        with patch.object(bootstrap, 'ensure_network') as network:
+            with self.assertRaisesRegex(RuntimeError, 'restore-image'):
+                checkpoint.restore(stack, source)
+        network.assert_not_called()
+        stack.data.mkdir.assert_not_called()
+        stack.helper.assert_not_called()
+
     def test_verify_checkpoint_rejects_hostile_tar_members_with_matching_hashes(self):
         for index, (name, kind) in enumerate((('../escape', tarfile.REGTYPE),
                 ('/absolute', tarfile.REGTYPE), ('symlink', tarfile.SYMTYPE),
@@ -420,7 +451,7 @@ class PersistenceReviewTests(unittest.TestCase):
         backups = self.root / 'target-backups'
         backups.mkdir()
         (self.root / 'compose.yaml').write_text((ROOT / 'compose.yaml').read_text())
-        images = checkpoint.image_refs(ROOT / 'compose.yaml')
+        images = {'postgres': 'mirror/store@sha256:' + 'a' * 64}
         config = {'name': 'target-project', 'volumes': {'valkey-data': {'name': 'target-prefix-valkey-data'}},
                   'services': {name: {'image': image} for name, image in images.items()}}
         config['services']['postgres']['volumes'] = [
@@ -439,6 +470,7 @@ class PersistenceReviewTests(unittest.TestCase):
                     self.assertEqual(stack.backups, backups)
                     self.assertEqual(stack.data, self.root / 'target-pg')
                     self.assertEqual(stack.project, 'target-project')
+                    self.assertEqual(stack.images, images)
                     self.assertEqual(stack.prefix, 'target-prefix')
                     self.assertEqual(set(stack.storage_overrides), set(overrides))
                     output = io.StringIO()

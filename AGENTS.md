@@ -34,7 +34,7 @@ Model choice and the brief templates every delegation carries: `docs/agents/mode
 
 ## Where things live
 
-- `compose.yaml` - the whole stack. Images are pinned inline as tag plus digest; this is the only place a version is written.
+- `compose.yaml` - the whole stack. Default images are pinned inline as tag plus digest, with full-reference `LG_*_IMAGE` overrides; default versions are written only here.
 - `.env.example` - every operator setting, one comment line each, no secrets. `scripts/bootstrap.py` renders `.env` with generated secrets and starts the stack.
 - `config.yaml` - LiteLLM proxy config. `docker/litellm/` holds its callback code.
 - `docker/caddy/Caddyfile` - one file for Local and Public Mode; `docker/caddy/console/` is the static Stack Console.

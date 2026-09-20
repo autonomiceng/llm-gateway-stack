@@ -50,7 +50,8 @@ if [[ ! -w "$backup_root" || "$backup_device" == "$work_device" ]]; then
   exit 2
 fi
 backup_work=$(mktemp -d "$backup_root/llm-gateway-smoke-XXXXXX")
-pg_image=$(sed -n 's/^    image: \(postgres:.*\)/\1/p' compose.yaml)
+pg_image=$(sed -n 's/^    image: [$]{LG_POSTGRES_IMAGE:-\(.*\)}/\1/p' compose.yaml)
+[[ -n "$pg_image" ]] || { echo 'could not read the PostgreSQL image default' >&2; exit 2; }
 env_file="$work/.env"
 origin="localhost:$http_port"
 pass=0

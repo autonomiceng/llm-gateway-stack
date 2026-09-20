@@ -25,14 +25,14 @@ def runtime_fixture(root):
     stack.command = ['docker', 'compose']
     services = ('caddy', 'litellm', 'langfuse-web', 'langfuse-worker',
                 'postgres', 'clickhouse', 'rustfs', 'valkey')
-    stack.config = {'services': {name: {'image': name + ':new@sha256:pin', 'volumes': []}
+    stack.config = {'services': {name: {'image': name + ':new@sha256:' + 'a' * 64, 'volumes': []}
                                 for name in services},
                     'volumes': {'valkey-data': {'name': 'drill-valkey-data'}}}
     stack.config['services']['postgres']['volumes'] = [
         {'type': 'bind', 'source': '/new/pg', 'target': '/var/lib/postgresql'}]
     stack.config['services']['valkey']['volumes'] = [
         {'type': 'volume', 'source': 'valkey-data', 'target': '/data'}]
-    containers = [{'Config': {'Image': name + ':new@sha256:pin',
+    containers = [{'Config': {'Image': name + ':new@sha256:' + 'a' * 64,
                              'Labels': {'com.docker.compose.service': name}},
                    'Image': 'sha256:' + name, 'Mounts': []} for name in services]
     containers[-4]['Mounts'] = [{'Type': 'bind', 'Source': '/new/pg',
@@ -48,7 +48,12 @@ def runtime_fixture(root):
         elif argv[:2] == ['docker', 'inspect']:
             output = json.dumps(containers)
         elif argv[:3] == ['docker', 'image', 'inspect']:
-            output = 'sha256:' + argv[3].split(':')[0]
+            repository = argv[3].split('@', 1)[0]
+            if ':' in repository.rsplit('/', 1)[-1]:
+                repository = repository.rsplit(':', 1)[0]
+            output = 'sha256:' + repository
+            if '.RepoDigests' in argv[-1]:
+                output += ' ' + json.dumps([repository + '@sha256:' + 'a' * 64])
         elif argv == stack.command + ['ps', '--status', 'running', '--services']:
             output = ' '.join(services)
         else:
@@ -63,6 +68,8 @@ class BackupTests(unittest.TestCase):
     def test_capture_refuses_changed_image_before_writing_or_fencing(self):
         with tempfile.TemporaryDirectory() as directory:
             stack, containers, calls = runtime_fixture(Path(directory))
+            stack.config['services']['postgres']['image'] = 'postgres:trial'
+            containers[-4]['Config']['Image'] = 'postgres:trial'
             stack.attest_runtime()
             original = copy.deepcopy(containers)
             for field in ('reference', 'content'):
@@ -77,6 +84,53 @@ class BackupTests(unittest.TestCase):
                         backup.backup(stack, False, 300)
                     self.assertEqual(list(Path(directory).iterdir()), [])
                     self.assertFalse(any('stop' in call or 'exec' in call for call in calls))
+
+    def test_capture_resolves_effective_images_and_refuses_local_only_before_fencing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            stack, containers, calls = runtime_fixture(Path(directory))
+            for service in ('postgres', 'caddy'):
+                stack.config['services'][service]['image'] = service + ':trial'
+                container = next(c for c in containers
+                                 if c['Config']['Labels']['com.docker.compose.service'] == service)
+                container['Config']['Image'] = service + ':trial'
+            stack.attest_runtime()
+            self.assertEqual(stack.images['postgres'], 'postgres@sha256:' + 'a' * 64)
+            self.assertTrue(all(backup.immutable(ref) for ref in stack.images.values()))
+            runner = stack.runner
+            def local_only(argv):
+                result = runner(argv)
+                if '.RepoDigests' in argv[-1] and argv[3] == 'postgres:trial':
+                    result.stdout = 'sha256:postgres []'
+                return result
+            stack.runner = local_only
+            calls.clear()
+            with self.assertRaisesRegex(RuntimeError, 'no registry digest'):
+                backup.backup(stack, False, 300)
+            self.assertEqual(list(Path(directory).iterdir()), [])
+            self.assertFalse(any('stop' in call or 'exec' in call for call in calls))
+
+    def test_capture_prefers_configured_registry_when_image_has_multiple_digests(self):
+        with tempfile.TemporaryDirectory() as directory:
+            stack, containers, calls = runtime_fixture(Path(directory))
+            reference = 'registry.example:5000/store:trial'
+            expected = 'registry.example:5000/store@sha256:' + 'a' * 64
+            other = 'another.example/store@sha256:' + 'a' * 64
+            stack.config['services']['postgres']['image'] = reference
+            container = next(c for c in containers if c['Config']['Labels']['com.docker.compose.service'] == 'postgres')
+            container['Config']['Image'] = reference
+            runner = stack.runner
+            def inspect(argv):
+                if argv[:3] == ['docker', 'image', 'inspect'] and argv[3] in (reference, expected, other):
+                    value = container['Image']
+                    if '.RepoDigests' in argv[-1]:
+                        value += ' ' + json.dumps([other, expected])
+                    return subprocess.CompletedProcess(argv, 0, value, '')
+                return runner(argv)
+            stack.runner = inspect
+            stack.attest_runtime()
+            self.assertEqual(stack.images['postgres'], expected)
+            for ref in ('postgres:trial', 'docker.io/library/postgres:trial', 'index.docker.io/library/postgres@sha256:abc'):
+                self.assertEqual(backup.image_repository(ref), 'postgres')
 
     def test_capture_refuses_changed_mounts_before_writing_or_fencing(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -143,12 +197,12 @@ class BackupTests(unittest.TestCase):
             env = root / '.env'
             values = {'PASSWORD': 'unique-secret-value', 'CUSTOM_SETTING': 'private-setting-value'}
             env.write_text(''.join(f'{key}={value}\n' for key, value in values.items()))
-            doc = backup.manifest(checkpoint, ROOT / 'compose.yaml', env, 'abc123',
+            images = {'postgres': 'mirror/store@sha256:' + 'b' * 64}
+            doc = backup.manifest(checkpoint, images, env, 'abc123',
                                   '2026-09-17T01:02:03Z', True, 'checkpoint_test', 7)
             (checkpoint / 'manifest.json').write_text(json.dumps(doc))
             parsed = json.loads((checkpoint / 'manifest.json').read_text())
-            expected = re.findall(r'^    image: (\S+)$', (ROOT / 'compose.yaml').read_text(), re.M)
-            self.assertCountEqual(parsed['images'].values(), expected)
+            self.assertEqual(parsed['images'], images)
             self.assertEqual(parsed['env_keys'], sorted(values))
             self.assertEqual(parsed['postgres_timeline_id'], 7)
             for value in values.values():

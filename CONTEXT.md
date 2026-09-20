@@ -18,7 +18,8 @@ _Avoid_: Landing page, service router, public port set
 
 **Stack Console**:
 The page the Stack Gateway serves at the root hostname: links to every application, live
-health, and the pinned versions. It has no login and no write actions.
+health, and the configured image versions from the last bootstrap or restore. It has no
+login and no write actions.
 _Avoid_: Dashboard, admin UI, launchpad
 
 **Local Mode**:
@@ -37,8 +38,9 @@ configured proxies, while application origins retain their configured external s
 _Avoid_: TLS passthrough, shared certificates
 
 **Pinned Version**:
-An image reference in `compose.yaml` written as tag plus digest. It is the newest stable
-release of that component that has passed the smoke contract.
+The default image reference in `compose.yaml`, written as tag plus digest inside an
+`LG_*_IMAGE` fallback. It is the newest stable release of that component that has passed
+the smoke contract. Operator image overrides are separate from the Pinned Version.
 _Avoid_: Latest, floating tag, release manifest
 
 **Smoke Contract**:

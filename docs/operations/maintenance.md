@@ -1,6 +1,27 @@
 # Maintenance
 
-Versions are pinned by digest in `compose.yaml`. Renovate opens a pull request when an upstream releases; nothing changes on a host until an operator merges and pulls. This page is the procedure for applying a merged bump.
+Default versions are pinned by digest in `compose.yaml`. Renovate opens a pull request when an upstream releases; nothing changes on a host until an operator merges and pulls. This page is the procedure for applying a merged bump.
+
+## Image overrides
+
+Copy the relevant empty `LG_*_IMAGE` assignment from `.env.example` into `.env`,
+and supply a complete reference such as `registry.example/gateway:trial` or
+`registry.example/gateway@sha256:<digest>`. Every service has an override, including the
+AWS CLI helper. Langfuse web and worker use separate references and must stay on matching
+versions. Empty or unset values use the inline default. Exported values take precedence,
+including an empty value selecting the default. Normal `docker compose` commands apply.
+
+Take a Checkpoint before changing a running installation's images. Preserve the previous
+settings for rollback; data migration boundaries below also apply to overrides. Restore
+requires the exact immutable references in the Checkpoint; see [backup](backup.md).
+Local images can run, but need a registry digest before Checkpoint capture. Refresh Stack
+Console metadata with bootstrap after applying a change. `validate.sh` checks isolated
+repository defaults; it does not certify operator overrides. Validate experiments in a
+disposable installation before applying them to persistent data.
+
+Renovate's native Docker Compose manager supports inline defaults, covered by its
+[default-variable extraction test](https://github.com/renovatebot/renovate/blob/main/lib/modules/manager/docker-compose/extract.spec.ts).
+Langfuse grouping and major-update maintenance labels remain unchanged.
 
 ## Before touching a host
 
@@ -77,7 +98,7 @@ old_project=llm-gateway-stack
 volume_prefix=llm-gateway-stack
 # Stop using the OLD Compose file, without -v, before copying any store.
 docker compose -f /opt/gateway-old/compose.yaml --project-directory /opt/gateway-old down
-pg_image=$(sed -n 's/^    image: \(postgres:.*\)/\1/p' compose.yaml)
+pg_image=$(docker compose config --images postgres)
 for volume in clickhouse-data clickhouse-logs rustfs-data valkey-data caddy-data caddy-config; do
   source_volume="${old_project}_${volume}"
   target_volume="${volume_prefix}-${volume}"
