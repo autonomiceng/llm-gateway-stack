@@ -5,6 +5,8 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import tempfile
+from unittest.mock import patch
 import unittest
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -58,6 +60,37 @@ class ApplicationOriginsTests(unittest.TestCase):
         with self.assertRaises(bootstrap.Refused):
             bootstrap.access_settings({'LG_ACCESS_MODE': 'public', 'LG_PUBLIC_DOMAIN': 'gateway.test',
                                        'LG_S3_URL': 'http://objects.test'})
+
+    def test_langfuse_canonical_origin_is_saved_and_used_before_compose(self):
+        for raw, canonical in (("https://LANGFUSE.Example.test:443", "https://langfuse.example.test"),
+                               ("http://LANGFUSE.Example.test:80", "http://langfuse.example.test"),
+                               ("https://LANGFUSE.Example.test:8444", "https://langfuse.example.test:8444")):
+            for from_shell in (False, True):
+                with self.subTest(raw=raw, from_shell=from_shell), tempfile.TemporaryDirectory() as tmp:
+                    env_file = Path(tmp) / ".env"
+                    original = "# operator note\nMY_CUSTOM=kept\nLG_LANGFUSE_URL=" + raw + "\n"
+                    if not from_shell:
+                        env_file.write_text(original)
+                    shell = {"LG_LANGFUSE_URL": raw} if from_shell else {}
+                    with patch.dict(os.environ, shell, clear=True):
+                        args = ["--env-file", str(env_file), "--render-only"]
+                        bootstrap.bootstrap(args)
+                        saved = env_file.read_text()
+                        self.assertIn("LG_LANGFUSE_URL=" + canonical + "\n", saved)
+                        if not from_shell:
+                            self.assertTrue(saved.startswith(original))
+                        self.assertEqual(env_file.stat().st_mode & 0o777, 0o600)
+                        bootstrap.bootstrap(args)
+                        self.assertEqual(env_file.read_text(), saved)
+                        values = bootstrap.access_settings({"LG_LANGFUSE_URL": raw})
+                        self.assertEqual(values["LG_LANGFUSE_URL"], canonical)
+                        calls = []
+                        def runner(argv):
+                            calls.append(argv)
+                            return subprocess.CompletedProcess(argv, 0, "", "")
+                        bootstrap.compose_up(ROOT, env_file, runner, values["LG_LANGFUSE_URL"])
+                        self.assertEqual(calls[0][:3], ["env", "LG_LANGFUSE_URL=" + canonical, "docker"])
+                        self.assertEqual(dict(os.environ), shell)
 
     @unittest.skipUnless(shutil.which('node'), 'Node.js required for the static console check')
     def test_console_uses_configured_urls(self):

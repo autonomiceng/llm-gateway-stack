@@ -70,6 +70,7 @@ origin() {
     http:*:80) origin_authority=${origin_authority%:80} ;;
     https:*:443) origin_authority=${origin_authority%:443} ;;
   esac
+  origin_value=$origin_scheme://$origin_authority
   [ "$LG_ACCESS_MODE" != public ] || [ "$origin_scheme" = https ] || refuse "$1 requires HTTPS in public mode"
 }
 
