@@ -71,6 +71,10 @@ See [ingress](operations/ingress.md) for ports, explicit application hostnames a
 
 ## Operations
 
+- Public status: `scripts/status_observer.py` publishes `data/console/status.json`;
+  periodic observation is opt-in through `scripts/install_status_timer.py`.
+  See [status operation](operations/status.md) for public disclosure and probe limits.
+
 - Bootstrap: `scripts/bootstrap.py`. Generates secrets once, refuses to invent secrets over
   existing data, creates the platform network, starts the stack, waits for readiness.
 - Validate: `scripts/validate.sh` for static checks; `scripts/smoke.sh` boots the pinned
