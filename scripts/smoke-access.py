@@ -50,6 +50,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_header('X-Smoke-Path', self.path)
         self.end_headers()
         self.wfile.write(json.dumps(dict(self.headers)).encode())
+    do_POST = do_GET
     def log_message(self, *args):
         pass
 for port in (3000, 9000, 9001):
@@ -101,7 +102,7 @@ http.server.HTTPServer(('', 4000), Handler).serve_forever()
             time.sleep(0.5)
         self.fail("gateway did not start; inspect the disposable container logs")
 
-    def request(self, path, host="localhost", tls=False, headers=None):
+    def request(self, path, host="localhost", tls=False, headers=None, method="GET"):
         if tls:
             root = docker("exec", GATEWAY, "cat", "/data/caddy/pki/authorities/local/root.crt")
             context = ssl.create_default_context(cadata=root)
@@ -109,7 +110,7 @@ http.server.HTTPServer(('', 4000), Handler).serve_forever()
         else:
             connection = http.client.HTTPConnection("127.0.0.1", HTTP_PORT, timeout=5)
         try:
-            connection.request("GET", path, headers={"Host": host, **(headers or {})})
+            connection.request(method, path, headers={"Host": host, **(headers or {})})
             response = connection.getresponse()
             return response.status, dict(response.getheaders()), response.read()
         finally:
@@ -177,7 +178,9 @@ http.server.HTTPServer(('', 4000), Handler).serve_forever()
         status, headers, _ = self.request("/ui?view=models", "darkforge.tail694fe2.ts.net:8443")
         self.assertEqual(status, 308)
         self.assertEqual(headers["Location"], origin + "/ui/?view=models")
-        self.assertEqual(self.request("/", "darkforge.tail694fe2.ts.net:8449")[1]["Location"], "/rustfs/console/")
+        self.assertEqual(self.request("/", "darkforge.tail694fe2.ts.net:8449", headers={"Accept": "text/html"})[1]["Location"], "/rustfs/console/")
+        self.assertEqual(self.request("/", "darkforge.tail694fe2.ts.net:8449", headers={"Accept": "application/json"})[1]["X-Smoke-Upstream"], "9001")
+        self.assertEqual(self.request("/", "darkforge.tail694fe2.ts.net:8449", method="POST")[1]["X-Smoke-Upstream"], "9001")
 
     def test_ip_root_and_configured_application_origins(self):
         self.start()

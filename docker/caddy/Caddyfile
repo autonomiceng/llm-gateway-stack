@@ -160,7 +160,12 @@
 	route {
 		@denied not remote_ip {$LG_OPERATOR_ALLOW:127.0.0.0/8 ::1}
 		respond @denied 404
-		redir / /rustfs/console/ 302
+		@console_landing {
+			path /
+			method GET HEAD
+			header Accept *text/html*
+		}
+		redir @console_landing /rustfs/console/ 302
 		import app rustfs:9001
 	}
 }
