@@ -12,9 +12,27 @@ Caddy is the only published entry. Every application has a fixed hostname under 
 
 ## Local Mode (default)
 
-`LG_PUBLIC_DOMAIN=localhost`, `LG_SCHEME=http`, `LG_BIND_HOST=127.0.0.1`. Browsers and systemd-resolved hosts resolve *.localhost; elsewhere pass -H 'Host: ...'. Nothing listens outside the host. Other machines cannot reach the stack, by design; use an SSH tunnel to port 80 if you need to look from elsewhere.
+`LG_ACCESS_MODE=local` serves HTTP and self-signed HTTPS on `LG_BIND_HOST=127.0.0.1`.
+Both protocols work simultaneously without HTTP redirects or HSTS, including HSTS from
+upstream applications. The application URL protocol defaults to HTTP. Browsers and
+systemd-resolved hosts resolve `*.localhost`; elsewhere configure DNS or use curl
+`--resolve`. Nothing listens outside the host by default.
 
-If another service owns port 80 or 443, set `LG_HTTP_PORT` and `LG_HTTPS_PORT`, and set `LG_PUBLIC_PORT_SUFFIX` to the port browsers will use (for example `:8080`) so Langfuse's login URL, presigned S3 URLs and the CORS origin carry it. URLs then look like `http://litellm.localhost:8080`.
+The root console accepts `localhost`, `127.0.0.1`, and arbitrary HTTP Host values.
+Applications still require the explicit names in the table. Console links come from
+configured origins, including when the root is opened by IP; Langfuse authentication,
+S3 signatures and CORS do not acquire arbitrary aliases.
+
+If another service owns port 80 or 443, set `LG_HTTP_PORT` and `LG_HTTPS_PORT`, and set `LG_PUBLIC_PORT_SUFFIX` to the application's browser-facing port (for example `:8080`) so Langfuse's login URL, presigned S3 URLs and CORS carry it. URLs then look like `http://litellm.localhost:8080`. Optional `LG_SCHEME=https` selects HTTPS as the configured application URL and needs the HTTPS port suffix instead; it does not disable HTTP. The second listener provides transport access, while applications retain a single configured application URL.
+
+The template's `COMPOSE_FILE=compose.yaml:compose.${LG_ACCESS_MODE:-local}.yaml`
+selects mode defaults and publishing. Use Compose 2.24.4 or newer. Keep that assignment
+when changing modes, and recreate services with `python3 scripts/bootstrap.py`.
+Explicit `-f` or `COMPOSE_FILE` overrides must include the matching mode file.
+For a lasting deployment choice, edit `.env`. Shell overrides apply only to that command;
+bootstrap does not save them into existing settings. Use the same overrides for backup
+and restore, or save them in `.env` first.
+Issuer and listener scheme are derived from the mode and are not operator settings.
 
 ## Public Mode
 
@@ -22,14 +40,20 @@ Set DNS A or AAAA records for the four default hostnames to this host, open port
 
 ```sh
 LG_PUBLIC_DOMAIN=gateway.example.com
-LG_SCHEME=https
-LG_TLS_ISSUER=acme
+LG_ACCESS_MODE=public
 LG_BIND_HOST=0.0.0.0
 ```
 
-Then `docker compose up -d`. Caddy answers the ACME challenge on port 80, stores certificates in the `caddy-data` volume, and redirects HTTP to HTTPS. Langfuse's login URL, its presigned S3 URLs and RustFS's CORS origin all derive from the same two settings, so nothing else needs editing.
+Then `python3 scripts/bootstrap.py`. Leave `LG_SCHEME` empty for the HTTPS default;
+Public mode requires HTTPS application URLs. Caddy proves ownership of your domain through port 80,
+stores certificates in `caddy-data`, and redirects HTTP to configured HTTPS origins.
+Root `/health/*` probes remain available over HTTP. Redirects for unknown HTTP hosts use
+the configured root domain. Application login, presigned URLs and CORS use that same
+configured scheme, domain and port.
 
-`LG_TLS_ISSUER=internal` makes Caddy issue certificates from its own CA, for private networks with internal DNS. Export the root certificate and install it on each client:
+Local Mode issues and renews certificates from Caddy's own CA in the existing
+`caddy-data` volume. To use local HTTPS, export only its public root certificate and
+install it on clients that need this stack:
 
 ```sh
 docker compose cp caddy:/data/caddy/pki/authorities/local/root.crt ./gateway-root.crt
@@ -38,16 +62,29 @@ docker compose cp caddy:/data/caddy/pki/authorities/local/root.crt ./gateway-roo
 Bootstrap and restore read this root from their own Caddy container for local HTTPS
 health probes. Both use the configured public domain for TLS hostname verification.
 Never disable certificate verification in clients instead.
+No startup command changes host trust. Never copy CA private keys or certificate
+volumes between stacks; select `proxy` when Platform Edge handles HTTPS.
 
 ## What is never published
 
-PostgreSQL, ClickHouse, Valkey and the RustFS API on its internal port are reachable only inside the Compose network. LiteLLM's `/metrics` is served without authentication because only the Docker networks can reach it. Caddy answers 404 for `/metrics` on the LiteLLM hostname in both modes; the observability stack scrapes `lg-litellm:4000/metrics` directly.
+PostgreSQL, ClickHouse, Valkey and the RustFS API on its internal port are reachable only inside the Compose network. LiteLLM's `/metrics` is served without authentication because only the Docker networks can reach it. Caddy answers 404 for `/metrics` on the LiteLLM application listener in every mode; the observability stack scrapes `lg-litellm:4000/metrics` directly.
 
 ## Shared host
 
 When the backplane or the observability stack runs on the same host, the gateway joins the external Docker network `platform` as `lg-gateway` and LiteLLM as `lg-litellm`. The monitoring sidecars also join as `lg-valkey-exporter:9121` and `lg-postgres-exporter:9187`; the datastores remain private. Bootstrap creates the network if it is missing; `docker network create platform` does the same by hand.
 
-Two stacks cannot both publish 80 and 443. On a shared host the `platform-edge` project owns those ports, terminates TLS, and routes each hostname to the stack's own Caddy over the platform network as `lg-gateway:80`. Configure this stack with the public values (`LG_PUBLIC_DOMAIN`, `LG_SCHEME=https`) so Langfuse's login and presigned URLs are right, plus `LG_LISTEN_SCHEME=http` and `LG_TLS_ISSUER=none` so its Caddy listens on plain HTTP behind the edge, and spare `LG_HTTP_PORT` and `LG_HTTPS_PORT` on `LG_BIND_HOST=127.0.0.1`. Set `LG_TRUSTED_PROXIES` to the platform subnet so Caddy accepts the edge's `X-Forwarded-Proto`. Leave it empty for standalone deployments. Trust only networks you control; private address space can include other tenants.
+Two stacks cannot both publish 80 and 443. On a shared host Platform Edge owns those ports,
+terminates TLS, and routes explicit application hostnames to `lg-gateway:80`.
+Set `LG_ACCESS_MODE=proxy`, the external `LG_PUBLIC_DOMAIN`, and a spare
+`LG_HTTP_PORT` on loopback. Behind another gateway, the stack publishes no HTTPS port and performs no TLS
+issuance. The external scheme defaults to HTTPS; `LG_SCHEME=http` remains useful
+when the edge's configured application URL is HTTP.
+
+Set `LG_TRUSTED_PROXIES` to Edge’s reserved address (`/32` for IPv4, `/128` for IPv6).
+Broader ranges deliberately trust every peer in that range; avoid them for shared networks.
+Caddy preserves trusted `X-Forwarded-Proto`; an untrusted caller cannot assert it.
+Running behind another gateway requires a nonempty trust list. Trust only networks you control; private
+address space can include other tenants. Standalone modes normally leave it empty.
 
 ## Operator access
 

@@ -201,6 +201,48 @@ class BootstrapTests(unittest.TestCase):
         bootstrap.ensure_network(run)
         self.assertEqual(len(run.calls), 1)
 
+    def test_access_mode_defaults_and_conflicts(self):
+        for mode, scheme, listener, issuer in (
+            ("local", "http", "dual", "internal"),
+            ("public", "https", "https", "acme"),
+            ("proxy", "https", "http", "none"),
+        ):
+            with self.subTest(mode=mode):
+                values = bootstrap.access_settings({"LG_ACCESS_MODE": mode, "LG_PUBLIC_DOMAIN": "gateway.test",
+                                                    "LG_TRUSTED_PROXIES": "172.30.0.0/24"})
+                self.assertEqual(tuple(values[key] for key in ("LG_SCHEME", "LG_LISTEN_SCHEME", "LG_TLS_ISSUER")),
+                                 (scheme, listener, issuer))
+                environment = {**values, "LG_HTTPS_PUBLISHED": str(mode != "proxy").lower()}
+                result = subprocess.run(["sh", str(self.template.parent / "docker/caddy/access-mode.sh"), "true"],
+                                        env=environment, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(bootstrap.access_settings({})["LG_ACCESS_MODE"], "local")
+        for values in (
+            {"LG_ACCESS_MODE": "invalid"},
+            {"LG_SCHEME": "ftp"},
+            {"LG_ACCESS_MODE": "public"},
+            {"LG_ACCESS_MODE": "public", "LG_PUBLIC_DOMAIN": "gateway.test", "LG_SCHEME": "http"},
+            {"LG_ACCESS_MODE": "proxy"},
+            {"LG_ACCESS_MODE": "proxy", "LG_TRUSTED_PROXIES": "172.30.0.0/24", "COMPOSE_FILE": "compose.yaml"},
+            {"LG_PUBLIC_DOMAIN": "127.0.0.1"},
+            {"LG_PUBLIC_DOMAIN": 'untrusted"host'},
+        ):
+            with self.subTest(values=values), self.assertRaises(bootstrap.Refused):
+                bootstrap.access_settings(values)
+
+    def test_local_readiness_checks_both_protocols_with_own_ca(self):
+        runner = runner_with()
+        with patch.object(bootstrap, "wait_ready") as wait, \
+             patch.object(bootstrap.ssl.SSLContext, "load_verify_locations") as trust:
+            bootstrap.probe_gateway({"LG_ACCESS_MODE": "local", "LG_HTTP_PORT": "18080",
+                                     "LG_HTTPS_PORT": "18443"}, ["docker", "compose"], runner)
+        self.assertEqual([call.args[0] for call in wait.call_args_list], [
+            "http://127.0.0.1:18080/health/litellm", "http://127.0.0.1:18080/health/langfuse",
+            "https://127.0.0.1:18443/health/litellm", "https://127.0.0.1:18443/health/langfuse",
+        ])
+        trust.assert_called_once()
+        self.assertTrue(wait.call_args.kwargs["context"].check_hostname)
+
 
 if __name__ == "__main__":
     unittest.main()

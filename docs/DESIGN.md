@@ -61,11 +61,13 @@ ingestion queue in the same Valkey instance. LiteLLM sends spans to Langfuse ove
 
 ## Access modes
 
-Local Mode is the default: `http://litellm.localhost` and friends on `127.0.0.1`. Browsers
-resolve `*.localhost` to loopback without configuration. Public Mode is three settings:
-`LG_PUBLIC_DOMAIN`, `LG_SCHEME=https`, `LG_BIND_HOST=0.0.0.0`, plus DNS. Caddy obtains
-certificates from Let's Encrypt, or from its own CA with `LG_TLS_ISSUER=internal` for
-private networks. The hostnames do not change between modes, so nothing else does either.
+`LG_ACCESS_MODE` selects Local, Public or Proxy Mode. Local Mode serves HTTP and
+private-CA HTTPS on loopback, without redirects or HSTS. Public Mode uses ACME and
+redirects HTTP except root health probes. Proxy Mode listens on HTTP behind Platform
+Edge with no published HTTPS port. The template selects the matching small Compose
+override; the application and datastore topology stays in `compose.yaml` (ADR-0015).
+Application origins are configured independently of the listener scheme and request Host.
+See [ingress](operations/ingress.md) for ports, explicit application hostnames and trust.
 
 ## Operations
 
@@ -76,8 +78,9 @@ private networks. The hostnames do not change between modes, so nothing else doe
 - Backup and restore: `scripts/backup.sh`, `scripts/restore.sh`, `docs/operations/backup.md`.
 - Upgrades: Renovate proposes, the smoke contract gates, `docs/operations/maintenance.md`
   tells the operator what a major changes and where the rollback boundary is.
-- Observability: container logs and LiteLLM metrics are collected by the observability
-  stack over the platform network. LLM traces live in Langfuse only.
+- Observability: runtime logs go to the host journal with no Docker file cache.
+  Alloy collection and metrics scraping are optional; startup has no observability-stack
+  dependency. LLM traces live in Langfuse. See [logging](operations/logging.md).
 
 ## Stack
 

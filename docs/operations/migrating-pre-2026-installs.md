@@ -23,7 +23,7 @@ Also record: which hostnames or ports external clients use, which virtual keys e
 | Old | New |
 | --- | --- |
 | `NGINX_PORT`, `GATEWAY_PORT`, `PUBLIC_BIND_IP`, `LOCAL_BIND_IP` | `LG_BIND_HOST`, `LG_HTTP_PORT`, `LG_HTTPS_PORT` |
-| `*_HOSTNAME` per service, TLS overlay file | `LG_PUBLIC_DOMAIN`, `LG_SCHEME`, `LG_TLS_ISSUER` |
+| `*_HOSTNAME` per service, TLS overlay file | `LG_PUBLIC_DOMAIN`, `LG_ACCESS_MODE`, optional browser URL protocol `LG_SCHEME` |
 | `POSTGRES_DATA_HOST_PATH` mounted at `/var/lib/postgresql/data` | `LG_POSTGRES_DATA_DIR` mounted at `/var/lib/postgresql` (Postgres 18 layout) |
 | `REDIS_AUTH`, service `redis`, volume `langfuse_redis_data` | `VALKEY_PASSWORD`, service `valkey`, volume `valkey-data` |
 | `MINIO_ROOT_USER/PASSWORD`, service `minio`, volume `langfuse_minio_data` | `RUSTFS_ACCESS_KEY/SECRET_KEY`, service `rustfs`, volume `rustfs-data` |

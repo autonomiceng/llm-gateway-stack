@@ -2,14 +2,18 @@
 // polls /health/<service> through the Stack Gateway. No secrets, no writes.
 (() => {
   const base = `${location.protocol}//${location.host}`;
-  const hostFor = (sub) => `${location.protocol}//${sub}.${location.host}`;
-
-  for (const a of document.querySelectorAll("[data-link]")) {
-    a.href = hostFor(a.dataset.link) + (a.dataset.path || "/");
-  }
-  for (const c of document.querySelectorAll("[data-url]")) {
-    c.textContent = hostFor(c.dataset.url) + (c.dataset.path || "");
-  }
+  const origins = async () => {
+    const response = await fetch("/origins.json", { cache: "no-store" });
+    if (!response.ok) throw new Error(String(response.status));
+    const origin = await response.json();
+    const hostFor = (sub) => `${origin.scheme}://${sub}.${origin.domain}${origin.port}`;
+    for (const link of document.querySelectorAll("[data-link]")) {
+      link.href = hostFor(link.dataset.link) + (link.dataset.path || "/");
+    }
+    for (const code of document.querySelectorAll("[data-url]")) {
+      code.textContent = hostFor(code.dataset.url) + (code.dataset.path || "");
+    }
+  };
 
   const badge = (li, state, label) => {
     const b = li.querySelector("[data-badge]");
@@ -76,6 +80,7 @@
   };
 
   versions();
+  origins().catch(() => {});
   checkAll();
   // Repaint only when a check completes; no continuous animation.
   setInterval(checkAll, 30000);

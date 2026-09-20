@@ -138,7 +138,7 @@ at least `--stop-timeout` plus 10 seconds (130 by default) before accepting heal
 services, allowing an in-flight daemon stop to settle. The Compose health deadline is
 that settle interval plus 300 seconds; status and retry-start commands each have a
 120-second limit, shortened to the remaining deadline. It then verifies gateway and
-Langfuse health before retention or success publication. Reading an internal TLS CA
+Langfuse health before retention or success publication. Reading the local certificate authority’s public root
 allows another 120 seconds; each of the two HTTP probes has a 120-second retry window
 and five-second socket timeouts, so an in-flight request can overrun its retry window.
 If capture and resumption both fail, the error reports both.

@@ -24,6 +24,7 @@ for volume in "${volumes[@]}"; do
   if grep -Fxq "$volume" <<< "$existing"; then echo "smoke volume already exists: $volume" >&2; exit 2; fi
 done
 [[ -z "$(docker ps -aq --filter "label=com.docker.compose.project=$COMPOSE_PROJECT_NAME")" ]] || { echo "smoke project already exists" >&2; exit 2; }
+SMOKE_PROJECT="$COMPOSE_PROJECT_NAME-access" python3 scripts/smoke-access.py
 http_port=${SMOKE_HTTP_PORT:-18080}
 https_port=${SMOKE_HTTPS_PORT:-18443}
 network="$COMPOSE_PROJECT_NAME-platform"
@@ -113,6 +114,14 @@ for line in sys.stdin:
     if ports and c["Service"] != "caddy": sys.exit(c["Service"] + " publishes " + str(ports))
 if seen != expected: sys.exit("services/health differ: " + json.dumps(seen))' || fail "service set or health"
 ok "all services healthy, only caddy published"
+
+for service in clickhouse rustfs; do
+  directory=/var/log/clickhouse-server
+  [[ "$service" != rustfs ]] || directory=/logs
+  files=$(docker compose --env-file "$env_file" exec -T "$service" find "$directory" -type f -size +0c)
+  [[ -z "$files" ]] || fail "$service wrote application log files"
+done
+ok "ClickHouse and RustFS produce no application log files"
 
 # Console and its data.
 curl -fsS "http://$origin/" | grep -q 'LLM Gateway' || fail "console did not render"

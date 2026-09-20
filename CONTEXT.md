@@ -22,15 +22,19 @@ health, and the pinned versions. It has no login and no write actions.
 _Avoid_: Dashboard, admin UI, launchpad
 
 **Local Mode**:
-The default access mode: plain HTTP on the loopback interface with `*.localhost` hostnames,
-no DNS or certificates required, not reachable from other hosts.
+The default access mode: HTTP and private-CA HTTPS on loopback, without redirects or HSTS.
+Application origins use HTTP by default and keep explicit hostnames.
 _Avoid_: Development mode, insecure mode
 
 **Public Mode**:
-The access mode an operator enables by setting a public domain, HTTPS, and a public bind
-address. The Stack Gateway obtains certificates automatically. Application and datastore
-ports stay private.
+The access mode for public DNS hostnames with automatic public certificates and HTTPS
+redirects. Application and datastore ports stay private.
 _Avoid_: TLS Mode, production mode
+
+**Proxy Mode**:
+The access mode behind Platform Edge: the Stack Gateway listens on HTTP and trusts only
+configured proxies, while application origins retain their configured external scheme.
+_Avoid_: TLS passthrough, shared certificates
 
 **Pinned Version**:
 An image reference in `compose.yaml` written as tag plus digest. It is the newest stable

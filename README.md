@@ -1,6 +1,6 @@
 # llm-gateway-stack
 
-One URL for every model, one key per app or agent, and a trace for every call. Self-hosted, one Docker Compose file.
+One URL for every model, one key per app or agent, and a trace for every call. Self-hosted, one Docker Compose project.
 
 [![CI](https://github.com/autonomiceng/llm-gateway-stack/actions/workflows/ci.yml/badge.svg)](https://github.com/autonomiceng/llm-gateway-stack/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
@@ -18,7 +18,7 @@ It runs on one machine and is built to stay up: pinned images, backups with a re
 
 ## Quick start
 
-You need Docker with the Compose plugin, Python 3.11 or newer, and about 6 GB of disk for images. [mise](https://mise.jdx.dev) installs the pinned tools if you use it.
+You need a Linux Docker host with journald, Compose 2.24.4 or newer, Python 3.11 or newer, and about 6 GB of disk for images. [mise](https://mise.jdx.dev) installs the pinned tools if you use it. See [logging](docs/operations/logging.md) for hosts without journald.
 
 ```sh
 git clone https://github.com/autonomiceng/llm-gateway-stack.git
@@ -49,7 +49,7 @@ curl -s http://litellm.localhost/v1/chat/completions \
 
 Log in to Langfuse with `LANGFUSE_INIT_USER_EMAIL` and `LANGFUSE_INIT_USER_PASSWORD` from `.env`. The trace is there. Add real models in `config.yaml`, put their keys in `.env`, and run `docker compose up -d litellm`. The master key has no budget; before handing out access, create per-consumer keys with limits as shown in [keys and budgets](docs/operations/keys.md).
 
-To put it on the internet, set a domain, `https`, and a public bind address in `.env`. Caddy gets the certificates. Details in [ingress](docs/operations/ingress.md).
+Local Mode serves HTTP and self-signed HTTPS without redirecting HTTP or telling browsers to require HTTPS. To put it on the internet, set `LG_ACCESS_MODE=public`, a domain and a public bind address in `.env`. Choose `LG_ACCESS_MODE=proxy` when Platform Edge or another gateway handles HTTPS. Details in [ingress](docs/operations/ingress.md). Linux journald receives runtime logs; optional Alloy collection and portability are covered in [logging](docs/operations/logging.md).
 
 ## What's inside
 
