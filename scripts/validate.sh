@@ -136,6 +136,15 @@ for mode in "local http dual localhost internal true" "local https dual example.
 done
 echo "Caddyfile: PASS (16 configurations)"
 
+# The canonical contract lives in platform-edge; CI has no sibling checkout to compare with.
+sync="${PLATFORM_EDGE_DIR:-$root/../platform-edge}/scripts/sync-conventions.sh"
+if [[ -x "$sync" || -n "${PLATFORM_EDGE_DIR:-}" ]]; then
+  "$sync" --check . >/dev/null
+  echo "conventions: PASS (matches platform-edge)"
+else
+  echo "conventions: SKIP (no platform-edge checkout at ${sync%/scripts/*}; set PLATFORM_EDGE_DIR)"
+fi
+
 mapfile -t scripts < <(git ls-files '*.sh')
 shellcheck "${scripts[@]}"
 echo "shellcheck: PASS"

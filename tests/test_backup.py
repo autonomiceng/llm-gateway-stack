@@ -308,6 +308,7 @@ class BackupTests(unittest.TestCase):
             stack.runner = runner
             with patch.object(backup, 'ROOT', root), \
                  patch.object(backup, 'verify_checkpoint', return_value={'fenced': True}), \
+                 patch.object(bootstrap, 'ensure_network'), \
                  patch.object(stack, 'helper', side_effect=RuntimeError('empty targets verified')) as helper:
                 old_umask = os.umask(0o077)
                 try:

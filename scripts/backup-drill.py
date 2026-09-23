@@ -2,6 +2,7 @@
 """Destructive only to a new disposable drill project and its temporary directory."""
 import base64
 import http.cookiejar
+import ipaddress
 import json
 import os
 import re
@@ -14,6 +15,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import zlib
 from pathlib import Path
 
 root = Path(__file__).resolve().parent.parent
@@ -55,6 +57,8 @@ os.umask(0o077)
 work = Path(tempfile.mkdtemp(prefix='llm-gateway-drill-', dir=root / '.scratch'))
 backup_work = Path(tempfile.mkdtemp(prefix='llm-gateway-drill-', dir=backup_root))
 network = project + '-platform'
+# Disjoint from the installed Platform Network (172.30.0.0/24); Docker refuses overlapping subnets.
+subnet = os.environ.get('SMOKE_PLATFORM_SUBNET') or f'172.31.{zlib.crc32(project.encode()) % 256}.0/24'
 network_created = False
 
 
@@ -110,7 +114,10 @@ try:
         'LANGFUSE_INIT_USER_EMAIL': 'drill@gateway.test',
         'LG_HTTP_PORT': port, 'LG_HTTPS_PORT': https_port,
         'LG_VOLUME_PREFIX': project, 'LG_PLATFORM_NETWORK': network, 'LG_PUBLIC_PORT_SUFFIX': ':' + port,
+        'LG_PLATFORM_SUBNET': subnet, 'LG_PLATFORM_IP_RANGE': subnet,
     }
+    # Restore validates the network from the shell allocation; the env file carries the same values.
+    os.environ.update(LG_PLATFORM_SUBNET=subnet, LG_PLATFORM_IP_RANGE=subnet)
     text = (root / '.env.example').read_text()
     for key, value in settings.items():
         text = re.sub(rf'^{key}=.*$', f'{key}={value}', text, flags=re.M)
@@ -118,7 +125,9 @@ try:
     (backup_work / 'backups').mkdir()
     # ClickHouse lists its backups disk root at startup: 0711 is not enough.
     os.chmod(backup_work / 'backups', 0o755)
-    run(['docker', 'network', 'create', network], label='drill-network-create')
+    gateway = str(next(ipaddress.IPv4Network(subnet).hosts()))
+    run(['docker', 'network', 'create', '--subnet', subnet, '--ip-range', subnet, '--gateway', gateway, network],
+        label='drill-network-create')
     network_created = True
     print(f'booting {project} on localhost:{port}', flush=True)
     run(['python3', 'scripts/bootstrap.py', '--env-file', str(env_file)], label='drill-bootstrap')

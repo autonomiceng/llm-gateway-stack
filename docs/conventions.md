@@ -1,8 +1,16 @@
+<!-- vendored from platform-edge@de2662b ; do not edit here -->
 # Stack conventions
 
 How the four repos (llm-gateway-stack, agent-backplane, observability-stack and
 platform-edge) are laid out and operated, so that deploying any of them feels the same.
-This file, `docs/conventions.md`, is the shared reference.
+
+This file is canonical in platform-edge at `docs/conventions.md` and vendored into each
+sibling repo at the same path by `scripts/sync-conventions.sh`. A vendored copy starts with
+one HTML comment naming the platform-edge commit it was copied from; that commit is the
+contract version. Siblings never edit their copy: change platform-edge, then re-vendor.
+`scripts/sync-conventions.sh --check <sibling-dir>` reports drift.
+
+Contract revision: 2026-09-23 (plan v2, red team v1).
 
 ## Repository
 
@@ -15,6 +23,7 @@ This file, `docs/conventions.md`, is the shared reference.
 - `.env.example` lists every operator setting: one comment line, then the assignment. No
   secrets in the template; bootstrap generates them. Stack-owned settings carry a prefix
   (`LG_`, `BP_`, `OB_`, `PE_`); upstream applications keep their upstream variable names.
+  Below, `*_` stands for the stack prefix.
 - `mise.toml` pins the toolchain. `scripts/` holds bootstrap, validate, smoke, backup and
   restore. `docs/DESIGN.md` is the map, `docs/adr/` the decisions, `CONTEXT.md` the glossary,
   `docs/operations/` the runbooks, `docs/agents/` the guidance for agents.
@@ -23,38 +32,128 @@ This file, `docs/conventions.md`, is the shared reference.
 - Default branch `main`. Conventional Commits. `Co-Authored-By: Various Models`.
 - `.scratch/`, `.agents/`, `.devloop/`, `.plans/` are gitignored. Plans never commit.
 
+## Platform contract
+
+The interfaces the four stacks share. Later work quotes this table; an implementation that
+differs from it is a contract change, made here first.
+
+| Item | Contract | Settings |
+| --- | --- | --- |
+| Platform Network | External Docker network `platform`. Whichever bootstrap runs first creates it with `--subnet 172.30.0.0/24 --ip-range 172.30.0.128/25 --gateway 172.30.0.1`; the gateway is the first host address of the subnet and is not configured separately. Every bootstrap validates an existing network's IPAM and refuses a mismatch (exit 1) with a message naming the expected and actual values. | `*_PLATFORM_NETWORK` (default `platform`), `*_PLATFORM_SUBNET` (default `172.30.0.0/24`), `*_PLATFORM_IP_RANGE` (default `172.30.0.128/25`) |
+| Edge address | `pe-edge` at `172.30.0.2`, outside the dynamic range, set as `ipv4_address` in Edge `compose.yaml`. | `PE_EDGE_IP` (default `172.30.0.2`) |
+| Trusted proxies | Siblings trust exactly Edge's address. Edge trusts nothing by default. Metrics allowlists stay exact IP. | `LG_TRUSTED_PROXIES`, `OB_TRUSTED_PROXIES`, `BP_TRUSTED_PROXIES` (default `172.30.0.2/32`; the Backplane setting is removed with its internal gateway, B5b); `PE_TRUSTED_PROXIES` (default empty); `PE_METRICS_ALLOW` |
+| Ingress aliases | `lg-gateway:80`, `ob-gateway:80`, `bp-server:3000`. Until the Backplane chain lands (B5a/B5b), Edge routes `backplane.` to `bp-gateway:80`; the alias switch is one Edge change. Aliases are interfaces: renaming one needs a migration. | none |
+| Metrics interfaces | See the metrics table below. Only these endpoints join the Platform Network; datastores never do. | `OB_SCRAPE_EDGE`, `OB_SCRAPE_GATEWAY`, `OB_SCRAPE_BACKPLANE`, `PE_METRICS_ALLOW`, `LG_CHECKPOINT_ALLOW`, `BP_OPERATIONS_TOKEN`, `OB_BACKPLANE_OPERATIONS_TOKEN` |
+| Hostnames | Root, `litellm.`, `langfuse.`, `s3.`, `rustfs.`, `backplane.` and `grafana.` under one public domain. Application hostnames do not change between access modes. Backplane also configures its full browser origin, which is the required input behind Edge. | `PE_PUBLIC_DOMAIN`, `LG_PUBLIC_DOMAIN`, `OB_PUBLIC_DOMAIN`, `BP_PUBLIC_DOMAIN` (standalone hostname and certificate), `BP_PUBLIC_URL` (browser origin); `PE_ROOT_HOST` (optional prefix for the console when the apex is not routable, default empty) |
+| Bundle ports | Behind Edge, each stack listens on loopback HTTP: 18080 Gateway, 18180 Observability, 3000 Backplane. | `*_BIND_HOST` (default `127.0.0.1`), `LG_HTTP_PORT=18080`, `OB_HTTP_PORT=18180`, `BP_PORT=3000` |
+| Access modes | `local`: HTTP and internal-CA HTTPS on loopback, no redirect, no HSTS. `public`: trusted HTTPS with HTTP redirect; the bind address is chosen explicitly. `proxy`: HTTP only, behind Edge or another gateway that handles HTTPS. Every stack keeps standalone `public`. The canonical application scheme is a separate setting. | `*_ACCESS_MODE` (default `local`), `*_SCHEME` (`LG_`, `OB_`, `PE_`; Backplane derives it from `BP_PUBLIC_URL`) |
+| TLS issuers | `internal`: the stack Caddy's own CA (default in `local`). `acme`: an ACME directory (default in `public`; Let's Encrypt when no directory is set). `files`: an operator directory mounted read-only at `/certs` containing `tls.crt` and `tls.key`; bootstrap validates that the SAN list covers every configured hostname; replacement is swap files then `docker compose exec caddy caddy reload`. Bootstrap's own HTTPS readiness probe trusts the CA file when one is given. Public ACME needs TCP 80 and 443 reachable; DNS-01 is not offered. | `*_TLS_ISSUER` (`internal`, `acme`, `files`), `*_ACME_EMAIL`, `*_ACME_CA` (directory URL), `*_ACME_CA_ROOT` (trust file for a private ACME server), `*_ACME_EAB_KEY_ID`, `*_ACME_EAB_HMAC`, `*_TLS_DIR`, `*_TLS_CA` |
+| Status v2 | Each stack serves `GET /status.json` (schema in "Status v2") and `GET /health/<component>` (status only, empty body publicly). Gateway, Observability and Edge write a static file at bootstrap; Backplane serves it from the server through an explicit public projection. Consumers show tags as configured, never running. No host observers, timers or `docker exec`. | none |
+| Secrets | Each bootstrap generates its missing secrets once into `.env`: mode 0600, atomic write, unrelated lines preserved byte for byte, present values never rewritten, and a refusal when installation state exists but a secret is missing. Secrets never appear in argv, container labels or world-readable rendered files. No secret manager; `sops` or `infisical run` are documented options for off-host storage. | none |
+| Bootstrap | `python3 scripts/bootstrap.py` in every repo, standard library only. Required flags: `--dry-run` (render and validate, write nothing) and `--env-file <path>` (default `.env`). Exit codes: 0 ready, 1 refused, 2 usage, 3 not ready. Errors are one JSON line on stderr. Once `.env` exists, plain `docker compose up` starts the stack. | none |
+| UI kit | `platform-ui`: `platform.css` (tokens plus header, card, badge and endpoint components) and `docs/ui-kit.md`, canonical in platform-edge, vendored with the source revision and a checksum. Layout and application styles stay local. | none |
+
+### Metrics interfaces
+
+| Endpoint | Serves | Access | Notes |
+| --- | --- | --- | --- |
+| `pe-edge:80/metrics` | Edge Caddy metrics | exact-IP allowlist `PE_METRICS_ALLOW` | scraped when `OB_SCRAPE_EDGE=true` |
+| `lg-gateway:8081/metrics` | Gateway checkpoint metrics | exact-IP allowlist `LG_CHECKPOINT_ALLOW` (template default loopback only; add the scraper's address) | scraped when `OB_SCRAPE_GATEWAY=true` |
+| `lg-gateway:8081/metrics/litellm` | LiteLLM metrics | Platform Network only | new in G1; replaces `lg-litellm:4000` once Observability scrapes it (O1); LiteLLM then leaves the Platform Network (G2) |
+| `lg-valkey-exporter:9121`, `lg-postgres-exporter:9187` | Gateway datastore exporters | Platform Network only | Compose profile `metrics` (G1) |
+| `bp-server:3000/metrics` | Backplane metrics | bearer token `BP_OPERATIONS_TOKEN`, held by Observability as `OB_BACKPLANE_OPERATIONS_TOKEN` | scraped when `OB_SCRAPE_BACKPLANE=true` (O0); the token value never appears in a label |
+| `ob-*` | Observability backends | not scraped externally | Observability observes itself |
+
+## Status v2
+
+Contract version 2 replaces the version 1 observation model. Each stack publishes what it
+was configured with; liveness comes from separate health paths. The full field rules and
+per-stack examples are in platform-edge `docs/operations/status-contract.md`.
+
+```json
+{
+  "contract": 2,
+  "stack": "gateway",
+  "configuredAt": "2026-09-23T16:00:00Z",
+  "components": [
+    {"id": "litellm", "name": "LiteLLM", "kind": "app", "enabled": true,
+     "image": "ghcr.io/berriai/litellm:v1.101.0", "version": "1.101.0",
+     "health": "/health/litellm", "url": "https://litellm.example.com"},
+    {"id": "postgres", "name": "PostgreSQL", "kind": "datastore", "enabled": true,
+     "image": "postgres:18.6", "version": "18.6", "health": "/health/postgres"}
+  ],
+  "features": {"backups": {"configured": true, "lastCheckpointAt": null},
+               "alerts": {"configured": false}}
+}
+```
+
+Rules:
+
+- Closed field set. The envelope has exactly `contract`, `stack`, `configuredAt`, `components`
+  and `features`. A component has exactly `id`, `name`, `kind`, `enabled`, `image`, `version`,
+  `health` and optional `url`. `features` has only `backups` and `alerts`. Producers emit
+  nothing else; a consumer treats any other field as a malformed document. Adding a field is
+  a contract bump.
+- `enabled` reflects the selected Compose profiles and overlays at configuration time.
+  Disabled components are shown as off and never probed.
+- `health` is always the same-origin path `/health/<id>`. `GET` returns 200 when the
+  component's documented bounded probe passes, 503 when it fails, 404 for an unknown or
+  disabled component, with an empty body publicly.
+- `version` is the release version parsed from the configured image tag, null when the tag is
+  not a recognized release. Consumers label it "configured", never "running". `image` is the
+  configured reference without digest.
+- An absent or unreachable producer means unknown, never unhealthy, and never blocks another
+  stack's card or the console.
+- Edge proxies each stack's document and health paths same-origin at
+  `/stack-status/<stack>` and `/stack-status/<stack>/health/<component>`: GET and HEAD only,
+  request credentials and cookies stripped, four-second deadline, 64 KiB and 32-component
+  limits, `Cache-Control: no-store`, no upstream error body.
+- Accepted loss versus version 1: worker, task and restart states and observed image
+  digests are no longer reported (red team finding 7, Owner decision D6).
+
+## Per-repo verification gates
+
+Every PR runs its repo's gates before review and again before merge; the reviewer re-runs
+them unshimmed. A failed or skipped gate is reported as such, never as a pass.
+
+| Repo | Commands |
+| --- | --- |
+| platform-edge | `scripts/validate.sh`; `python3 -m unittest discover -s tests`; `node --test tests/status*.test.cjs`; `scripts/smoke.sh` when `compose.yaml`, the image pin, `Caddyfile`, `routes.d/` or `scripts/bootstrap.py` change |
+| llm-gateway-stack | `scripts/validate.sh`; `python3 -m unittest discover -s tests`; `scripts/smoke.sh` when Compose, an image pin, the Caddyfile or bootstrap change |
+| observability-stack | `scripts/validate.sh`; `python3 -m unittest discover -s tests`; `scripts/smoke.sh` when Compose, an image pin, the Caddyfile, Alloy config or bootstrap change |
+| agent-backplane | After `bun install --frozen-lockfile`: `bun run check`; `python3 -m unittest discover -s tests -p 'test_status*.py'`; `python3 tests/acceptance/rustfs-console.py`; `python3 tests/acceptance/status-publication.py`; `bun run test` (the `bun test` preload wrapper); `bun tests/acceptance/storage-startup.ts`; `bun tests/acceptance/storage-identity.ts`; `bun tests/acceptance/storage-migration.ts`; `python3 scripts/backup-drill.py --offline`; `python3 scripts/backup-drill.py --s3`; `python3 scripts/storage-migration-drill.py`. When the server or compute image changes, also `docker build -f infra/compose/server.Dockerfile .`, the workerd image build, `bun tests/acceptance/workerd-image.ts <image> --lifecycle` and `python3 tests/acceptance/workerd-gate.py <image>`. A brief may narrow this list to the gates its change can affect; CI runs all of them. |
+
 ## Bootstrap contract
 
 One command from clone to running stack. It locks the env file, generates missing secrets
 (mode 0600, never rewrites a present value, keeps unmanaged lines byte for byte), refuses to
-start when installation state exists and secrets are missing, creates the shared network,
-runs `docker compose up --wait`, probes readiness, and prints the next step as JSON. Errors
-are one JSON line on stderr. Exit codes: 0 ready, 1 refused, 2 usage, 3 not ready.
+start when installation state exists and secrets are missing, creates or validates the
+Platform Network, runs `docker compose up --wait`, probes readiness, and prints the next step
+as JSON. Errors are one JSON line on stderr. Exit codes: 0 ready, 1 refused, 2 usage, 3 not
+ready. `--dry-run` and `--env-file` are accepted everywhere (see "Platform contract").
 
 ## Network and ingress
 
-- Each stack ships its own Caddy for HTTP/HTTPS. Backplane also retains a direct loopback
+- Each stack ships its own Caddy for HTTP/HTTPS. Backplane also keeps a direct loopback
   API port, with Caddy optional. Datastores stay private.
-- One `PUBLIC_DOMAIN` per stack with fixed application subdomains. Fresh standalone Caddy
-  installations default to `ACCESS_MODE=local`: HTTP and self-signed HTTPS on loopback,
-  without redirecting HTTP or telling browsers to require HTTPS. For direct HTTPS,
-  install the local certificate authority’s public root on client devices.
-  `public` uses automatically renewed trusted HTTPS certificates and HTTP redirects; choose the external bind address explicitly.
-  `proxy` means another gateway handles HTTPS and forwards HTTP to this stack.
-  Application browser URLs are configured separately.
-  Application hostnames do not change between modes. IP/alternate-host console access does
-  not imply arbitrary application aliases.
-- Each application has one configured browser URL for authentication and generated
-  links. Bootstrap derives defaults from the mode.
-  Backplane core-only remains directly accessible over HTTP; its standalone Caddy is optional.
-  A stack behind Platform Edge does not publish an unused HTTPS port or share CA private keys.
-- Tailscale Serve is optional: its trusted HTTPS endpoint forwards to local HTTP. Platform
-  Edge can configure explicit application URLs on separate ports of one machine hostname.
-  Sharing a console alone does not make application subdomains reachable.
+- One public domain per stack with fixed application subdomains. Fresh standalone Caddy
+  installations default to `*_ACCESS_MODE=local`: HTTP and internal-CA HTTPS on loopback,
+  without redirecting HTTP or telling browsers to require HTTPS. For direct HTTPS, install
+  the stack's public CA root on client devices. `public` uses automatically renewed trusted
+  certificates and HTTP redirects; choose the external bind address explicitly. `proxy`
+  means another gateway handles HTTPS and forwards HTTP to this stack. Application browser
+  URLs are configured separately. IP or alternate-host console access does not imply
+  arbitrary application aliases.
+- Each application has one configured browser URL for authentication and generated links.
+  Bootstrap derives defaults from the mode. Backplane core-only remains directly accessible
+  over HTTP; its standalone Caddy is optional. A stack behind Platform Edge does not publish
+  an unused HTTPS port or share CA private keys.
+- Tailscale is optional. Platform Edge documents the shared-host design; each sibling
+  README carries a standalone Tailscale recipe.
 - On a shared host every stack joins the external Docker network `platform` with only its
   ingress target and metrics endpoints, under prefixed aliases (`lg-`, `bp-`, `ob-`, `pe-`).
   Datastores never join. The optional `platform-edge` project owns 80 and 443 and routes each
-  hostname to a stack's Caddy over that network.
+  hostname to a stack over that network.
 
 ## Data and operations
 
@@ -68,24 +167,20 @@ are one JSON line on stderr. Exit codes: 0 ready, 1 refused, 2 usage, 3 not read
   log cache disabled; no application-managed or Docker JSON runtime log files. The host
   controls journal persistence and retention. Non-journald hosts need an explicit supported
   logging override. Caddy access logs are structured JSON with credential redaction.
-- Observability is optional: Alloy discovers container logs through Docker and scrapes
-  configured metrics endpoints over the platform network. Collection failures never prevent
+- Observability is optional: Alloy discovers container logs through Docker and scrapes the
+  metrics interfaces above over the Platform Network. Collection failures never prevent
   another stack from starting. Domain data (LLM traces, backplane audit), WAL, backups and
   protected one-off recovery diagnostics remain durable where specified.
-- Health: each stack exposes health routes through Caddy for the console and bootstrap.
-  Use container healthchecks where supported. Observability’s distroless backends are
-  probed by Caddy’s aggregate healthcheck and bootstrap/smoke HTTP assertions.
-  Public gateway probes may return only status; detailed responses require operator access.
+- Health: each stack exposes `/health/<component>` through its gateway for the console and
+  bootstrap. Use container healthchecks where supported. Observability's distroless
+  backends are probed by Caddy's aggregate healthcheck and bootstrap/smoke HTTP assertions.
+  Public probes return only a status; detailed responses require operator access.
 - Versions bump through Renovate PRs; majors of stateful stores are labelled and applied only
   from a Checkpoint following `docs/operations/maintenance.md`.
 
 ## Agents
 
-Model routing lives in each repo's `docs/agents/model-routing.md`, with repo-specific risk
-paths and these shared roles: Claude Fable 5.1 orchestrates, designs, writes prose and UI, and gives the
-final review of anything touching persistent data; gpt-6 high red-teams, reviews designs and
-implements high-risk slices; gpt-5.6-sol medium does routine work. The verifier is from a
-different family than the implementer when possible. Two workers per host at most.
+Model routing, roles and brief templates live in each repo's `docs/agents/model-routing.md`.
 
 ## Stack-specific operations
 

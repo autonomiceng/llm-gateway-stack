@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import fcntl
 import http.client
+import ipaddress
 import json
 import os
 import re
@@ -39,6 +40,11 @@ def record_bootstrap(root, env_file, started, state):
 
 PROJECT = "llm-gateway-stack"
 NETWORK = "platform"
+# Platform Network allocation shared by every stack (docs/conventions.md). Edge's reserved
+# address lies outside the dynamic range, so siblings can trust it without discovery.
+PLATFORM_SUBNET = "172.30.0.0/24"
+PLATFORM_IP_RANGE = "172.30.0.128/25"
+EDGE_PROXY = "172.30.0.2/32"
 VOLUMES = ("clickhouse-data", "clickhouse-logs", "rustfs-data", "valkey-data", "caddy-data", "caddy-config")
 
 # Secrets the stack needs and how many random bytes each gets (hex encoded).
@@ -238,13 +244,58 @@ def ensure_volumes(runner: Runner, prefix: str = PROJECT, project: str = PROJECT
                 raise Refused("volume_create_failed", result.stderr.strip())
 
 
-def ensure_network(runner: Runner, name: str = NETWORK) -> None:
-    probe = runner(["docker", "network", "inspect", name])
-    if probe.returncode == 0:
-        return
-    created = runner(["docker", "network", "create", name])
-    if created.returncode != 0:
-        raise Refused("network_create_failed", created.stderr.strip())
+def platform_allocation(settings: dict[str, str]) -> tuple[str, str]:
+    subnet = settings.get("LG_PLATFORM_SUBNET") or PLATFORM_SUBNET
+    ip_range = settings.get("LG_PLATFORM_IP_RANGE") or PLATFORM_IP_RANGE
+    try:
+        network, dynamic = ipaddress.IPv4Network(subnet), ipaddress.IPv4Network(ip_range)
+    except ValueError as error:
+        raise Refused("invalid_platform_network",
+                      "LG_PLATFORM_SUBNET and LG_PLATFORM_IP_RANGE must be IPv4 networks") from error
+    if not dynamic.subnet_of(network):
+        raise Refused("invalid_platform_network", "LG_PLATFORM_IP_RANGE must lie inside LG_PLATFORM_SUBNET")
+    # Docker could hand a trusted address to any container attached to the network.
+    for proxy in settings.get("LG_TRUSTED_PROXIES", "").split():
+        try:
+            trusted = ipaddress.ip_network(proxy, strict=False)
+        except ValueError:
+            continue
+        if trusted.version == 4 and trusted.overlaps(dynamic):
+            raise Refused("invalid_platform_network",
+                          f"LG_PLATFORM_IP_RANGE {dynamic} must exclude trusted proxy {proxy}")
+    return str(network), str(dynamic)
+
+
+def ensure_network(runner: Runner, name: str = NETWORK, subnet: str | None = None,
+                   ip_range: str | None = None) -> None:
+    if subnet is None or ip_range is None:
+        # Checkpoint restore passes no settings; the shell may carry a disposable allocation.
+        subnet, ip_range = platform_allocation(os.environ)
+    inspect = ["docker", "network", "inspect", "--format", "{{json .IPAM.Config}}", name]
+    probe = runner(inspect)
+    if probe.returncode != 0:
+        gateway = str(next(ipaddress.IPv4Network(subnet).hosts()))
+        created = runner(["docker", "network", "create", "--driver", "bridge", "--subnet", subnet,
+                          "--ip-range", ip_range, "--gateway", gateway, name])
+        if created.returncode == 0:
+            return
+        # Another bootstrap may have created it first; validate that network instead.
+        probe = runner(inspect)
+        if probe.returncode != 0:
+            raise Refused("network_create_failed", created.stderr.strip())
+    try:
+        configs = json.loads(probe.stdout) or []
+    except ValueError:
+        configs = []
+    observed = [(config.get("Subnet", ""), config.get("IPRange", "")) for config in configs]
+    # A second IPv4 pool would also hand out addresses; IPv6 pools are left to the operator.
+    ipv4 = [entry for entry in observed if ":" not in entry[0]]
+    if ipv4 != [(subnet, ip_range)]:
+        found = "; ".join(f"subnet {s or 'none'} ip-range {r or 'none'}" for s, r in observed) or "no IPAM configuration"
+        raise Refused("platform_network_mismatch",
+                      f"network {name} has {found}; expected subnet {subnet} ip-range {ip_range}. "
+                      f"One-time fix: stop every stack on {name}, run `docker network rm {name}`, "
+                      "then rerun bootstrap")
 
 
 def compose_up(root: Path, env_file: Path, runner: Runner, langfuse_origin: str) -> None:
@@ -268,6 +319,8 @@ def access_settings(settings: dict[str, str]) -> dict[str, str]:
     if mode not in defaults:
         raise Refused("invalid_access_mode", "LG_ACCESS_MODE must be local, public or proxy")
     values["LG_ACCESS_MODE"] = mode
+    # Compose renders the same default for an empty value.
+    values["LG_TRUSTED_PROXIES"] = values.get("LG_TRUSTED_PROXIES") or EDGE_PROXY
     values["LG_SCHEME"] = values.get("LG_SCHEME") or defaults[mode][0]
     values["LG_LISTEN_SCHEME"], values["LG_TLS_ISSUER"] = defaults[mode][1:]
     values.setdefault("LG_PUBLIC_DOMAIN", "localhost")
@@ -306,7 +359,6 @@ def access_settings(settings: dict[str, str]) -> dict[str, str]:
     access_keys.update("LG_" + app + "_URL" for app in ("CONSOLE", "LITELLM", "LANGFUSE", "S3", "RUSTFS", "GRAFANA", "BACKPLANE"))
     environment = {key: value for key, value in values.items() if key in access_keys}
     environment["LG_HTTPS_PUBLISHED"] = str(mode != "proxy").lower()
-    environment.setdefault("LG_TRUSTED_PROXIES", "")
     origins = subprocess.run(
         ["sh", str(Path(__file__).resolve().parent.parent / "docker/caddy/access-mode.sh"), "--origins"],
         env=environment, capture_output=True, text=True,
@@ -421,6 +473,7 @@ def bootstrap(argv: list[str], runner: Runner = run) -> int:
                          if key in settings or key.startswith("LG_") or key == "COMPOSE_FILE"})
         requested_langfuse = settings.get("LG_LANGFUSE_URL")
         settings = access_settings(settings)
+        allocation = platform_allocation(settings)
         raw_langfuse = requested_langfuse or (settings["LG_SCHEME"] + "://langfuse."
                                              + settings["LG_PUBLIC_DOMAIN"]
                                              + settings.get("LG_PUBLIC_PORT_SUFFIX", ""))
@@ -482,7 +535,7 @@ def bootstrap(argv: list[str], runner: Runner = run) -> int:
                 "docker", "compose", "--project-directory", str(root), "--env-file", str(env_file),
             ], runner))
 
-            ensure_network(runner, settings.get("LG_PLATFORM_NETWORK", NETWORK))
+            ensure_network(runner, settings.get("LG_PLATFORM_NETWORK", NETWORK), *allocation)
             ensure_volumes(runner, prefix, project)
             compose_up(root, env_file, runner, canonical_langfuse)
             probe_gateway(settings, ["docker", "compose", "--project-directory", str(root),

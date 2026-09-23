@@ -28,6 +28,8 @@ SMOKE_PROJECT="$COMPOSE_PROJECT_NAME-access" python3 scripts/smoke-access.py
 http_port=${SMOKE_HTTP_PORT:-18080}
 https_port=${SMOKE_HTTPS_PORT:-18443}
 network="$COMPOSE_PROJECT_NAME-platform"
+# Disjoint from the installed Platform Network (172.30.0.0/24); Docker refuses overlapping subnets.
+subnet=${SMOKE_PLATFORM_SUBNET:-172.31.$(( $(cksum <<< "$COMPOSE_PROJECT_NAME" | cut -d' ' -f1) % 256 )).0/24}
 mkdir -p "$root/.scratch"
 work=$(mktemp -d "$root/.scratch/smoke-XXXXXX")
 # Python is already required and reports device IDs on both GNU and BSD hosts.
@@ -81,12 +83,13 @@ sed -e "s#^LG_POSTGRES_DATA_DIR=.*#LG_POSTGRES_DATA_DIR=$work/pg#" \
     -e "s#^LG_HTTPS_PORT=.*#LG_HTTPS_PORT=$https_port#" \
     -e "s#^LG_PUBLIC_PORT_SUFFIX=.*#LG_PUBLIC_PORT_SUFFIX=:$http_port#" \
     -e "s#^LG_PLATFORM_NETWORK=.*#LG_PLATFORM_NETWORK=$network#" \
+    -e "s#^LG_PLATFORM_SUBNET=.*#LG_PLATFORM_SUBNET=$subnet#" \
+    -e "s#^LG_PLATFORM_IP_RANGE=.*#LG_PLATFORM_IP_RANGE=$subnet#" \
     -e "s#^LANGFUSE_INIT_USER_EMAIL=.*#LANGFUSE_INIT_USER_EMAIL=smoke@gateway.test#" \
     .env.example > "$env_file"
 mkdir -p "$backup_work/backups"
 chmod 755 "$backup_work/backups"
 
-docker network create "$network" >/dev/null 2>&1 || true
 echo "booting $COMPOSE_PROJECT_NAME on $origin"
 python3 scripts/bootstrap.py --env-file "$env_file" >/dev/null
 ok "bootstrap reached readiness"
