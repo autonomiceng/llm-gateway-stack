@@ -99,6 +99,7 @@ IPv4, `/128` for IPv6). Broader ranges deliberately trust every peer in that ran
 them for shared networks. Caddy preserves trusted `X-Forwarded-Proto`; an untrusted caller
 cannot assert it. Trust only networks you control; private address space can include other
 tenants. Docker never assigns that address dynamically, so without Edge the default grants nothing.
+Bootstrap refuses an `LG_PLATFORM_IP_RANGE` that contains a trusted IPv4 proxy address.
 
 ## One Tailscale hostname with separate ports
 

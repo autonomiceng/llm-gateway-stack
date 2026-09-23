@@ -254,6 +254,15 @@ def platform_allocation(settings: dict[str, str]) -> tuple[str, str]:
                       "LG_PLATFORM_SUBNET and LG_PLATFORM_IP_RANGE must be IPv4 networks") from error
     if not dynamic.subnet_of(network):
         raise Refused("invalid_platform_network", "LG_PLATFORM_IP_RANGE must lie inside LG_PLATFORM_SUBNET")
+    # Docker could hand a trusted address to any container attached to the network.
+    for proxy in settings.get("LG_TRUSTED_PROXIES", "").split():
+        try:
+            trusted = ipaddress.ip_network(proxy, strict=False)
+        except ValueError:
+            continue
+        if trusted.version == 4 and trusted.overlaps(dynamic):
+            raise Refused("invalid_platform_network",
+                          f"LG_PLATFORM_IP_RANGE {dynamic} must exclude trusted proxy {proxy}")
     return str(network), str(dynamic)
 
 
@@ -276,7 +285,9 @@ def ensure_network(runner: Runner, name: str = NETWORK, subnet: str = PLATFORM_S
     except ValueError:
         configs = []
     observed = [(config.get("Subnet", ""), config.get("IPRange", "")) for config in configs]
-    if (subnet, ip_range) not in observed:
+    # A second IPv4 pool would also hand out addresses; IPv6 pools are left to the operator.
+    ipv4 = [entry for entry in observed if ":" not in entry[0]]
+    if ipv4 != [(subnet, ip_range)]:
         found = "; ".join(f"subnet {s or 'none'} ip-range {r or 'none'}" for s, r in observed) or "no IPAM configuration"
         raise Refused("platform_network_mismatch",
                       f"network {name} has {found}; expected subnet {subnet} ip-range {ip_range}. "

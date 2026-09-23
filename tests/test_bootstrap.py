@@ -295,6 +295,11 @@ sys.exit(19)
         self.assertEqual(run.calls[-1], ["docker", "network", "create", "--driver", "bridge",
                                          "--subnet", "10.40.0.0/24", "--ip-range", "10.40.0.128/25",
                                          "--gateway", "10.40.0.1", "platform"])
+        for values in ({"LG_PLATFORM_SUBNET": "172.30.0.5/24"}, {"LG_PLATFORM_IP_RANGE": "10.0.0.0/25"},
+                       {"LG_PLATFORM_IP_RANGE": "172.30.0.0/25", "LG_TRUSTED_PROXIES": "172.30.0.2/32"}):
+            with self.subTest(values=values), self.assertRaises(bootstrap.Refused) as raised:
+                bootstrap.platform_allocation(values)
+            self.assertEqual(raised.exception.code, "invalid_platform_network")
 
     def test_existing_network_with_the_contract_allocation_is_used(self):
         run = runner_with()
@@ -302,8 +307,10 @@ sys.exit(19)
         self.assertEqual(len(run.calls), 1)
 
     def test_existing_network_with_another_allocation_is_refused_with_both_values(self):
+        second = '{"Subnet":"10.9.0.0/24"}'
         for ipam, observed in (('[{"Subnet":"172.18.0.0/16","Gateway":"172.18.0.1"}]', "subnet 172.18.0.0/16 ip-range none"),
-                               ("null", "no IPAM configuration")):
+                               ("null", "no IPAM configuration"),
+                               (CONTRACT_IPAM[:-1] + "," + second + "]", "subnet 10.9.0.0/24 ip-range none")):
             with self.subTest(ipam=ipam), self.assertRaises(bootstrap.Refused) as raised:
                 bootstrap.ensure_network(runner_with(ipam=ipam))
             self.assertEqual(raised.exception.code, "platform_network_mismatch")

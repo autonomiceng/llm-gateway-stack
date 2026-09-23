@@ -49,7 +49,7 @@ curl -s http://litellm.localhost/v1/chat/completions \
 
 Log in to Langfuse with `LANGFUSE_INIT_USER_EMAIL` and `LANGFUSE_INIT_USER_PASSWORD` from `.env`. The trace is there. Add real models in `config.yaml`, put their keys in `.env`, and run `docker compose up -d litellm`. The master key has no budget; before handing out access, create per-consumer keys with limits as shown in [keys and budgets](docs/operations/keys.md).
 
-Local Mode serves HTTP and self-signed HTTPS without redirecting HTTP or telling browsers to require HTTPS. To put it on the internet, set `LG_ACCESS_MODE=public`, a domain and a public bind address in `.env`. Choose `LG_ACCESS_MODE=proxy` when Platform Edge or another gateway handles HTTPS. Details in [ingress](docs/operations/ingress.md). Linux journald receives runtime logs; optional Alloy collection and portability are covered in [logging](docs/operations/logging.md).
+Local Mode serves HTTP and self-signed HTTPS without redirecting HTTP or telling browsers to require HTTPS. To put it on the internet, set `LG_ACCESS_MODE=public`, a domain and a public bind address in `.env`. Choose `LG_ACCESS_MODE=proxy` when Platform Edge or another gateway handles HTTPS; behind Edge also set `LG_HTTP_PORT=18080`, and the default `LG_TRUSTED_PROXIES=172.30.0.2/32` already trusts Edge's reserved address. Details in [ingress](docs/operations/ingress.md). Linux journald receives runtime logs; optional Alloy collection and portability are covered in [logging](docs/operations/logging.md).
 
 ## What's inside
 
