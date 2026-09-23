@@ -266,8 +266,11 @@ def platform_allocation(settings: dict[str, str]) -> tuple[str, str]:
     return str(network), str(dynamic)
 
 
-def ensure_network(runner: Runner, name: str = NETWORK, subnet: str = PLATFORM_SUBNET,
-                   ip_range: str = PLATFORM_IP_RANGE) -> None:
+def ensure_network(runner: Runner, name: str = NETWORK, subnet: str | None = None,
+                   ip_range: str | None = None) -> None:
+    if subnet is None or ip_range is None:
+        # Checkpoint restore passes no settings; the shell may carry a disposable allocation.
+        subnet, ip_range = platform_allocation(os.environ)
     inspect = ["docker", "network", "inspect", "--format", "{{json .IPAM.Config}}", name]
     probe = runner(inspect)
     if probe.returncode != 0:
