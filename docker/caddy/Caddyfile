@@ -105,8 +105,8 @@
 			@status_method not method GET HEAD
 			header @status_method Allow "GET, HEAD"
 			respond @status_method "" 405
+			# Bootstrap writes the Status v2 document; always send it whole, never a 304 or range.
 			root * /srv/state
-			# No conditional 304 can make an old observation look refreshed.
 			request_header -If-Modified-Since
 			request_header -Range
 			request_header -If-Range
@@ -122,14 +122,36 @@
 	handle /health/rustfs-console {
 		import console-health-{$LG_RUSTFS_CONSOLE:on}
 	}
+	# Status v2 health paths are /health/<component>; /health/langfuse predates them.
+	handle /health/caddy {
+		respond 200
+	}
 	handle /health/litellm {
 		import health litellm:4000 /health/readiness
 	}
-	handle /health/langfuse {
+	@langfuse_health path /health/langfuse /health/langfuse-web
+	handle @langfuse_health {
 		import health langfuse-web:3000 /api/public/health
+	}
+	handle /health/langfuse-worker {
+		import health langfuse-worker:3030 /api/health
+	}
+	handle /health/clickhouse {
+		import health clickhouse:8123 /ping
 	}
 	handle /health/rustfs {
 		import health rustfs:9000 /health/live
+	}
+	handle /health/postgres-exporter {
+		import health postgres-exporter:9187 /
+	}
+	handle /health/valkey-exporter {
+		import health valkey-exporter:9121 /health
+	}
+	# No HTTP probe reaches these stores; 404 reads as unknown, never unhealthy.
+	@unprobed path /health/postgres /health/valkey
+	handle @unprobed {
+		respond 404
 	}
 	handle /health/backplane {
 		import health bp-server:3000 /health/ready
@@ -139,15 +161,6 @@
 	}
 	@metrics path_regexp (?i)^/+metrics(/|$)
 	handle @metrics {
-		respond 404
-	}
-	# Written by bootstrap: pinned versions, no secrets.
-	handle /versions.json {
-		@operator remote_ip {$LG_OPERATOR_ALLOW:127.0.0.0/8 ::1}
-		handle @operator {
-			root * /srv/state
-			file_server
-		}
 		respond 404
 	}
 	handle /origins.json {
@@ -361,12 +374,6 @@ http://:8081 {
 		respond @denied 404
 		header Content-Type "text/plain; version=0.0.4"
 		rewrite * /metrics.txt
-		root * /srv/state
-		file_server
-	}
-	handle /versions.json {
-		@denied not remote_ip {$LG_OPERATOR_ALLOW:127.0.0.0/8 ::1}
-		respond @denied 404
 		root * /srv/state
 		file_server
 	}

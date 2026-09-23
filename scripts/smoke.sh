@@ -119,44 +119,6 @@ for line in sys.stdin:
 if seen != expected: sys.exit("services/health differ: " + json.dumps(seen))' || fail "service set or health"
 ok "all services healthy, only caddy published"
 
-(umask 077; docker compose --env-file "$env_file" config --format json > "$work/observer-config.json")
-caddy_id=$(docker compose --env-file "$env_file" ps -q caddy)
-litellm_id=$(docker compose --env-file "$env_file" ps -q litellm)
-python3 - "$work/observer-config.json" "$caddy_id" "$litellm_id" <<'PYREAP'
-import json, sys, time
-sys.path.insert(0, 'scripts')
-from status_io import now, run
-from status_observer import observe_service
-
-config = json.load(open(sys.argv[1]))
-containers = dict(zip(('caddy', 'litellm'), sys.argv[2:]))
-for _ in range(20):
-    for component, container in containers.items():
-        observed = observe_service(component, [container], config, now(),
-                                   config['networks']['default']['name'], run, now)
-        assert observed['state'] == 'healthy', f'{component}: observer readiness failed'
-        assert observed.get('observedVersion') and observed['observedVersion'] == observed.get('configuredVersion'), f'{component}: runtime version differs'
-for component, container in containers.items():
-    # Expose the watchdog's status because the production runner rejects nonzero exits.
-    status = run(['docker', 'exec', container, 'sh', '-c',
-                  r'timeout -s KILL 3 sleep 10; printf "%s\n" "$?"'], timeout=15)
-    assert status.strip() == '137', f'{component}: watchdog did not time out'
-# Successful probes leave watchdogs until their three-second deadline. Docker top
-# omits zombies, so inspect the process states inside each captured container.
-time.sleep(4)
-for component, container in containers.items():
-    zombies = run(['docker', 'exec', container, 'sh', '-c', r'''
-test -r /proc/1/stat || exit 1
-for stat in /proc/[0-9]*/stat; do
-    { IFS= read -r fields < "$stat"; } 2>/dev/null || continue
-    fields=${fields##*) }
-    case "$fields" in Z\ *) printf '%s\n' "$stat";; esac
-done
-''']).splitlines()
-    assert not zombies, f'{component}: status probes left {len(zombies)} zombies'
-PYREAP
-ok "20 production observations per service and forced watchdog timeouts leave no zombies in Caddy or LiteLLM"
-
 for service in clickhouse rustfs; do
   directory=/var/log/clickhouse-server
   [[ "$service" != rustfs ]] || directory=/logs
@@ -169,8 +131,35 @@ ok "ClickHouse and RustFS produce no application log files"
 # Read the complete page before matching: bundled icons can exceed the pipe buffer.
 curl -fsS "http://$origin/" -o "$work/console.html" || fail "console request failed"
 grep -q 'LLM Gateway' "$work/console.html" || fail "console did not render"
-docker compose --env-file "$env_file" exec -T caddy wget -qO- http://127.0.0.1:8081/versions.json | grep -q '"langfuse"' || fail "versions.json missing"
 ok "console served"
+
+# Status v2: the bootstrap-written document, served publicly; the v1 route is gone.
+python3 - "http://$origin" <<'PYSTATUS' || fail "status document or health paths"
+import json, sys, urllib.error, urllib.request
+base = sys.argv[1]
+def get(path):
+    try:
+        with urllib.request.urlopen(base + path, timeout=10) as response:
+            return response.status, response.headers, response.read()
+    except urllib.error.HTTPError as error:
+        return error.code, error.headers, error.read()
+status, headers, body = get("/status.json")
+assert status == 200 and headers["Content-Type"] == "application/json" and headers["Cache-Control"] == "no-store"
+doc = json.loads(body)
+assert set(doc) == {"contract", "stack", "configuredAt", "components", "features"}, sorted(doc)
+assert doc["contract"] == 2 and doc["stack"] == "gateway", doc
+ids = ["caddy", "litellm", "langfuse-web", "langfuse-worker", "postgres", "clickhouse", "valkey", "rustfs",
+       "postgres-exporter", "valkey-exporter"]
+assert [c["id"] for c in doc["components"]] == ids, doc["components"]
+for c in doc["components"]:
+    assert {"id", "name", "kind", "enabled", "image", "version", "health"} <= set(c) <= {
+        "id", "name", "kind", "enabled", "image", "version", "health", "url"}, c
+    assert c["enabled"] is True and c["version"] and "@" not in c["image"], c
+    assert get(c["health"])[0] == (404 if c["id"] in ("postgres", "valkey") else 200), c["health"]
+assert doc["features"] == {"backups": {"configured": True, "lastCheckpointAt": None}}, doc["features"]
+assert get("/versions.json")[0] == 404
+PYSTATUS
+ok "status.json is Status v2, its health paths answer, /versions.json is gone"
 
 # Completion, streaming, and a failure that must not 500.
 body='{"model":"gateway-mock","messages":[{"role":"user","content":"smoke"}]}'

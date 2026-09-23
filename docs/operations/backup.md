@@ -275,7 +275,7 @@ be measured with representative data, storage throughput and external DNS/TLS st
 No measured RTO is claimed until the drill exits zero on the target host.
 
 Run monthly and after backup or pin changes from a clean disposable checkout, without
-`.env`, `data/`, or local Compose override files. Bootstrap versions and Checkpoint
+`.env`, `data/`, or local Compose override files. The Status Document and Checkpoint
 metrics use checkout-wide `data/console`; the drill refuses a checkout with installation
 state. Use a fresh checkout for each run.
 

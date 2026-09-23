@@ -71,9 +71,10 @@ See [ingress](operations/ingress.md) for ports, explicit application hostnames a
 
 ## Operations
 
-- Public status: `scripts/status_observer.py` publishes `data/console/status.json`;
-  periodic observation is opt-in through `scripts/install_status_timer.py`.
-  See [status operation](operations/status.md) for public disclosure and probe limits.
+- Public status: bootstrap writes the Status v2 document to `data/console/status.json`
+  after readiness; Caddy serves it at `/status.json` and each component's liveness at
+  `/health/<component>`. No host observer or timer. See
+  [maintenance](operations/maintenance.md#status-document).
 
 - Bootstrap: `scripts/bootstrap.py`. Generates secrets once, refuses to invent secrets over
   existing data, creates or validates the platform network allocation, starts the stack,
