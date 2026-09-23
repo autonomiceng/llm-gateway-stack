@@ -16,7 +16,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 import bootstrap  # noqa: E402
 
 
-def runner_with(volumes=(), network_exists=True):
+CONTRACT_IPAM = '[{"Subnet":"172.30.0.0/24","IPRange":"172.30.0.128/25","Gateway":"172.30.0.1"}]'
+
+
+def runner_with(volumes=(), network_exists=True, ipam=CONTRACT_IPAM, create_fails=False):
     calls = []
 
     def run(argv, **options):
@@ -24,7 +27,10 @@ def runner_with(volumes=(), network_exists=True):
         if argv[:3] == ["docker", "volume", "ls"]:
             return subprocess.CompletedProcess(argv, 0, "\n".join(volumes), "")
         if argv[:3] == ["docker", "network", "inspect"]:
-            return subprocess.CompletedProcess(argv, 0 if network_exists else 1, "", "")
+            exists = network_exists or (create_fails and ["docker", "network", "create"] in [c[:3] for c in calls])
+            return subprocess.CompletedProcess(argv, 0 if exists else 1, ipam if exists else "", "")
+        if argv[:3] == ["docker", "network", "create"] and create_fails:
+            return subprocess.CompletedProcess(argv, 1, "", "network with name platform already exists")
         return subprocess.CompletedProcess(argv, 0, "", "")
 
     run.calls = calls
@@ -282,13 +288,38 @@ sys.exit(19)
                 self.assertEqual(raised.exception.code, "langfuse_login_required")
                 self.assertEqual(runner.calls, [])
 
-    def test_network_is_created_only_when_missing(self):
+    def test_missing_network_is_created_with_the_configured_allocation(self):
         run = runner_with(network_exists=False)
-        bootstrap.ensure_network(run)
-        self.assertEqual(run.calls[-1][:3], ["docker", "network", "create"])
-        run = runner_with(network_exists=True)
-        bootstrap.ensure_network(run)
+        bootstrap.ensure_network(run, "platform", *bootstrap.platform_allocation(
+            {"LG_PLATFORM_SUBNET": "10.40.0.0/24", "LG_PLATFORM_IP_RANGE": "10.40.0.128/25"}))
+        self.assertEqual(run.calls[-1], ["docker", "network", "create", "--driver", "bridge",
+                                         "--subnet", "10.40.0.0/24", "--ip-range", "10.40.0.128/25",
+                                         "--gateway", "10.40.0.1", "platform"])
+
+    def test_existing_network_with_the_contract_allocation_is_used(self):
+        run = runner_with()
+        bootstrap.ensure_network(run, "platform", *bootstrap.platform_allocation({}))
         self.assertEqual(len(run.calls), 1)
+
+    def test_existing_network_with_another_allocation_is_refused_with_both_values(self):
+        for ipam, observed in (('[{"Subnet":"172.18.0.0/16","Gateway":"172.18.0.1"}]', "subnet 172.18.0.0/16 ip-range none"),
+                               ("null", "no IPAM configuration")):
+            with self.subTest(ipam=ipam), self.assertRaises(bootstrap.Refused) as raised:
+                bootstrap.ensure_network(runner_with(ipam=ipam))
+            self.assertEqual(raised.exception.code, "platform_network_mismatch")
+            self.assertIn(observed, raised.exception.detail)
+            self.assertIn("expected subnet 172.30.0.0/24 ip-range 172.30.0.128/25", raised.exception.detail)
+            self.assertIn("docker network rm platform", raised.exception.detail)
+
+    def test_concurrent_creation_validates_the_winning_network(self):
+        run = runner_with(network_exists=False, create_fails=True)
+        bootstrap.ensure_network(run)
+        self.assertEqual([call[:3] for call in run.calls], [["docker", "network", "inspect"],
+                                                          ["docker", "network", "create"],
+                                                          ["docker", "network", "inspect"]])
+        with self.assertRaises(bootstrap.Refused) as raised:
+            bootstrap.ensure_network(runner_with(network_exists=False, create_fails=True, ipam="[]"))
+        self.assertEqual(raised.exception.code, "platform_network_mismatch")
 
     def test_access_mode_defaults_and_conflicts(self):
         for mode, scheme, listener, issuer in (
@@ -306,12 +337,16 @@ sys.exit(19)
                                         env=environment, capture_output=True, text=True)
                 self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(bootstrap.access_settings({})["LG_ACCESS_MODE"], "local")
+        for proxies in (None, ""):
+            values = {"LG_ACCESS_MODE": "proxy", "COMPOSE_FILE": "compose.yaml:compose.proxy.yaml"}
+            if proxies is not None:
+                values["LG_TRUSTED_PROXIES"] = proxies
+            self.assertEqual(bootstrap.access_settings(values)["LG_TRUSTED_PROXIES"], "172.30.0.2/32")
         for values in (
             {"LG_ACCESS_MODE": "invalid"},
             {"LG_SCHEME": "ftp"},
             {"LG_ACCESS_MODE": "public"},
             {"LG_ACCESS_MODE": "public", "LG_PUBLIC_DOMAIN": "gateway.test", "LG_SCHEME": "http"},
-            {"LG_ACCESS_MODE": "proxy"},
             {"LG_ACCESS_MODE": "proxy", "LG_TRUSTED_PROXIES": "172.30.0.0/24", "COMPOSE_FILE": "compose.yaml"},
             {"LG_PUBLIC_DOMAIN": "127.0.0.1"},
             {"LG_PUBLIC_DOMAIN": 'untrusted"host'},

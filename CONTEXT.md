@@ -60,7 +60,8 @@ persistent change.
 _Avoid_: Recovery point, snapshot, dump
 
 **Platform Network**:
-The Docker network named `platform` shared by the four repos on one host (see `docs/conventions.md`). Only ingress
+The Docker network named `platform` shared by the four repos on one host (see `docs/conventions.md`), with the
+fixed allocation `172.30.0.0/24` and Platform Edge at the reserved address `172.30.0.2`. Only ingress
 targets and metrics endpoints join it, under stack-prefixed aliases.
 _Avoid_: Default network, bridge, mesh
 

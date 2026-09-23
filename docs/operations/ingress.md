@@ -71,7 +71,17 @@ PostgreSQL, ClickHouse, Valkey and the RustFS API on its internal port are reach
 
 ## Shared host
 
-When the backplane or the observability stack runs on the same host, the gateway joins the external Docker network `platform` as `lg-gateway` and LiteLLM as `lg-litellm`. The monitoring sidecars also join as `lg-valkey-exporter:9121` and `lg-postgres-exporter:9187`; the datastores remain private. Bootstrap creates the network if it is missing; `docker network create platform` does the same by hand.
+When the backplane or the observability stack runs on the same host, the gateway joins the external Docker network `platform` as `lg-gateway` and LiteLLM as `lg-litellm`. The monitoring sidecars also join as `lg-valkey-exporter:9121` and `lg-postgres-exporter:9187`; the datastores remain private.
+
+The Platform Network has one allocation on every host, defined in the shared contract
+([conventions](../conventions.md)): subnet `172.30.0.0/24` (`LG_PLATFORM_SUBNET`), dynamic
+range `172.30.0.128/25` (`LG_PLATFORM_IP_RANGE`) and gateway `172.30.0.1`. Platform Edge
+holds the reserved address `172.30.0.2` outside the dynamic range. Whichever bootstrap runs
+first creates the network with these parameters. Every bootstrap validates an existing
+network and refuses a different subnet or range, or a network with no IPAM configuration,
+with `platform_network_mismatch`. To repair a network created before this contract, stop
+every stack on it, run `docker network rm platform`, then rerun bootstrap. Every stack on the
+host must use the same values.
 
 Two stacks cannot both publish 80 and 443. On a shared host Platform Edge owns those ports,
 terminates TLS, and routes explicit application hostnames to `lg-gateway:80`.
@@ -82,11 +92,13 @@ Behind another gateway, the stack publishes no HTTPS port and performs no TLS
 issuance. The external scheme defaults to HTTPS; `LG_SCHEME=http` remains useful
 when the edge's configured application URL is HTTP.
 
-Set `LG_TRUSTED_PROXIES` to Edge’s reserved address (`/32` for IPv4, `/128` for IPv6).
-Broader ranges deliberately trust every peer in that range; avoid them for shared networks.
-Caddy preserves trusted `X-Forwarded-Proto`; an untrusted caller cannot assert it.
-Running behind another gateway requires a nonempty trust list. Trust only networks you control; private
-address space can include other tenants. Standalone modes normally leave it empty.
+`LG_TRUSTED_PROXIES` defaults to Edge's reserved address, `172.30.0.2/32`, so no address
+discovery is needed. An empty value uses the same default. Change it only for another
+gateway or a different Platform Network subnet, and keep it to exact addresses (`/32` for
+IPv4, `/128` for IPv6). Broader ranges deliberately trust every peer in that range; avoid
+them for shared networks. Caddy preserves trusted `X-Forwarded-Proto`; an untrusted caller
+cannot assert it. Trust only networks you control; private address space can include other
+tenants. Docker never assigns that address dynamically, so without Edge the default grants nothing.
 
 ## One Tailscale hostname with separate ports
 
@@ -101,7 +113,7 @@ LG_S3_URL=https://darkforge.tail694fe2.ts.net:8445
 LG_RUSTFS_URL=https://darkforge.tail694fe2.ts.net:8449
 ```
 
-Keep the template's `COMPOSE_FILE` setting. Set `LG_TRUSTED_PROXIES` to Edge's address
+Keep the template's `COMPOSE_FILE` setting and the default `LG_TRUSTED_PROXIES`,
 and choose a free loopback `LG_HTTP_PORT`. Platform Edge must serve HTTPS on these five
 ports and forward each request to `lg-gateway:80`. It must preserve the complete `Host`,
 including the port, and set `X-Forwarded-Proto` to `https`. Rewriting the S3 Host breaks

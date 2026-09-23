@@ -76,7 +76,8 @@ See [ingress](operations/ingress.md) for ports, explicit application hostnames a
   See [status operation](operations/status.md) for public disclosure and probe limits.
 
 - Bootstrap: `scripts/bootstrap.py`. Generates secrets once, refuses to invent secrets over
-  existing data, creates the platform network, starts the stack, waits for readiness.
+  existing data, creates or validates the platform network allocation, starts the stack,
+  waits for readiness.
   Newly created external volumes carry the Compose project label so interrupted installs
   can identify them. Existing volumes retain their names, labels and contents.
 - Validate: `scripts/validate.sh` for static checks; `scripts/smoke.sh` boots the pinned
