@@ -10,6 +10,12 @@ Caddy is the only published entry. By default, applications use these hostnames 
 | `s3.<domain>` | RustFS S3 API, for presigned media and export URLs |
 | `rustfs.<domain>` | RustFS admin console, enabled by default; operators only |
 
+| Mode | HTTP | HTTPS | Issuer (`LG_TLS_ISSUER`) |
+| --- | --- | --- | --- |
+| Local (`local`) | Served without redirects | Served on loopback | `internal` (default) or `files` |
+| Public (`public`) | Redirects to HTTPS, except root `/health/*` | Served for your domain | `acme` (default; Let's Encrypt or `LG_ACME_CA`) or `files` |
+| Proxy (`proxy`) | From the other gateway | Handled by the other gateway | Unused |
+
 ## Local Mode (default)
 
 `LG_ACCESS_MODE=local` serves HTTP and self-signed HTTPS on `LG_BIND_HOST=127.0.0.1`.
@@ -32,7 +38,9 @@ Explicit `-f` or `COMPOSE_FILE` overrides must include the matching mode file.
 For a lasting deployment choice, edit `.env`. Shell overrides apply only to that command;
 bootstrap does not save them into existing settings. Use the same overrides for backup
 and restore, or save them in `.env` first.
-Issuer and listener scheme are derived from the mode and are not operator settings.
+The listener scheme is derived from the mode. The certificate issuer follows the mode unless
+`LG_TLS_ISSUER` selects another; bootstrap refuses an issuer the mode cannot use. See
+[corporate certificates and private ACME](#corporate-certificates-and-private-acme).
 
 ## Public Mode
 
@@ -64,6 +72,84 @@ health probes. Both use the configured public domain for TLS hostname verificati
 Never disable certificate verification in clients instead.
 No startup command changes host trust. Never copy CA private keys or certificate
 volumes between stacks; select `proxy` when Platform Edge handles HTTPS.
+
+## Corporate certificates and private ACME
+
+`LG_TLS_ISSUER` selects where certificates come from, independently of the access mode:
+`internal` (Caddy's own CA, Local Mode), `acme` (Public Mode) or `files` (Local or Public
+Mode). Proxy Mode ignores it. Relative `LG_TLS_DIR`, `LG_TLS_CA` and `LG_ACME_CA_ROOT`
+paths resolve against this checkout.
+
+Bootstrap records the Compose overlays the issuer needs in the `.env` `COMPOSE_FILE`,
+directly after the mode file, and drops overlays an earlier issuer needed. Backups,
+restores and direct Compose commands then use the same files. A `COMPOSE_FILE` exported in
+the shell gets the overlays for that bootstrap run only; add them to the shell value for
+later commands.
+
+### Private or alternative ACME CA
+
+Set `LG_ACME_CA` to the CA's ACME directory URL (`https://`). For a CA whose chain is not
+in the public trust stores (step-ca, an ACME-enabled corporate CA), set `LG_ACME_CA_ROOT`
+to its CA certificate in PEM form: Caddy trusts it when talking to the ACME server, and
+the bootstrap and Checkpoint readiness probes trust it for the issued server certificates.
+A CA that requires external account binding takes `LG_ACME_EAB_KEY_ID` and
+`LG_ACME_EAB_HMAC`, always together.
+
+```sh
+LG_ACCESS_MODE=public
+LG_PUBLIC_DOMAIN=gateway.example.internal
+LG_TLS_ISSUER=acme
+LG_ACME_EMAIL=ops@example.internal
+LG_ACME_CA=https://ca.example.internal/acme/acme/directory
+LG_ACME_CA_ROOT=/etc/ssl/corp/root_ca.crt
+LG_ACME_EAB_KEY_ID=
+LG_ACME_EAB_HMAC=
+```
+
+Bootstrap selects `compose.acme-ca-root.yaml` (mounts the trust file read-only at
+`/certs/acme-ca-root.crt`) and `compose.acme-eab.yaml` when those settings are set.
+Only the HTTP-01 and TLS-ALPN-01 challenges are available: the ACME server must reach the
+host on TCP 80 and 443 for every HTTPS hostname, and DNS-01 is not offered. Account keys
+and issued certificates stay in `caddy-data`.
+
+### Certificate and key files
+
+Put the server certificate chain in `tls.crt` and its unencrypted private key in `tls.key`
+inside one directory:
+
+```sh
+LG_TLS_ISSUER=files
+LG_TLS_DIR=/etc/ssl/llm-gateway
+LG_TLS_CA=/etc/ssl/corp/root_ca.crt
+```
+
+The certificate must cover every HTTPS hostname: the root domain and the `litellm.`,
+`langfuse.`, `s3.` and, unless `LG_RUSTFS_CONSOLE=off`, `rustfs.` subdomains, by name or by
+a one-label wildcard (`*.example.com` covers `s3.example.com`, not `example.com`).
+Configured application URLs add no certificate names. Bootstrap reads the subject
+alternative names with `openssl` and refuses a certificate that leaves a hostname
+uncovered. `LG_TLS_CA` is the issuing CA in PEM form for the bootstrap and Checkpoint
+readiness probes; leave it empty when that CA is in the host's trust store. Bootstrap
+selects `compose.files.yaml`, which mounts `LG_TLS_DIR` read-only at `/certs` and never
+creates it.
+
+Bootstrap reads the mounted files from a throwaway Caddy container, off every network,
+before starting, and refuses with `tls_files_unreadable` when Caddy cannot read them, for
+example through a symlink that points outside the directory. In Local Mode, `127.0.0.1`
+keeps its internal-CA certificate; the application hostnames use the files.
+
+Replace a certificate by writing the new pair into the directory, then restart Caddy and
+verify the handshake:
+
+```sh
+docker compose restart caddy
+python3 scripts/bootstrap.py
+```
+
+The gateway runs Caddy with its admin API off, so `caddy reload` is unavailable and the
+restart briefly interrupts requests. Caddy does not watch the directory or renew file
+certificates; renew them with your PKI before they expire. Certificate files are outside
+the Checkpoint; back them up with your PKI.
 
 ## What is never published
 

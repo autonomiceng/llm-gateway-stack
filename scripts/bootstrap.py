@@ -23,6 +23,7 @@ import socket
 import ssl
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.parse
 from datetime import datetime, timezone
@@ -36,6 +37,10 @@ NETWORK = "platform"
 PLATFORM_SUBNET = "172.30.0.0/24"
 PLATFORM_IP_RANGE = "172.30.0.128/25"
 EDGE_PROXY = "172.30.0.2/32"
+MODE_TOKEN = "${LG_ACCESS_MODE:-local}"
+COMPOSE_FILE = f"compose.yaml:compose.{MODE_TOKEN}.yaml"
+TLS_OVERLAYS = ("compose.files.yaml", "compose.acme-ca-root.yaml", "compose.acme-eab.yaml")
+SAN_NAME = re.compile(r"DNS:([^,\s]+)")
 VOLUMES = ("clickhouse-data", "clickhouse-logs", "rustfs-data", "valkey-data", "caddy-data", "caddy-config")
 
 # Secrets the stack needs and how many random bytes each gets (hex encoded).
@@ -362,6 +367,25 @@ def ensure_network(runner: Runner, name: str = NETWORK, subnet: str | None = Non
                       "then rerun bootstrap")
 
 
+def check_tls_files_readable(runner: Runner, settings: dict[str, str], root: Path, command: list[str]) -> None:
+    """Read the mounted certificate inputs in a throwaway Caddy container before starting."""
+    mounted = mounted_tls_files(settings)
+    if not mounted:
+        return
+    selected = compose_files(settings).replace(MODE_TOKEN, settings["LG_ACCESS_MODE"])
+    files = [str(root / name) for name in selected.split(os.pathsep)]
+    # Off every network: a one-off Caddy must never answer as lg-gateway on the Platform Network.
+    with tempfile.NamedTemporaryFile("w", suffix=".yaml") as isolated:
+        isolated.write("services:\n  caddy:\n    networks: !reset []\n    network_mode: none\n")
+        isolated.flush()
+        result = runner(["env", "COMPOSE_FILE=" + os.pathsep.join(files + [isolated.name])] + command + [
+            "run", "--rm", "--no-deps", "-T", "--entrypoint", "sh", "caddy", "-ec", f"cat {' '.join(mounted)} >/dev/null"])
+    if result.returncode:
+        raise Refused("tls_files_unreadable", "Caddy cannot read " + ", ".join(mounted) + " from its mounts; "
+                      "keep regular files (no symlinks leaving the directory) readable by root: "
+                      + (result.stderr or result.stdout).strip()[-500:])
+
+
 def compose_up(root: Path, env_file: Path, runner: Runner, langfuse_origin: str) -> None:
     result = runner([
         "env", "LG_LANGFUSE_URL=" + langfuse_origin,
@@ -376,9 +400,9 @@ def access_settings(settings: dict[str, str]) -> dict[str, str]:
     values = dict(settings)
     mode = values.get("LG_ACCESS_MODE") or "local"
     defaults = {
-        "local": ("http", "dual", "internal"),
-        "public": ("https", "https", "acme"),
-        "proxy": ("https", "http", "none"),
+        "local": ("http", "dual"),
+        "public": ("https", "https"),
+        "proxy": ("https", "http"),
     }
     if mode not in defaults:
         raise Refused("invalid_access_mode", "LG_ACCESS_MODE must be local, public or proxy")
@@ -386,7 +410,11 @@ def access_settings(settings: dict[str, str]) -> dict[str, str]:
     # Compose renders the same default for an empty value.
     values["LG_TRUSTED_PROXIES"] = values.get("LG_TRUSTED_PROXIES") or EDGE_PROXY
     values["LG_SCHEME"] = values.get("LG_SCHEME") or defaults[mode][0]
-    values["LG_LISTEN_SCHEME"], values["LG_TLS_ISSUER"] = defaults[mode][1:]
+    values["LG_LISTEN_SCHEME"] = defaults[mode][1]
+    values["LG_TLS_ISSUER"] = tls_issuer(mode, values.get("LG_TLS_ISSUER", ""))
+    # Compose interpolates the raw .env value, so only names with a Caddy snippet may pass.
+    if values["LG_TLS_ISSUER"] not in {"local": ("internal", "files"), "public": ("acme", "files"), "proxy": ("",)}[mode]:
+        raise Refused("invalid_settings", "LG_TLS_ISSUER must be internal or files in local mode and acme or files in public mode")
     values.setdefault("LG_PUBLIC_DOMAIN", "localhost")
     if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9.-]*", values["LG_PUBLIC_DOMAIN"]):
         raise Refused("invalid_access_settings", "LG_PUBLIC_DOMAIN must be a DNS hostname")
@@ -414,8 +442,8 @@ def access_settings(settings: dict[str, str]) -> dict[str, str]:
                                       or values["LG_PUBLIC_DOMAIN"].endswith(".localhost")))):
         raise Refused("invalid_access_settings", "invalid public origin or missing proxy trust; "
                       "see docs/operations/ingress.md")
-    files = values.get("COMPOSE_FILE", "compose.yaml:compose.${LG_ACCESS_MODE:-local}.yaml")
-    files = files.replace("${LG_ACCESS_MODE:-local}", mode).split(os.pathsep)
+    files = values.get("COMPOSE_FILE", COMPOSE_FILE)
+    files = files.replace(MODE_TOKEN, mode).split(os.pathsep)
     if mode != "local" and not any(Path(name).name == f"compose.{mode}.yaml" for name in files):
         raise Refused("invalid_access_settings", f"COMPOSE_FILE must include compose.{mode}.yaml")
     access_keys = {"LG_ACCESS_MODE", "LG_BIND_HOST", "LG_SCHEME", "LG_PUBLIC_DOMAIN", "LG_PUBLIC_PORT_SUFFIX",
@@ -431,6 +459,97 @@ def access_settings(settings: dict[str, str]) -> dict[str, str]:
         raise Refused("invalid_access_settings", origins.stderr.strip())
     values.update(json.loads(origins.stdout))
     return values
+
+
+def tls_issuer(mode: str, configured: str) -> str:
+    """The effective issuer; behind another gateway there is no HTTPS listener, so it is empty."""
+    if mode == "proxy":
+        return ""
+    return configured or {"public": "acme"}.get(mode, "internal")
+
+
+def tls_hostnames(settings: dict[str, str]) -> list[str]:
+    """Names of the HTTPS sites; configured origins add no certificate names."""
+    domain = settings["LG_PUBLIC_DOMAIN"]
+    apps = ["litellm", "langfuse", "s3"] + (["rustfs"] if settings.get("LG_RUSTFS_CONSOLE") != "off" else [])
+    return [domain] + [f"{app}.{domain}" for app in apps]
+
+
+def certificate_covers(names: set[str], host: str) -> bool:
+    return host in names or ("." in host and "*." + host.split(".", 1)[1] in names)
+
+
+def mounted_tls_files(settings: dict[str, str]) -> list[str]:
+    """Container paths of operator certificate inputs mounted by the selected overlays."""
+    if settings["LG_TLS_ISSUER"] == "files":
+        return ["/certs/tls.crt", "/certs/tls.key"]
+    if settings["LG_TLS_ISSUER"] == "acme" and settings.get("LG_ACME_CA_ROOT"):
+        return ["/certs/acme-ca-root.crt"]
+    return []
+
+
+def trust_files(settings: dict[str, str]) -> list[str]:
+    """Settings naming CA files the effective issuer uses."""
+    issuer = settings["LG_TLS_ISSUER"]
+    return [key for key, used in (("LG_TLS_CA", issuer in {"acme", "files"}), ("LG_ACME_CA_ROOT", issuer == "acme"))
+            if used and settings.get(key)]
+
+
+def check_tls_inputs(runner: Runner, settings: dict[str, str], root: Path) -> None:
+    issuer = settings["LG_TLS_ISSUER"]
+    if issuer == "files" and not settings.get("LG_TLS_DIR"):
+        raise Refused("invalid_settings", "LG_TLS_ISSUER=files needs LG_TLS_DIR, a directory holding tls.crt and tls.key")
+    if issuer == "acme":
+        if settings.get("LG_ACME_CA") and not re.fullmatch(r"https://[^/\s]+(?:/\S*)?", settings["LG_ACME_CA"]):
+            raise Refused("invalid_settings", "LG_ACME_CA must be an https:// ACME directory URL")
+        if bool(settings.get("LG_ACME_EAB_KEY_ID")) != bool(settings.get("LG_ACME_EAB_HMAC")):
+            raise Refused("invalid_settings", "LG_ACME_EAB_KEY_ID and LG_ACME_EAB_HMAC must be set together")
+        # trusted_roots replaces Caddy's trust pool for the ACME server; the public default would fail.
+        if settings.get("LG_ACME_CA_ROOT") and not settings.get("LG_ACME_CA"):
+            raise Refused("invalid_settings", "LG_ACME_CA_ROOT needs LG_ACME_CA, the private ACME directory it trusts")
+    for key in trust_files(settings):
+        path = root / settings[key]
+        try:
+            if not path.is_file():
+                raise OSError("not a regular file")
+            ssl.create_default_context(cadata=path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, ssl.SSLError) as error:
+            raise Refused("invalid_settings", f"{key} ({path}) must be a readable PEM file holding CA certificates") from error
+    if issuer != "files":
+        return
+    directory = root / settings["LG_TLS_DIR"]
+    certificate = directory / "tls.crt"
+    if not directory.is_dir() or not certificate.is_file() or not (directory / "tls.key").is_file():
+        raise Refused("invalid_settings", f"LG_TLS_DIR ({directory}) must be a directory holding tls.crt and tls.key")
+    if shutil.which("openssl") is None:
+        raise Refused("openssl_missing", "install openssl; bootstrap reads the certificate's subject alternative names with it")
+    result = runner(["openssl", "x509", "-in", str(certificate), "-noout", "-ext", "subjectAltName"])
+    if result.returncode:
+        raise Refused("invalid_settings", f"openssl cannot read {certificate} as a PEM certificate")
+    names = {name.lower() for name in SAN_NAME.findall(result.stdout)}
+    missing = [host for host in tls_hostnames(settings) if not certificate_covers(names, host.lower())]
+    if missing:
+        raise Refused("invalid_settings", f"{certificate} does not cover {', '.join(missing)}; its subject alternative names are "
+                      + (", ".join(sorted(names)) or "empty"))
+
+
+def compose_files(settings: dict[str, str]) -> str:
+    """COMPOSE_FILE with the TLS overlays the issuer needs directly after the mode file."""
+    issuer = settings["LG_TLS_ISSUER"]
+    overlays = ["compose.files.yaml"] if issuer == "files" else []
+    if issuer == "acme":
+        overlays += [name for name, key in (("compose.acme-ca-root.yaml", "LG_ACME_CA_ROOT"),
+                                            ("compose.acme-eab.yaml", "LG_ACME_EAB_KEY_ID")) if settings.get(key)]
+    # The recorded mode token contains the path separator; hold it aside while splitting.
+    held = "\0mode\0"
+    # A recorded TLS overlay from an earlier issuer would demand its unused input.
+    files = [name for name in settings.get("COMPOSE_FILE", COMPOSE_FILE).replace(MODE_TOKEN, held).split(os.pathsep)
+             if name and Path(name).name not in TLS_OVERLAYS]
+    mode_files = {f"compose.{held}.yaml", f"compose.{settings['LG_ACCESS_MODE']}.yaml"}
+    at = next((index + 1 for index, name in enumerate(files) if Path(name).name in mode_files), len(files))
+    anchor = Path(files[at - 1] if at else "compose.yaml")
+    selected = files[:at] + [str(anchor.with_name(name)) for name in overlays] + files[at:]
+    return os.pathsep.join(selected).replace(held, MODE_TOKEN)
 
 
 class LocalHTTPSConnection(http.client.HTTPSConnection):
@@ -474,6 +593,19 @@ def wait_ready(url: str, timeout: float = 120.0, host: str | None = None,
     raise Refused("not_ready", f"{url}: {last}")
 
 
+def probe_trust(settings: dict[str, str], runner: Runner, command: list[str]) -> str:
+    """PEM data the HTTPS probe trusts besides the system store: internal root, LG_TLS_CA, LG_ACME_CA_ROOT."""
+    if settings["LG_TLS_ISSUER"] == "internal":
+        result = runner(command + ["exec", "-T", "caddy", "cat", "/data/caddy/pki/authorities/local/root.crt"])
+        if result.returncode:
+            raise Refused("internal_ca_unavailable", "cannot read Caddy's internal root certificate")
+        return result.stdout
+    root = Path(__file__).resolve().parent.parent
+    for key in trust_files(settings):
+        return (root / settings[key]).read_text(encoding="utf-8")
+    return ""
+
+
 def probe_gateway(settings, command, runner):
     settings = access_settings(settings)
     domain = settings.get("LG_PUBLIC_DOMAIN", "localhost")
@@ -488,15 +620,18 @@ def probe_gateway(settings, command, runner):
         context = None
         if scheme == "https":
             context = ssl.create_default_context()
-            if settings["LG_TLS_ISSUER"] == "internal":
-                result = runner(command + ["exec", "-T", "caddy", "cat",
-                                           "/data/caddy/pki/authorities/local/root.crt"])
-                if result.returncode:
-                    raise Refused("internal_ca_unavailable", "cannot read Caddy's internal root certificate")
-                context.load_verify_locations(cadata=result.stdout)
+            trusted = probe_trust(settings, runner, command)
+            if trusted:
+                context.load_verify_locations(cadata=trusted)
         local = f"{scheme}://{'[' + address + ']' if ':' in address else address}:{port}"
         for path in ("/health/litellm", "/health/langfuse"):
-            wait_ready(local + path, host=domain, context=context)
+            try:
+                wait_ready(local + path, host=domain, context=context)
+            except Refused as refused:
+                if ("CERTIFICATE_VERIFY_FAILED" in refused.detail and settings["LG_TLS_ISSUER"] != "internal"
+                        and not settings.get("LG_TLS_CA")):
+                    refused.detail += "; set LG_TLS_CA to the issuing CA's PEM file when it is not in the system trust store"
+                raise
 
 
 def bootstrap(argv: list[str], runner: Runner = run) -> int:
@@ -531,11 +666,13 @@ def bootstrap(argv: list[str], runner: Runner = run) -> int:
             m.group("key"): unquote(m.group("value"))
             for m in (ENV_LINE.match(line) for line in (lines or template.read_text().splitlines())) if m
         }
+        recorded_files = settings.get("COMPOSE_FILE", COMPOSE_FILE)
         # Match Compose's shell precedence for operator settings as well as secrets.
         settings.update({key: value for key, value in os.environ.items()
                          if key in settings or key.startswith("LG_") or key == "COMPOSE_FILE"})
         requested_langfuse = settings.get("LG_LANGFUSE_URL")
         settings = access_settings(settings)
+        check_tls_inputs(runner, settings, root)
         allocation = platform_allocation(settings)
         raw_langfuse = requested_langfuse or (settings["LG_SCHEME"] + "://langfuse."
                                              + settings["LG_PUBLIC_DOMAIN"]
@@ -573,6 +710,13 @@ def bootstrap(argv: list[str], runner: Runner = run) -> int:
                                    and m.group("key") == "LG_LANGFUSE_URL"), "")
             if saved_langfuse != canonical_langfuse:
                 write_env(env_file, saved_lines, template, {"LG_LANGFUSE_URL": canonical_langfuse})
+        # Direct Compose commands, backups and restores read the recorded overlays; a shell
+        # COMPOSE_FILE applies to this run only.
+        selected_files = compose_files(settings)
+        if "COMPOSE_FILE" in os.environ:
+            os.environ["COMPOSE_FILE"] = selected_files
+        elif selected_files != recorded_files:
+            write_env(env_file, read_env(env_file)[0], template, {"COMPOSE_FILE": selected_files})
         if args.render_only:
             print(json.dumps({"env": str(env_file), "project": project, "generated": sorted(missing)}))
             return 0
@@ -600,6 +744,7 @@ def bootstrap(argv: list[str], runner: Runner = run) -> int:
 
         ensure_network(runner, settings.get("LG_PLATFORM_NETWORK", NETWORK), *allocation)
         ensure_volumes(runner, prefix, project)
+        check_tls_files_readable(runner, settings, root, command)
         compose_up(root, env_file, runner, canonical_langfuse)
         probe_gateway(settings, ["docker", "compose", "--project-directory", str(root),
                                  "--env-file", str(env_file)], runner)

@@ -2,7 +2,7 @@ services:
   caddy:
     environment:
       LG_SCHEME: ${LG_SCHEME:-https}
-      LG_TLS_ISSUER: acme
+      LG_TLS_ISSUER: ${LG_TLS_ISSUER:-acme}
       LG_LISTEN_SCHEME: https
   litellm:
     environment:

@@ -1,0 +1,7 @@
+# Selected by bootstrap when LG_ACME_EAB_KEY_ID and LG_ACME_EAB_HMAC are set (external account binding).
+services:
+  caddy:
+    environment:
+      LG_ACME_ACCOUNT: eab
+      LG_ACME_EAB_KEY_ID: ${LG_ACME_EAB_KEY_ID:?LG_ACME_EAB_KEY_ID is required with LG_ACME_EAB_HMAC}
+      LG_ACME_EAB_HMAC: ${LG_ACME_EAB_HMAC:?LG_ACME_EAB_HMAC is required with LG_ACME_EAB_KEY_ID}

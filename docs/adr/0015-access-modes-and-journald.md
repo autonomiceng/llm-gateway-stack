@@ -7,8 +7,10 @@ date: 2026-09-19
 
 Amends ADR-0014's single-file and access-mode decisions. Local Mode serves HTTP and
 private-CA HTTPS simultaneously, without redirects or HSTS; Public Mode uses ACME;
-Proxy Mode delegates TLS to Platform Edge. The mode derives listener and issuer settings,
-while the canonical application scheme remains independently configurable. Each Caddy
+Proxy Mode delegates TLS to Platform Edge. The mode derives the listener settings and the
+default issuer, while the canonical application scheme remains independently configurable.
+Amended 2026-09-23: `LG_TLS_ISSUER` selects `internal`, `acme` or `files` independently of
+the mode, mirroring Platform Edge's ADR-0003; the mode limits which issuers are accepted. Each Caddy
 owns its existing certificate volumes; Proxy Mode needs no shared CA or private key.
 
 Compose cannot conditionally omit one published port. The environment template selects

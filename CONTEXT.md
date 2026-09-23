@@ -30,14 +30,21 @@ Checkpoint time at that bootstrap. It records configuration, never observed runt
 _Avoid_: Status observation, versions file
 
 **Local Mode**:
-The default access mode: HTTP and private-CA HTTPS on loopback, without redirects or HSTS.
+The default access mode: HTTP and HTTPS on loopback, without redirects or HSTS. HTTPS uses
+the internal CA unless another Issuer is selected.
 Application origins use HTTP by default and keep explicit hostnames.
 _Avoid_: Development mode, insecure mode
 
 **Public Mode**:
-The access mode for public DNS hostnames with automatic public certificates and HTTPS
-redirects. Application and datastore ports stay private.
+The access mode for public DNS hostnames with HTTPS redirects. Certificates come from ACME
+by default. Application and datastore ports stay private.
 _Avoid_: TLS Mode, production mode
+
+**Issuer**:
+The source of the Stack Gateway's HTTPS certificates, selected by `LG_TLS_ISSUER`
+independently of the access mode: Caddy's internal CA, an ACME directory, or operator
+certificate files.
+_Avoid_: Certificate mode, TLS provider
 
 **Proxy Mode**:
 The access mode behind Platform Edge: the Stack Gateway listens on HTTP and trusts only

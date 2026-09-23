@@ -1,0 +1,14 @@
+# Selected by bootstrap when LG_ACME_CA_ROOT is set: the private ACME server's trust file.
+services:
+  caddy:
+    environment:
+      LG_ACME_TRUST: file
+      # Host path Caddy ignores; Checkpoint health probes read it from the rendered service.
+      LG_ACME_CA_ROOT: ${LG_ACME_CA_ROOT}
+    volumes:
+      - type: bind
+        source: ${LG_ACME_CA_ROOT:?LG_ACME_CA_ROOT must be the ACME server's CA file}
+        target: /certs/acme-ca-root.crt
+        read_only: true
+        bind:
+          create_host_path: false

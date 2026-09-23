@@ -15,10 +15,10 @@ case "${LG_PUBLIC_PORT_SUFFIX:-}" in
 esac
 case "$LG_ACCESS_MODE" in
   local)
-    [ "$LG_LISTEN_SCHEME" = dual ] && [ "$LG_TLS_ISSUER" = internal ] || refuse "local requires both HTTP and self-signed HTTPS"
+    [ "$LG_LISTEN_SCHEME" = dual ] || refuse "local requires both HTTP and HTTPS"
     ;;
   public)
-    [ "$LG_SCHEME" = https ] && [ "$LG_LISTEN_SCHEME" = https ] && [ "$LG_TLS_ISSUER" = acme ] || refuse "public requires trusted HTTPS; include compose.public.yaml"
+    [ "$LG_SCHEME" = https ] && [ "$LG_LISTEN_SCHEME" = https ] || refuse "public requires trusted HTTPS; include compose.public.yaml"
     case "$LG_PUBLIC_DOMAIN" in localhost|*.localhost|127.*|*:*|"") refuse "public requires a DNS domain" ;; esac
     ;;
   proxy)
@@ -34,7 +34,7 @@ case "$LG_ACCESS_MODE" in
     if printf '%s\n' "$bind" | grep -Eiq '^\[?([0:]*::[0:]*ffff:(0+:0+|0\.0\.0\.0)|(0+:){5}ffff:(0+:0+|0\.0\.0\.0|:|:0+|0+::))\]?$'; then
       refuse "proxy requires a loopback or specific-interface LG_BIND_HOST"
     fi
-    [ "$LG_LISTEN_SCHEME" = http ] && [ "$LG_TLS_ISSUER" = none ] || refuse "behind another gateway, use HTTP only; include compose.proxy.yaml"
+    [ "$LG_LISTEN_SCHEME" = http ] || refuse "behind another gateway, use HTTP only; include compose.proxy.yaml"
     [ "$LG_HTTPS_PUBLISHED" = false ] || refuse "proxy requires compose.proxy.yaml"
     [ -n "$LG_TRUSTED_PROXIES" ] || refuse "proxy requires LG_TRUSTED_PROXIES"
     ;;

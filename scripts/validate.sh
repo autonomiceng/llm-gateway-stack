@@ -4,7 +4,7 @@ set -euo pipefail
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$root"
 
-for tool in docker python3 shellcheck; do
+for tool in docker python3 shellcheck openssl; do
   command -v "$tool" >/dev/null || { echo "missing tool: $tool" >&2; exit 1; }
 done
 docker compose version >/dev/null
@@ -108,10 +108,58 @@ for mode in ("local", "public", "proxy"):
         assert configured["caddy"]["environment"][f"LG_{app}_URL"] == f"https://darkforge.tail694fe2.ts.net:{port}"
 PY
 echo "access mode Compose origins: PASS (6 configurations)"
+
+# Throwaway certificate inputs for the files issuer and the private ACME trust file.
+mkdir "$work/certs"
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -noenc -keyout "$work/certs/tls.key" -out "$work/certs/tls.crt" \
+  -subj /CN=example.com -addext 'subjectAltName=DNS:example.com,DNS:*.example.com,DNS:localhost,DNS:*.localhost' -days 2 2>/dev/null
+cp "$work/certs/tls.crt" "$work/acme-ca-root.crt"
+export COMPOSE_FILE="$root/compose.yaml:$root/compose.public.yaml:$root/compose.acme-ca-root.yaml:$root/compose.acme-eab.yaml"
+LG_ACCESS_MODE=public LG_ACME_CA_ROOT="$work/acme-ca-root.crt" LG_ACME_EAB_KEY_ID=key-id LG_ACME_EAB_HMAC=bWFj \
+  docker compose --env-file "$work/.env" config --format json > "$work/acme.json"
+export COMPOSE_FILE="$root/compose.yaml:$root/compose.local.yaml:$root/compose.files.yaml"
+LG_TLS_ISSUER=files LG_TLS_DIR="$work/certs" docker compose --env-file "$work/.env" config --format json > "$work/files.json"
+python3 - "$work" <<'PY'
+import json, pathlib, sys
+work = pathlib.Path(sys.argv[1])
+caddy = {name: json.loads((work / f"{name}.json").read_text())["services"]["caddy"]
+         for name in ("local", "public", "proxy", "acme", "files")}
+assert [caddy[mode]["environment"]["LG_TLS_ISSUER"] for mode in ("local", "public", "proxy")] == ["internal", "acme", ""]
+environment = caddy["acme"]["environment"]
+assert (environment["LG_TLS_ISSUER"], environment["LG_ACME_TRUST"], environment["LG_ACME_ACCOUNT"]) == ("acme", "file", "eab")
+assert (environment["LG_ACME_EAB_KEY_ID"], environment["LG_ACME_EAB_HMAC"]) == ("key-id", "bWFj")
+root = {mount["target"]: mount for mount in caddy["acme"]["volumes"]}["/certs/acme-ca-root.crt"]
+assert root["source"] == str(work / "acme-ca-root.crt") and root["read_only"], root
+certs = {mount["target"]: mount for mount in caddy["files"]["volumes"]}["/certs"]
+assert certs["source"] == str(work / "certs") and certs["read_only"], certs
+assert caddy["files"]["environment"]["LG_TLS_ISSUER"] == "files"
+# Some Compose releases drop a false create_host_path from the rendered config; check the source.
+for overlay in ("compose.files.yaml", "compose.acme-ca-root.yaml"):
+    assert "create_host_path: false" in open(overlay).read(), overlay + " must not create the host path"
+# Caddy applies snippet defaults only to unset variables; the base must not define these.
+for name in ("local", "public", "proxy", "files"):
+    leaked = {"LG_ACME_TRUST", "LG_ACME_ACCOUNT", "LG_ACME_EAB_KEY_ID", "LG_ACME_EAB_HMAC"} & set(caddy[name]["environment"])
+    assert not leaked, f"{name}: ACME account and trust settings leak into the base: {sorted(leaked)}"
+PY
+echo "TLS overlays: default issuer per mode, read-only mounts without host path creation, ACME discriminators only from overlays: PASS"
 export COMPOSE_FILE="$root/compose.yaml:$root/compose.local.yaml"
 
-for mode in "local http dual localhost internal true" "local https dual example.test internal true" "public https https example.com acme true" "proxy https http example.com none false" "proxy https http gateway.test none false"; do
+acme_ca=https://ca.example.com/acme/acme/directory
+# access scheme listen domain issuer published; the issuer column names a variant below, - means none.
+for mode in "local http dual localhost internal true" "local http dual localhost files true" "local https dual example.test internal true" \
+    "public https https example.com acme true" "public https https example.com acme-ca true" "public https https example.com acme-eab true" \
+    "public https https example.com files true" "proxy https http example.com - false" "proxy https http gateway.test - false"; do
   read -r access scheme listen domain issuer published <<< "$mode"
+  case "$issuer" in
+    internal) tls=(-e LG_TLS_ISSUER=internal) ;;
+    files) tls=(-e LG_TLS_ISSUER=files -v "$work/certs:/certs:ro") ;;
+    acme) tls=(-e LG_TLS_ISSUER=acme -e LG_ACME_EMAIL= -e LG_ACME_CA=) ;;
+    acme-ca) tls=(-e LG_TLS_ISSUER=acme -e LG_ACME_EMAIL=ops@example.com -e "LG_ACME_CA=$acme_ca" -e LG_ACME_TRUST=file
+      -v "$work/acme-ca-root.crt:/certs/acme-ca-root.crt:ro") ;;
+    acme-eab) tls=(-e LG_TLS_ISSUER=acme -e LG_ACME_EMAIL= -e "LG_ACME_CA=$acme_ca" -e LG_ACME_ACCOUNT=eab
+      -e LG_ACME_EAB_KEY_ID=key-id -e LG_ACME_EAB_HMAC=bWFj) ;;
+    *) tls=(-e LG_TLS_ISSUER=) ;;
+  esac
   for console in off on; do
     for proxies in "" "172.30.0.0/24"; do
       if [[ "$access" == proxy && -z "$proxies" ]]; then continue; fi
@@ -124,7 +172,7 @@ for mode in "local http dual localhost internal true" "local https dual example.
       fi
       docker run --rm "${origins[@]}" -e "LG_RUSTFS_CONSOLE=$console" -e "LG_TRUSTED_PROXIES=$proxies" \
         -e "LG_ACCESS_MODE=$access" -e "LG_SCHEME=$scheme" -e "LG_HTTPS_PUBLISHED=$published" \
-        -e "LG_OPERATOR_ALLOW=127.0.0.0/8 ::1" -e "LG_LISTEN_SCHEME=$listen" -e "LG_PUBLIC_DOMAIN=$domain" -e "LG_TLS_ISSUER=$issuer" \
+        -e "LG_OPERATOR_ALLOW=127.0.0.0/8 ::1" -e "LG_LISTEN_SCHEME=$listen" -e "LG_PUBLIC_DOMAIN=$domain" "${tls[@]}" \
         -v "$root/docker/caddy/Caddyfile:/etc/caddy/Caddyfile:ro" \
         -v "$root/docker/caddy/access-mode.sh:/etc/caddy/access-mode.sh:ro" --entrypoint /bin/sh \
         "$(docker compose --env-file "$work/.env" config --images | grep '^caddy')" \
@@ -132,7 +180,7 @@ for mode in "local http dual localhost internal true" "local https dual example.
     done
   done
 done
-echo "Caddyfile: PASS (16 configurations)"
+echo "Caddyfile: PASS (32 configurations: local-internal, local-files, public-acme, public-acme-ca, public-acme-eab, public-files, proxy)"
 
 # The canonical contract lives in platform-edge; CI has no sibling checkout to compare with.
 sync="${PLATFORM_EDGE_DIR:-$root/../platform-edge}/scripts/sync-conventions.sh"
