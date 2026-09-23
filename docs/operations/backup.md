@@ -373,8 +373,8 @@ absent and the scrape fails. Caddy serves `/metrics` at `lg-gateway:8081`, restr
 to socket peers in `LG_CHECKPOINT_ALLOW`; include the scraper address or its dedicated
 network CIDR. This does not grant access to operator routes. Port 8081 is never
 published, and port 80 returns 404 for checkpoint metrics. A stopped gateway during fencing causes a temporary scrape failure.
-The PostgreSQL exporter supplies `pg_up`, `pg_stat_archiver_failed_count` and
-`pg_stat_archiver_last_archive_age`. Verify in the observability query UI:
+The PostgreSQL exporter, which runs with `LG_METRICS=true`, supplies `pg_up`,
+`pg_stat_archiver_failed_count` and `pg_stat_archiver_last_archive_age`. Verify in the observability query UI:
 
 ```promql
 pg_up{job="llm-gateway-postgres"} == 1

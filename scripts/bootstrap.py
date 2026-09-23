@@ -533,6 +533,16 @@ def check_tls_inputs(runner: Runner, settings: dict[str, str], root: Path) -> No
                       + (", ".join(sorted(names)) or "empty"))
 
 
+def compose_profiles(settings: dict[str, str]) -> str:
+    """COMPOSE_PROFILES with `metrics` present exactly when LG_METRICS is true."""
+    metrics = (settings.get("LG_METRICS") or "false").lower()
+    if metrics not in ("true", "false"):
+        raise Refused("invalid_settings", "LG_METRICS must be true or false")
+    profiles = [name.strip() for name in settings.get("COMPOSE_PROFILES", "").split(",")]
+    profiles = [name for name in profiles if name and name != "metrics"]
+    return ",".join(profiles + ["metrics"] * (metrics == "true"))
+
+
 def compose_files(settings: dict[str, str]) -> str:
     """COMPOSE_FILE with the TLS overlays the issuer needs directly after the mode file."""
     issuer = settings["LG_TLS_ISSUER"]
@@ -667,11 +677,13 @@ def bootstrap(argv: list[str], runner: Runner = run) -> int:
             for m in (ENV_LINE.match(line) for line in (lines or template.read_text().splitlines())) if m
         }
         recorded_files = settings.get("COMPOSE_FILE", COMPOSE_FILE)
+        recorded_profiles = settings.get("COMPOSE_PROFILES", "")
         # Match Compose's shell precedence for operator settings as well as secrets.
         settings.update({key: value for key, value in os.environ.items()
-                         if key in settings or key.startswith("LG_") or key == "COMPOSE_FILE"})
+                         if key in settings or key.startswith("LG_") or key in ("COMPOSE_FILE", "COMPOSE_PROFILES")})
         requested_langfuse = settings.get("LG_LANGFUSE_URL")
         settings = access_settings(settings)
+        selected_profiles = compose_profiles(settings)
         check_tls_inputs(runner, settings, root)
         allocation = platform_allocation(settings)
         raw_langfuse = requested_langfuse or (settings["LG_SCHEME"] + "://langfuse."
@@ -717,6 +729,10 @@ def bootstrap(argv: list[str], runner: Runner = run) -> int:
             os.environ["COMPOSE_FILE"] = selected_files
         elif selected_files != recorded_files:
             write_env(env_file, read_env(env_file)[0], template, {"COMPOSE_FILE": selected_files})
+        if "COMPOSE_PROFILES" in os.environ:
+            os.environ["COMPOSE_PROFILES"] = selected_profiles
+        elif selected_profiles != recorded_profiles:
+            write_env(env_file, read_env(env_file)[0], template, {"COMPOSE_PROFILES": selected_profiles})
         if args.render_only:
             print(json.dumps({"env": str(env_file), "project": project, "generated": sorted(missing)}))
             return 0

@@ -153,11 +153,11 @@ the Checkpoint; back them up with your PKI.
 
 ## What is never published
 
-PostgreSQL, ClickHouse, Valkey and the RustFS API on its internal port are reachable only inside the Compose network. LiteLLM's `/metrics` is served without authentication because only the Docker networks can reach it. Caddy answers 404 for `/metrics` on the LiteLLM application listener in every mode; the observability stack scrapes `lg-litellm:4000/metrics` directly.
+PostgreSQL, ClickHouse, Valkey and the RustFS API on its internal port are reachable only inside the Compose network. LiteLLM's `/metrics` is served without authentication because only the Docker networks can reach it. Caddy answers 404 for `/metrics` on the LiteLLM application listener in every mode; scrapers read it through the gateway's unpublished listener (see [metrics](#metrics)).
 
 ## Shared host
 
-When the backplane or the observability stack runs on the same host, the gateway joins the external Docker network `platform` as `lg-gateway` and LiteLLM as `lg-litellm`. The monitoring sidecars also join as `lg-valkey-exporter:9121` and `lg-postgres-exporter:9187`; the datastores remain private.
+When the backplane or the observability stack runs on the same host, the gateway joins the external Docker network `platform` as `lg-gateway` and LiteLLM as `lg-litellm`. With `LG_METRICS=true` the monitoring sidecars also join as `lg-valkey-exporter:9121` and `lg-postgres-exporter:9187`; the datastores remain private.
 
 The Platform Network has one allocation on every host, defined in the shared contract
 ([conventions](../conventions.md)): subnet `172.30.0.0/24` (`LG_PLATFORM_SUBNET`), dynamic
@@ -251,20 +251,35 @@ RustFS and Caddy to disable it. The S3 API remains available for presigned media
 exports. Edge can route its separate admin hostname or private Tailscale port; application
 login and the gateway's operator allow list still apply.
 
-Checkpoint metrics are available at `http://lg-gateway:8081/metrics` on the platform
-network, under job `llm-gateway-checkpoints`. Add the scraper's address to
-`LG_CHECKPOINT_ALLOW`, or its dedicated scraper network CIDR. This setting grants only
-checkpoint metrics access; keep operator sources in `LG_OPERATOR_ALLOW`. Port 8081 is an unpublished container listener; the edge routes to
-port 80 and receives no checkpoint metrics there. The same listener answers
-`/health/status` over loopback for Caddy's container healthcheck in every access mode.
-
-The observability stack must configure the checkpoint scrape plus
-`lg-valkey-exporter:9121` (job `llm-gateway-valkey`) and `lg-postgres-exporter:9187`
-(job `llm-gateway-postgres`); verify these jobs before relying on their alerts.
-
 `LG_GRAFANA_URL` and `LG_BACKPLANE_URL` optionally set the companion links in the gateway overview. They do not install those stacks or add application routes. Platform Edge’s Tailscale setup fills them in automatically.
 
 Bootstrap canonicalizes application URL hostnames and default ports. It appends a canonical `LG_LANGFUSE_URL` override when needed, so RustFS CORS uses the exact origin sent by browsers, while preserving existing env lines. If invoking Compose directly with shell URL overrides, use lowercase hostnames and omit `:80` for HTTP or `:443` for HTTPS. Non-default ports remain explicit.
+
+## Metrics
+
+The gateway's unpublished listener on port 8081 serves two scrape paths on the platform
+network, both restricted to socket peers in `LG_CHECKPOINT_ALLOW`:
+
+| Target | Serves | Job |
+| --- | --- | --- |
+| `http://lg-gateway:8081/metrics` | Checkpoint metrics | `llm-gateway-checkpoints` |
+| `http://lg-gateway:8081/metrics/litellm` | LiteLLM's Prometheus metrics | `llm-gateway` |
+
+Add the scraper's address to `LG_CHECKPOINT_ALLOW`, or its dedicated scraper network CIDR;
+other peers receive 404. This setting grants only metrics access; keep operator sources
+in `LG_OPERATOR_ALLOW`. The edge routes to port 80 and receives no metrics there. The same
+listener answers `/health/status` over loopback for Caddy's container healthcheck in every
+access mode. `lg-litellm:4000/metrics` still answers on the platform network; scrapers move
+to `/metrics/litellm` before LiteLLM leaves that network.
+
+The datastore exporters run only with the Compose profile `metrics`. Set `LG_METRICS=true`
+and rerun bootstrap; it records `metrics` in `COMPOSE_PROFILES` and keeps any other profiles
+listed there. Platform Edge's bundle installer sets `LG_METRICS=true` when Observability is
+selected. Setting it back to `false` leaves running exporters in place until
+`docker compose --profile metrics rm --stop --force valkey-exporter postgres-exporter`.
+The observability stack must configure both 8081 scrapes plus
+`lg-valkey-exporter:9121` (job `llm-gateway-valkey`) and `lg-postgres-exporter:9187`
+(job `llm-gateway-postgres`); verify these jobs before relying on their alerts.
 
 ## RustFS browser admin console
 

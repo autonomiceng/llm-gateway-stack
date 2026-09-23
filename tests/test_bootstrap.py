@@ -652,6 +652,27 @@ sys.exit(19)
         self.render()
         self.assertEqual(self.env.read_text().count("\nCOMPOSE_FILE="), 2)
 
+    def test_metrics_setting_records_the_compose_profile(self):
+        def profiles():
+            return [line for line in self.env.read_text().splitlines() if line.startswith("COMPOSE_PROFILES=")]
+        self.env.write_text(self.template.read_text().replace("LG_METRICS=false", "LG_METRICS=true"))
+        self.render()
+        self.assertEqual(profiles(), ["COMPOSE_PROFILES=", "COMPOSE_PROFILES=metrics"])
+        self.render()
+        self.assertEqual(len(profiles()), 2)
+        # Operator profiles survive; metrics follows the setting in either direction.
+        self.env.write_text(self.env.read_text() + "COMPOSE_PROFILES=debug,metrics\nLG_METRICS=false\n")
+        self.render()
+        self.assertEqual(profiles()[-1], "COMPOSE_PROFILES=debug")
+        # A shell COMPOSE_PROFILES applies to this run only, as Compose would read it.
+        with patch.dict(os.environ, {"COMPOSE_PROFILES": "trial", "LG_METRICS": "true"}):
+            self.render()
+            self.assertEqual(os.environ["COMPOSE_PROFILES"], "trial,metrics")
+        self.assertEqual(profiles()[-1], "COMPOSE_PROFILES=debug")
+        with patch.dict(os.environ, {"LG_METRICS": "yes"}), self.assertRaises(bootstrap.Refused) as raised:
+            self.render()
+        self.assertEqual(raised.exception.code, "invalid_settings")
+
     def test_probe_trust_order_and_hint(self):
         tls_ca, acme_root = self.root / "tls-ca.pem", self.root / "acme-root.pem"
         tls_ca.write_text("tls ca")
