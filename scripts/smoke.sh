@@ -243,10 +243,15 @@ openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-256 -noenc -keyout "$work/ce
 openssl x509 -req -in "$work/leaf.csr" -CA "$work/ca.crt" -CAkey "$work/ca.key" -CAcreateserial -out "$work/certs/tls.crt" \
   -days 2 -extfile "$work/leaf.cnf" 2>/dev/null
 docker compose --env-file "$env_file" exec -T caddy cat /data/caddy/pki/authorities/local/root.crt > "$work/root.crt"
-# The key keeps openssl's 0600 inside the private work directory.
+# The key keeps openssl's 0600 inside the private work directory. Without a shell
+# COMPOSE_FILE, bootstrap records the overlay in the env file after the mode file.
+unset COMPOSE_FILE
 export LG_TLS_ISSUER=files LG_TLS_DIR="$work/certs" LG_TLS_CA="$work/ca.crt"
 python3 scripts/bootstrap.py --env-file "$env_file" >/dev/null || fail "bootstrap with the files issuer"
-ok "files issuer: bootstrap verified HTTPS readiness against LG_TLS_CA"
+# shellcheck disable=SC2016 # the recorded value keeps Compose's literal mode token
+[[ "$(grep '^COMPOSE_FILE=' "$env_file" | tail -n 1)" == 'COMPOSE_FILE=compose.yaml:compose.${LG_ACCESS_MODE:-local}.yaml:compose.files.yaml' ]] \
+  || fail "files issuer: env file does not record compose.files.yaml after the mode file"
+ok "files issuer: bootstrap recorded the overlay and verified HTTPS readiness against LG_TLS_CA"
 for target in localhost/health/litellm litellm.localhost/health/readiness; do
   host=${target%%/*}
   url="https://$host:$https_port/${target#*/}"

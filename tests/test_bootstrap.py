@@ -623,12 +623,24 @@ sys.exit(19)
              "compose.yaml:compose.public.yaml:compose.acme-ca-root.yaml:compose.acme-eab.yaml:no-logs.yaml"),
             ({"LG_ACCESS_MODE": "local", "LG_TLS_ISSUER": "files", "COMPOSE_FILE": "/srv/gw/compose.yaml"},
              "/srv/gw/compose.yaml:/srv/gw/compose.files.yaml"),
+            ({"LG_ACCESS_MODE": "local", "LG_TLS_ISSUER": "files",
+              "COMPOSE_FILE": "compose.yaml:compose.${LG_ACCESS_MODE:-local}.yaml:operator/no-logs.yaml"},
+             "compose.yaml:compose.${LG_ACCESS_MODE:-local}.yaml:compose.files.yaml:operator/no-logs.yaml"),
             ({"LG_ACCESS_MODE": "proxy", "LG_TLS_ISSUER": "", "LG_ACME_CA_ROOT": "ca.pem",
               "COMPOSE_FILE": "compose.yaml:compose.proxy.yaml:compose.acme-eab.yaml"},
              "compose.yaml:compose.proxy.yaml"),
         ):
             with self.subTest(values=values):
                 self.assertEqual(bootstrap.compose_files(values), expected)
+        # The pre-start readability check expands the recorded mode token before splitting.
+        runner = runner_with()
+        bootstrap.check_tls_files_readable(runner, {"LG_ACCESS_MODE": "public", "LG_TLS_ISSUER": "files"},
+                                           self.root, ["docker", "compose"])
+        selected = runner.calls[0][1].removeprefix("COMPOSE_FILE=").split(os.pathsep)
+        self.assertEqual(selected[:3], [str(self.root / name) for name in
+                                        ("compose.yaml", "compose.public.yaml", "compose.files.yaml")])
+        self.assertEqual(len(selected), 4)
+        self.assertEqual(runner.calls[0][-3:], ["caddy", "-ec", "cat /certs/tls.crt /certs/tls.key >/dev/null"])
         # A recorded overlay from an earlier issuer is dropped by appending the selection.
         stale = "COMPOSE_FILE=compose.yaml:compose.${LG_ACCESS_MODE:-local}.yaml:compose.files.yaml"
         self.env.write_text(self.template.read_text().replace(

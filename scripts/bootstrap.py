@@ -37,7 +37,8 @@ NETWORK = "platform"
 PLATFORM_SUBNET = "172.30.0.0/24"
 PLATFORM_IP_RANGE = "172.30.0.128/25"
 EDGE_PROXY = "172.30.0.2/32"
-COMPOSE_FILE = "compose.yaml:compose.${LG_ACCESS_MODE:-local}.yaml"
+MODE_TOKEN = "${LG_ACCESS_MODE:-local}"
+COMPOSE_FILE = f"compose.yaml:compose.{MODE_TOKEN}.yaml"
 TLS_OVERLAYS = ("compose.files.yaml", "compose.acme-ca-root.yaml", "compose.acme-eab.yaml")
 SAN_NAME = re.compile(r"DNS:([^,\s]+)")
 VOLUMES = ("clickhouse-data", "clickhouse-logs", "rustfs-data", "valkey-data", "caddy-data", "caddy-config")
@@ -371,8 +372,8 @@ def check_tls_files_readable(runner: Runner, settings: dict[str, str], root: Pat
     mounted = mounted_tls_files(settings)
     if not mounted:
         return
-    mode = settings["LG_ACCESS_MODE"]
-    files = [str(root / name.replace("${LG_ACCESS_MODE:-local}", mode)) for name in compose_files(settings).split(os.pathsep)]
+    selected = compose_files(settings).replace(MODE_TOKEN, settings["LG_ACCESS_MODE"])
+    files = [str(root / name) for name in selected.split(os.pathsep)]
     # Off every network: a one-off Caddy must never answer as lg-gateway on the Platform Network.
     with tempfile.NamedTemporaryFile("w", suffix=".yaml") as isolated:
         isolated.write("services:\n  caddy:\n    networks: !reset []\n    network_mode: none\n")
@@ -442,7 +443,7 @@ def access_settings(settings: dict[str, str]) -> dict[str, str]:
         raise Refused("invalid_access_settings", "invalid public origin or missing proxy trust; "
                       "see docs/operations/ingress.md")
     files = values.get("COMPOSE_FILE", COMPOSE_FILE)
-    files = files.replace("${LG_ACCESS_MODE:-local}", mode).split(os.pathsep)
+    files = files.replace(MODE_TOKEN, mode).split(os.pathsep)
     if mode != "local" and not any(Path(name).name == f"compose.{mode}.yaml" for name in files):
         raise Refused("invalid_access_settings", f"COMPOSE_FILE must include compose.{mode}.yaml")
     access_keys = {"LG_ACCESS_MODE", "LG_BIND_HOST", "LG_SCHEME", "LG_PUBLIC_DOMAIN", "LG_PUBLIC_PORT_SUFFIX",
@@ -539,13 +540,16 @@ def compose_files(settings: dict[str, str]) -> str:
     if issuer == "acme":
         overlays += [name for name, key in (("compose.acme-ca-root.yaml", "LG_ACME_CA_ROOT"),
                                             ("compose.acme-eab.yaml", "LG_ACME_EAB_KEY_ID")) if settings.get(key)]
+    # The recorded mode token contains the path separator; hold it aside while splitting.
+    held = "\0mode\0"
     # A recorded TLS overlay from an earlier issuer would demand its unused input.
-    files = [name for name in settings.get("COMPOSE_FILE", COMPOSE_FILE).split(os.pathsep)
+    files = [name for name in settings.get("COMPOSE_FILE", COMPOSE_FILE).replace(MODE_TOKEN, held).split(os.pathsep)
              if name and Path(name).name not in TLS_OVERLAYS]
-    mode_files = {"compose.${LG_ACCESS_MODE:-local}.yaml", f"compose.{settings['LG_ACCESS_MODE']}.yaml"}
+    mode_files = {f"compose.{held}.yaml", f"compose.{settings['LG_ACCESS_MODE']}.yaml"}
     at = next((index + 1 for index, name in enumerate(files) if Path(name).name in mode_files), len(files))
     anchor = Path(files[at - 1] if at else "compose.yaml")
-    return os.pathsep.join(files[:at] + [str(anchor.with_name(name)) for name in overlays] + files[at:])
+    selected = files[:at] + [str(anchor.with_name(name)) for name in overlays] + files[at:]
+    return os.pathsep.join(selected).replace(held, MODE_TOKEN)
 
 
 class LocalHTTPSConnection(http.client.HTTPSConnection):
