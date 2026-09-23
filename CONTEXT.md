@@ -39,6 +39,12 @@ The access mode for public DNS hostnames with automatic public certificates and 
 redirects. Application and datastore ports stay private.
 _Avoid_: TLS Mode, production mode
 
+**Issuer**:
+The source of the Stack Gateway's HTTPS certificates, selected by `LG_TLS_ISSUER`
+independently of the access mode: Caddy's internal CA, an ACME directory, or operator
+certificate files.
+_Avoid_: Certificate mode, TLS provider
+
 **Proxy Mode**:
 The access mode behind Platform Edge: the Stack Gateway listens on HTTP and trusts only
 configured proxies, while application origins retain their configured external scheme.

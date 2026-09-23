@@ -231,4 +231,31 @@ foreign=$(curl -s -o /dev/null -D - -X OPTIONS "http://s3.$origin/langfuse/media
 [[ "$foreign" == "0" ]] || fail "CORS preflight allowed a foreign origin"
 ok "S3 CORS allows the Langfuse origin only"
 
+# Operator certificate files: a throwaway CA signs one leaf for every Local Mode HTTPS name.
+# OpenSSL rejects a wildcard directly under a single-label domain such as *.localhost.
+mkdir "$work/certs"
+printf 'basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=serverAuth\nsubjectAltName=DNS:localhost,DNS:litellm.localhost,DNS:langfuse.localhost,DNS:s3.localhost,DNS:rustfs.localhost\n' > "$work/leaf.cnf"
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -noenc -keyout "$work/ca.key" -out "$work/ca.crt" \
+  -subj '/CN=llm-gateway smoke CA' -days 2 -addext 'basicConstraints=critical,CA:TRUE' \
+  -addext 'keyUsage=critical,keyCertSign,cRLSign' 2>/dev/null
+openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-256 -noenc -keyout "$work/certs/tls.key" -out "$work/leaf.csr" \
+  -subj '/CN=localhost' 2>/dev/null
+openssl x509 -req -in "$work/leaf.csr" -CA "$work/ca.crt" -CAkey "$work/ca.key" -CAcreateserial -out "$work/certs/tls.crt" \
+  -days 2 -extfile "$work/leaf.cnf" 2>/dev/null
+docker compose --env-file "$env_file" exec -T caddy cat /data/caddy/pki/authorities/local/root.crt > "$work/root.crt"
+# The key keeps openssl's 0600 inside the private work directory.
+export LG_TLS_ISSUER=files LG_TLS_DIR="$work/certs" LG_TLS_CA="$work/ca.crt"
+python3 scripts/bootstrap.py --env-file "$env_file" >/dev/null || fail "bootstrap with the files issuer"
+ok "files issuer: bootstrap verified HTTPS readiness against LG_TLS_CA"
+for target in localhost/health/litellm litellm.localhost/health/readiness; do
+  host=${target%%/*}
+  url="https://$host:$https_port/${target#*/}"
+  code=$(curl --noproxy '*' --max-time 10 --cacert "$work/ca.crt" -sS -o /dev/null -w '%{http_code}' \
+    --resolve "$host:$https_port:127.0.0.1" "$url") || fail "files issuer: $host handshake"
+  [[ "$code" == 200 ]] || fail "files issuer: $url answered $code"
+  if curl --noproxy '*' --max-time 10 --cacert "$work/root.crt" -sS -o /dev/null --resolve "$host:$https_port:127.0.0.1" \
+      "$url" 2>/dev/null; then fail "files issuer: $host still serves the internal CA certificate"; fi
+done
+ok "files issuer: application hostnames verified by the operator CA only"
+
 echo "SMOKE CONTRACT PASSED ($pass checks)"

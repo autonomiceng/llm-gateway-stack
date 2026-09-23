@@ -91,7 +91,12 @@ services:
       LG_RUSTFS_CONSOLE: ${LG_RUSTFS_CONSOLE:-on}
       LG_SCHEME: ${LG_SCHEME:-http}
       LG_PUBLIC_DOMAIN: ${LG_PUBLIC_DOMAIN:-localhost}
-      LG_TLS_ISSUER: internal
+      # Local Mode issues with the internal CA; compose.public.yaml defaults to acme.
+      LG_TLS_ISSUER: ${LG_TLS_ISSUER:-internal}
+      LG_ACME_EMAIL: ${LG_ACME_EMAIL:-}
+      LG_ACME_CA: ${LG_ACME_CA:-}
+      # Host path Caddy ignores; Checkpoint health probes read it from the rendered service.
+      LG_TLS_CA: ${LG_TLS_CA:-}
       LG_LISTEN_SCHEME: dual
       LG_PUBLIC_PORT_SUFFIX: ${LG_PUBLIC_PORT_SUFFIX:-}
       LG_CONSOLE_URL: ${LG_CONSOLE_URL:-}

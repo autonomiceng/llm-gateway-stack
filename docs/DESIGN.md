@@ -26,6 +26,11 @@ responses are the most sensitive data most teams have.
   by an expert. Daily successful off-host Checkpoints target twenty-four hours (ADR-0002).
 - The only network entry is Caddy. In Local Mode nothing leaves the loopback interface.
 - Response reuse never happens unless the caller asks for it (ADR-0011).
+- The certificate issuer is a setting independent of the access mode: `internal`, `acme`
+  (public or private directory, optional trust file and external account binding) or
+  `files` (operator certificate and key mounted read-only). Bootstrap refuses an issuer
+  the mode cannot use, a file certificate that does not cover every HTTPS hostname, and
+  files Caddy cannot read; its HTTPS readiness probe trusts the configured CA file.
 
 Not promised: high availability, zero-downtime upgrades, automated failover, in-place
 upgrades from the pre-2026 stack (ADR-0001, ADR-0014).
@@ -63,7 +68,8 @@ ingestion queue in the same Valkey instance. LiteLLM sends spans to Langfuse ove
 
 `LG_ACCESS_MODE` selects Local, Public or Proxy Mode. Local Mode serves HTTP and
 private-CA HTTPS on loopback, without redirects or HSTS. Public Mode uses ACME and
-redirects HTTP except root health probes. Proxy Mode listens on HTTP behind Platform
+redirects HTTP except root health probes. `LG_TLS_ISSUER` can replace the mode's issuer
+with a private ACME directory or operator certificate files. Proxy Mode listens on HTTP behind Platform
 Edge with no published HTTPS port. The template selects the matching small Compose
 override; the application and datastore topology stays in `compose.yaml` (ADR-0015).
 Application origins are configured independently of the listener scheme and request Host.

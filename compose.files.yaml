@@ -1,0 +1,10 @@
+# Selected by bootstrap for LG_TLS_ISSUER=files: operator certificate files, never created by Docker.
+services:
+  caddy:
+    volumes:
+      - type: bind
+        source: ${LG_TLS_DIR:?LG_TLS_DIR must hold tls.crt and tls.key}
+        target: /certs
+        read_only: true
+        bind:
+          create_host_path: false

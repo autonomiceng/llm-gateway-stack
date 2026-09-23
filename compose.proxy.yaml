@@ -5,7 +5,8 @@ services:
     environment:
       LG_HTTPS_PUBLISHED: "false"
       LG_SCHEME: ${LG_SCHEME:-https}
-      LG_TLS_ISSUER: none
+      # No HTTPS listener behind another gateway, so no issuer.
+      LG_TLS_ISSUER: ""
       LG_LISTEN_SCHEME: http
   litellm:
     environment:

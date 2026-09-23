@@ -420,7 +420,7 @@ sys.exit(19)
         for mode, scheme, listener, issuer in (
             ("local", "http", "dual", "internal"),
             ("public", "https", "https", "acme"),
-            ("proxy", "https", "http", "none"),
+            ("proxy", "https", "http", ""),
         ):
             with self.subTest(mode=mode):
                 values = bootstrap.access_settings({"LG_ACCESS_MODE": mode, "LG_PUBLIC_DOMAIN": "gateway.test",
@@ -530,7 +530,8 @@ sys.exit(19)
                 self.assertTrue(all(call.kwargs["host"] == "localhost" for call in wait.call_args_list))
 
     def test_local_readiness_checks_both_protocols_with_own_ca(self):
-        runner = runner_with()
+        def runner(argv, **options):
+            return subprocess.CompletedProcess(argv, 0, "internal root" if argv[-1].endswith("root.crt") else "", "")
         with patch.object(bootstrap, "wait_ready") as wait, \
              patch.object(bootstrap.ssl.SSLContext, "load_verify_locations") as trust:
             bootstrap.probe_gateway({"LG_ACCESS_MODE": "local", "LG_HTTP_PORT": "18080",
@@ -541,6 +542,125 @@ sys.exit(19)
         ])
         trust.assert_called_once()
         self.assertTrue(wait.call_args.kwargs["context"].check_hostname)
+
+
+    def test_default_issuer_per_mode_and_refused_pairs(self):
+        self.assertEqual([bootstrap.tls_issuer(mode, "") for mode in ("local", "public", "proxy")], ["internal", "acme", ""])
+        self.assertEqual(bootstrap.tls_issuer("proxy", "files"), "")
+        base = {"LG_PUBLIC_DOMAIN": "gateway.test", "LG_TRUSTED_PROXIES": "172.30.0.2/32"}
+        for mode, issuer, effective in (("local", "files", "files"), ("public", "files", "files"),
+                                         ("proxy", "acme", ""), ("proxy", "none", "")):
+            with self.subTest(mode=mode, issuer=issuer):
+                values = bootstrap.access_settings({**base, "LG_ACCESS_MODE": mode, "LG_TLS_ISSUER": issuer})
+                self.assertEqual(values["LG_TLS_ISSUER"], effective)
+        for mode, issuer in (("public", "internal"), ("local", "acme"), ("local", "none"), ("public", "self-signed")):
+            with self.subTest(mode=mode, issuer=issuer), self.assertRaises(bootstrap.Refused) as raised:
+                bootstrap.access_settings({**base, "LG_ACCESS_MODE": mode, "LG_TLS_ISSUER": issuer})
+            self.assertEqual(raised.exception.code, "invalid_settings")
+
+    def tls_settings(self, **values):
+        return {"LG_ACCESS_MODE": "public", "LG_PUBLIC_DOMAIN": "gateway.test", "LG_TLS_ISSUER": "files",
+                "LG_TLS_DIR": str(self.root / "certs"), **values}
+
+    def test_files_issuer_without_key_is_refused(self):
+        (self.root / "certs").mkdir()
+        (self.root / "certs" / "tls.crt").write_text("certificate")
+        runner = runner_with()
+        for settings in (self.tls_settings(LG_TLS_DIR=""), self.tls_settings()):
+            with self.subTest(directory=settings["LG_TLS_DIR"]), self.assertRaises(bootstrap.Refused) as raised:
+                bootstrap.check_tls_inputs(runner, settings, self.root)
+            self.assertEqual(raised.exception.code, "invalid_settings")
+            self.assertIn("LG_TLS_DIR", raised.exception.detail)
+        self.assertEqual(runner.calls, [])
+
+    def test_certificate_must_cover_every_configured_hostname(self):
+        (self.root / "certs").mkdir()
+        for name in ("tls.crt", "tls.key"):
+            (self.root / "certs" / name).write_text(name)
+        def openssl(names):
+            return lambda argv, **options: subprocess.CompletedProcess(
+                argv, 0, "X509v3 Subject Alternative Name: \n    " + ", ".join("DNS:" + n for n in names) + "\n", "")
+        with patch.object(bootstrap.shutil, "which", return_value="/usr/bin/openssl"):
+            bootstrap.check_tls_inputs(openssl(["gateway.test", "*.GATEWAY.test"]), self.tls_settings(), self.root)
+            bootstrap.check_tls_inputs(openssl(["gateway.test", "litellm.gateway.test", "langfuse.gateway.test",
+                                                "s3.gateway.test"]),
+                                       self.tls_settings(LG_RUSTFS_CONSOLE="off"), self.root)
+            for names, uncovered in ((["*.gateway.test"], "cover gateway.test;"),
+                                     (["gateway.test", "*.litellm.gateway.test"], "litellm.gateway.test"),
+                                     (["gateway.test", "litellm.gateway.test", "langfuse.gateway.test", "s3.gateway.test"],
+                                      "rustfs.gateway.test")):
+                with self.subTest(names=names), self.assertRaises(bootstrap.Refused) as raised:
+                    bootstrap.check_tls_inputs(openssl(names), self.tls_settings(), self.root)
+                self.assertEqual(raised.exception.code, "invalid_settings")
+                self.assertIn(uncovered, raised.exception.detail)
+
+    def test_acme_inputs(self):
+        runner = runner_with()
+        ca = "https://ca.example.internal/acme/acme/directory"
+        bootstrap.check_tls_inputs(runner, self.tls_settings(LG_TLS_ISSUER="acme", LG_ACME_CA=ca, LG_ACME_EMAIL=""), self.root)
+        bootstrap.check_tls_inputs(runner, self.tls_settings(LG_TLS_ISSUER="acme", LG_ACME_CA=ca,
+                                                              LG_ACME_EAB_KEY_ID="kid", LG_ACME_EAB_HMAC="mac"), self.root)
+        (self.root / "not-pem.crt").write_text("not a certificate")
+        for values, setting in (({"LG_ACME_CA": "http://ca.example.internal/directory"}, "LG_ACME_CA"),
+                                ({"LG_ACME_CA": ca, "LG_ACME_EAB_KEY_ID": "kid"}, "LG_ACME_EAB_HMAC"),
+                                ({"LG_ACME_CA": ca, "LG_ACME_EAB_HMAC": "secret-mac"}, "LG_ACME_EAB_KEY_ID"),
+                                ({"LG_ACME_CA_ROOT": str(self.root / "not-pem.crt")}, "LG_ACME_CA_ROOT needs LG_ACME_CA"),
+                                ({"LG_ACME_CA": ca, "LG_ACME_CA_ROOT": str(self.root / "not-pem.crt")}, "PEM"),
+                                ({"LG_TLS_CA": str(self.root)}, "LG_TLS_CA")):
+            with self.subTest(values=values), self.assertRaises(bootstrap.Refused) as raised:
+                bootstrap.check_tls_inputs(runner, self.tls_settings(LG_TLS_ISSUER="acme", **values), self.root)
+            self.assertEqual(raised.exception.code, "invalid_settings")
+            self.assertIn(setting, raised.exception.detail)
+            self.assertNotIn("secret-mac", raised.exception.detail)
+        self.assertEqual(runner.calls, [])
+
+    def test_compose_file_selection_strips_and_appends_managed_overlays(self):
+        for values, expected in (
+            ({"LG_ACCESS_MODE": "local", "LG_TLS_ISSUER": "files"},
+             "compose.yaml:compose.${LG_ACCESS_MODE:-local}.yaml:compose.files.yaml"),
+            ({"LG_ACCESS_MODE": "public", "LG_TLS_ISSUER": "acme", "LG_ACME_CA_ROOT": "ca.pem", "LG_ACME_EAB_KEY_ID": "kid",
+              "COMPOSE_FILE": "compose.yaml:compose.public.yaml:compose.files.yaml:no-logs.yaml"},
+             "compose.yaml:compose.public.yaml:compose.acme-ca-root.yaml:compose.acme-eab.yaml:no-logs.yaml"),
+            ({"LG_ACCESS_MODE": "local", "LG_TLS_ISSUER": "files", "COMPOSE_FILE": "/srv/gw/compose.yaml"},
+             "/srv/gw/compose.yaml:/srv/gw/compose.files.yaml"),
+            ({"LG_ACCESS_MODE": "proxy", "LG_TLS_ISSUER": "", "LG_ACME_CA_ROOT": "ca.pem",
+              "COMPOSE_FILE": "compose.yaml:compose.proxy.yaml:compose.acme-eab.yaml"},
+             "compose.yaml:compose.proxy.yaml"),
+        ):
+            with self.subTest(values=values):
+                self.assertEqual(bootstrap.compose_files(values), expected)
+        # A recorded overlay from an earlier issuer is dropped by appending the selection.
+        stale = "COMPOSE_FILE=compose.yaml:compose.${LG_ACCESS_MODE:-local}.yaml:compose.files.yaml"
+        self.env.write_text(self.template.read_text().replace(
+            "COMPOSE_FILE=compose.yaml:compose.${LG_ACCESS_MODE:-local}.yaml", stale))
+        with patch.dict(os.environ, {"LG_TLS_ISSUER": ""}):
+            self.render()
+        lines = [line for line in self.env.read_text().splitlines() if line.startswith("COMPOSE_FILE=")]
+        self.assertEqual(lines, [stale, "COMPOSE_FILE=compose.yaml:compose.${LG_ACCESS_MODE:-local}.yaml"])
+        self.render()
+        self.assertEqual(self.env.read_text().count("\nCOMPOSE_FILE="), 2)
+
+    def test_probe_trust_order_and_hint(self):
+        tls_ca, acme_root = self.root / "tls-ca.pem", self.root / "acme-root.pem"
+        tls_ca.write_text("tls ca")
+        acme_root.write_text("acme root")
+        runner = lambda argv, **options: subprocess.CompletedProcess(argv, 0, "internal root", "")
+        for issuer, values, expected in (
+            ("internal", {"LG_TLS_CA": str(tls_ca)}, "internal root"),
+            ("files", {"LG_TLS_CA": str(tls_ca), "LG_ACME_CA_ROOT": str(acme_root)}, "tls ca"),
+            ("acme", {"LG_TLS_CA": str(tls_ca), "LG_ACME_CA_ROOT": str(acme_root)}, "tls ca"),
+            ("acme", {"LG_ACME_CA_ROOT": str(acme_root)}, "acme root"),
+            ("files", {"LG_ACME_CA_ROOT": str(acme_root)}, ""),
+            ("acme", {}, ""),
+        ):
+            with self.subTest(issuer=issuer, values=values):
+                self.assertEqual(bootstrap.probe_trust({"LG_TLS_ISSUER": issuer, **values}, runner, ["docker", "compose"]),
+                                 expected)
+        failure = bootstrap.Refused("not_ready", "[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed")
+        with patch.object(bootstrap, "wait_ready", side_effect=failure), self.assertRaises(bootstrap.Refused) as raised:
+            bootstrap.probe_gateway({"LG_ACCESS_MODE": "public", "LG_PUBLIC_DOMAIN": "gateway.test"}, ["docker", "compose"],
+                                    runner)
+        self.assertIn("set LG_TLS_CA", raised.exception.detail)
 
 
 if __name__ == "__main__":

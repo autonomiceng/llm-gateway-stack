@@ -278,11 +278,40 @@
 	}
 }
 
+# Issuer snippets, selected by LG_TLS_ISSUER; bootstrap validates the mode and issuer pair.
+(tls-internal) {
+	tls internal
+}
+# Empty email and dir mean Caddy's defaults (Let's Encrypt). Caddy refuses empty trusted_roots
+# and eab arguments, so the overlays that supply them also select those snippets.
+(tls-acme) {
+	tls {
+		issuer acme {
+			email "{$LG_ACME_EMAIL}"
+			dir "{$LG_ACME_CA}"
+			import acme-trust-{$LG_ACME_TRUST:system}
+			import acme-account-{$LG_ACME_ACCOUNT:none}
+		}
+	}
+}
+(acme-trust-system) {
+}
+(acme-trust-file) {
+	trusted_roots /certs/acme-ca-root.crt
+}
+(acme-account-none) {
+}
+(acme-account-eab) {
+	eab "{$LG_ACME_EAB_KEY_ID}" "{$LG_ACME_EAB_HMAC}"
+}
+# compose.files.yaml mounts LG_TLS_DIR read-only at /certs.
+(tls-files) {
+	tls /certs/tls.crt /certs/tls.key
+}
+
 (https-sites) {
 	https://{$LG_PUBLIC_DOMAIN}, https://litellm.{$LG_PUBLIC_DOMAIN}, https://langfuse.{$LG_PUBLIC_DOMAIN}, https://s3.{$LG_PUBLIC_DOMAIN} {
-		tls {
-			issuer {$LG_TLS_ISSUER}
-		}
+		import tls-{$LG_TLS_ISSUER}
 		import gateway
 	}
 	import https-rustfs-{$LG_RUSTFS_CONSOLE:on}
@@ -293,9 +322,7 @@
 
 (https-rustfs-on) {
 	https://rustfs.{$LG_PUBLIC_DOMAIN} {
-		tls {
-			issuer {$LG_TLS_ISSUER}
-		}
+		import tls-{$LG_TLS_ISSUER}
 		import gateway
 	}
 }
