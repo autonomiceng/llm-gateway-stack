@@ -80,6 +80,8 @@ COMPONENTS = (
     ("postgres-exporter", "PostgreSQL exporter", "collector", None),
     ("valkey-exporter", "Valkey exporter", "collector", None),
 )
+# Every component ships dotted numeric release tags, some with a `v` or a pre-release suffix.
+RELEASE_TAG = r"v?[0-9]+(?:\.[0-9]+)+(?:-[A-Za-z0-9.]+)?"
 
 
 class Refused(Exception):
@@ -213,14 +215,18 @@ def utc(moment: datetime) -> str:
 
 
 def last_checkpoint(backups: Path) -> str | None:
-    """Manifest time of the newest complete Checkpoint, or None when it cannot be read."""
+    """Newest readable Checkpoint manifest time, or None when none can be read."""
+    times = []
     try:
-        for path in sorted(backups.iterdir(), reverse=True):
-            if re.fullmatch(r"\d{8}T\d{12}Z", path.name) and (path / "manifest.json").is_file():
-                return utc(datetime.fromisoformat(json.loads((path / "manifest.json").read_text())["timestamp"]))
-    except (OSError, ValueError, KeyError, TypeError):
-        pass
-    return None
+        paths = [path for path in backups.iterdir() if re.fullmatch(r"\d{8}T\d{12}Z", path.name)]
+    except OSError:
+        return None
+    for path in paths:
+        try:
+            times.append(datetime.fromisoformat(json.loads((path / "manifest.json").read_text())["timestamp"]))
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+    return utc(max(times)) if times else None
 
 
 def status_document(available: dict[str, str], selected: dict[str, str], settings: dict[str, str],
@@ -234,7 +240,7 @@ def status_document(available: dict[str, str], selected: dict[str, str], setting
         tag = image.rsplit(":", 1)[1] if ":" in image.rsplit("/", 1)[-1] else ""
         record = {"id": component, "name": name, "kind": kind, "enabled": component in selected,
                   "image": image,
-                  "version": tag if re.fullmatch(r"v?[0-9][A-Za-z0-9._+-]{0,126}", tag) else None,
+                  "version": tag if re.fullmatch(RELEASE_TAG, tag) else None,
                   "health": "/health/" + component}
         if origin and settings.get(origin):
             record["url"] = settings[origin]

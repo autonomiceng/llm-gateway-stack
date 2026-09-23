@@ -262,10 +262,10 @@ sys.exit(19)
             "caddy": "caddy:2.11.4@sha256:" + "a" * 64,
             "litellm": "ghcr.io/berriai/litellm:v1.101.0@sha256:" + "b" * 64,
             "langfuse-web": "registry:5000/langfuse/langfuse:4.37.0",
-            "langfuse-worker": "langfuse/langfuse-worker:latest",
+            "langfuse-worker": "langfuse/langfuse-worker:4garbage",
             "postgres": "mirror.test/postgres@sha256:" + "c" * 64,
             "clickhouse": "clickhouse/clickhouse-server:26.8.6.5",
-            "valkey": "valkey/valkey:9.1.2", "rustfs": "rustfs/rustfs:1.0.0",
+            "valkey": "valkey/valkey:9.1.2", "rustfs": "rustfs/rustfs:1.0.0-alpha.93",
             "postgres-exporter": "prometheuscommunity/postgres-exporter:v0.19.0",
             "valkey-exporter": "oliver006/redis_exporter:v1.80.1",
             "rustfs-init": "amazon/aws-cli:2.32.0",
@@ -279,6 +279,8 @@ sys.exit(19)
             (backups / stamp).mkdir(parents=True)
             (backups / stamp / "manifest.json").write_text(json.dumps({"timestamp": at}))
         (backups / "20260923T030000000000Z").mkdir()  # incomplete: no manifest
+        (backups / "20260924T030000000000Z").mkdir()
+        (backups / "20260924T030000000000Z" / "manifest.json").write_text("{")  # unreadable
         settings = bootstrap.access_settings({"LG_PUBLIC_DOMAIN": "gateway.test"})
         doc = bootstrap.status_document(available, available, settings, backups, "2026-09-23T16:00:00Z")
         text = json.dumps(doc)
@@ -302,7 +304,7 @@ sys.exit(19)
         by_id = {c["id"]: c for c in doc["components"]}
         self.assertEqual({key: c["version"] for key, c in by_id.items()}, {
             "caddy": "2.11.4", "litellm": "v1.101.0", "langfuse-web": "4.37.0", "langfuse-worker": None,
-            "postgres": None, "clickhouse": "26.8.6.5", "valkey": "9.1.2", "rustfs": "1.0.0",
+            "postgres": None, "clickhouse": "26.8.6.5", "valkey": "9.1.2", "rustfs": "1.0.0-alpha.93",
             "postgres-exporter": "v0.19.0", "valkey-exporter": "v1.80.1"})
         self.assertEqual({key: c["url"] for key, c in by_id.items() if "url" in c}, {
             "litellm": "http://litellm.gateway.test", "langfuse-web": "http://langfuse.gateway.test",

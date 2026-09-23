@@ -42,8 +42,9 @@ Liveness comes from `/health/<component>`, status only for non-operators:
 | `caddy` | Caddy answers |
 | `litellm`, `langfuse-web`, `langfuse-worker` | `/health/readiness`, `/api/public/health`, worker `/api/health` |
 | `clickhouse`, `rustfs` | `/ping`, `/health/live` |
+| `postgres` | Langfuse `/api/public/health?failIfDatabaseUnavailable=true` |
 | `postgres-exporter`, `valkey-exporter` | landing page, `/health` |
-| `postgres`, `valkey` | none over HTTP; always 404, read as unknown |
+| `valkey` | none over HTTP; always 404, read as unknown |
 
 Upgrading from the version 1 status timer: run `scripts/retire-status-timer.sh` as the
 installation user, then `python3 scripts/bootstrap.py`. The script disables and removes

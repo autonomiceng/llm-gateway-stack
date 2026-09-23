@@ -148,9 +148,12 @@
 	handle /health/valkey-exporter {
 		import health valkey-exporter:9121 /health
 	}
-	# No HTTP probe reaches these stores; 404 reads as unknown, never unhealthy.
-	@unprobed path /health/postgres /health/valkey
-	handle @unprobed {
+	# Langfuse answers 503 when its PostgreSQL database is unavailable.
+	handle /health/postgres {
+		import health langfuse-web:3000 /api/public/health?failIfDatabaseUnavailable=true
+	}
+	# No HTTP probe reaches Valkey; 404 reads as unknown, never unhealthy.
+	handle /health/valkey {
 		respond 404
 	}
 	handle /health/backplane {

@@ -155,7 +155,7 @@ for c in doc["components"]:
     assert {"id", "name", "kind", "enabled", "image", "version", "health"} <= set(c) <= {
         "id", "name", "kind", "enabled", "image", "version", "health", "url"}, c
     assert c["enabled"] is True and c["version"] and "@" not in c["image"], c
-    assert get(c["health"])[0] == (404 if c["id"] in ("postgres", "valkey") else 200), c["health"]
+    assert get(c["health"])[0] == (404 if c["id"] == "valkey" else 200), c["health"]
 assert doc["features"] == {"backups": {"configured": True, "lastCheckpointAt": None}}, doc["features"]
 assert get("/versions.json")[0] == 404
 PYSTATUS
