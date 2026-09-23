@@ -18,12 +18,16 @@ _Avoid_: Landing page, service router, public port set
 
 **Stack Console**:
 The page the Stack Gateway serves at the root hostname: links to every application, live
-health, and the configured image versions from the last bootstrap or restore. It has no
-login and no write actions.
-The public status document intentionally discloses allowlisted configured/runtime
-versions and image digests in every access mode. This extends the prior operator-only
-version metadata posture; `/versions.json` itself remains operator-restricted.
+health, and the configured image versions from the Status Document. It has no login and
+no write actions.
 _Avoid_: Dashboard, admin UI, launchpad
+
+**Status Document**:
+The public Status v2 file bootstrap writes after readiness and the Stack Gateway serves at
+`/status.json` in every access mode: each component's configured image and version, whether
+the selected profiles enable it, its health path, application origins, and the newest
+Checkpoint time at that bootstrap. It records configuration, never observed runtime state.
+_Avoid_: Status observation, versions file
 
 **Local Mode**:
 The default access mode: HTTP and private-CA HTTPS on loopback, without redirects or HSTS.

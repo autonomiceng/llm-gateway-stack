@@ -39,7 +39,7 @@ Model choice and the brief templates every delegation carries: `docs/agents/mode
 - `config.yaml` - LiteLLM proxy config. `docker/litellm/` holds its callback code.
 - `docker/caddy/Caddyfile` - one file for Local and Public Mode; `docker/caddy/console/` is the static Stack Console.
 - `docker/postgres/init/` - first-boot SQL. Runs only on an empty cluster.
-- `scripts/` - `bootstrap.py`, `validate.sh` (static gates, what CI runs), `smoke.sh` (the Smoke Contract, boots a disposable project), `backup.sh` and `restore.sh`.
+- `scripts/` - `bootstrap.py` (also writes the Status Document, `data/console/status.json`), `validate.sh` (static gates, what CI runs), `smoke.sh` (the Smoke Contract, boots a disposable project), `backup.sh` and `restore.sh`, `retire-status-timer.sh` (one-time removal of the version 1 status timer).
 - `tests/` - Python unittest with a fake runner; never calls Docker.
 - `docs/DESIGN.md` the map, `docs/adr/` decisions, `docs/operations/` runbooks, `docs/agents/` guidance, `docs/conventions.md` what the four repos share.
 

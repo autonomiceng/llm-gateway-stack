@@ -218,8 +218,8 @@ sys.exit(19)
                 warning = io.StringIO()
                 with patch.dict(os.environ, shell, clear=True), redirect_stderr(warning), \
                      patch.object(bootstrap.shutil, "which", return_value="docker"), \
-                     patch.object(bootstrap, "write_versions"), patch.object(bootstrap, "images", return_value={}), \
-                     patch.object(bootstrap, "probe_gateway"), patch.object(bootstrap, "task_record") as record:
+                     patch.object(bootstrap, "write_status"), patch.object(bootstrap, "images", return_value={}), \
+                     patch.object(bootstrap, "console_dir"), patch.object(bootstrap, "probe_gateway"):
                     if error:
                         with self.assertRaises(bootstrap.Refused) as raised:
                             bootstrap.bootstrap(["--env-file", str(self.env)], runner=runner)
@@ -228,52 +228,140 @@ sys.exit(19)
                     else:
                         self.assertEqual(bootstrap.bootstrap(["--env-file", str(self.env)], runner=runner), 0)
                         self.assertTrue(any("up" in call for call in runner.calls))
-                        self.assertTrue(any(str(Path(bootstrap.__file__).resolve().parent / "status_observer.py") in call for call in runner.calls))
                         self.assertIn("disk loss affects both", warning.getvalue())
                         self.assertTrue(data.is_dir())
-                        self.assertEqual([call.args[3] for call in record.call_args_list], ["unknown", "healthy"])
-                        self.assertEqual(record.call_args_list[0].args[2], record.call_args_list[1].args[2])
 
-    def test_status_record_failure_does_not_abort_bootstrap_or_mask_readiness(self):
+    def installation(self):
+        """A rendered env file with the settings a full bootstrap run requires."""
         self.render()
-        backups = self.root / 'backups'
+        backups = self.root / "backups"
         backups.mkdir()
-        self.env.write_text(self.env.read_text() + f'\nLG_BACKUP_DIR={backups}\n'
-                            f'LG_POSTGRES_DATA_DIR={self.root / "pg"}\nLG_ALLOW_SAME_FILESYSTEM_BACKUP=true\n'
-                            'LANGFUSE_INIT_USER_EMAIL=operator@gateway.test\n')
-        for failure in (None, bootstrap.Refused('not_ready', 'original readiness refusal')):
-            with patch.dict(os.environ, {}, clear=True), redirect_stderr(io.StringIO()) as warning, \
-                 patch.object(bootstrap.shutil, 'which', return_value='docker'), \
-                 patch.object(bootstrap, 'write_versions'), patch.object(bootstrap, 'images', return_value={}), \
-                 patch.object(bootstrap, 'task_record', side_effect=bootstrap.Unavailable()), \
-                 patch.object(bootstrap, 'probe_gateway', side_effect=failure):
-                if failure:
-                    with self.assertRaises(bootstrap.Refused) as raised:
-                        bootstrap.bootstrap(['--env-file', str(self.env)], runner=runner_with())
-                    self.assertIs(raised.exception, failure)
-                else:
-                    self.assertEqual(bootstrap.bootstrap(['--env-file', str(self.env)], runner=runner_with()), 0)
-                self.assertIn('Status execution record unavailable', warning.getvalue())
+        self.env.write_text(self.env.read_text() + f"\nLG_BACKUP_DIR={backups}\n"
+                            f"LG_POSTGRES_DATA_DIR={self.root / 'pg'}\nLG_ALLOW_SAME_FILESYSTEM_BACKUP=true\n"
+                            "LANGFUSE_INIT_USER_EMAIL=operator@gateway.test\n")
+        return backups
 
-    def test_initial_observer_deadline_does_not_change_successful_bootstrap(self):
-        self.render()
-        backups = self.root / 'backups'
-        backups.mkdir()
-        self.env.write_text(self.env.read_text() + f'\nLG_BACKUP_DIR={backups}\n'
-                            f'LG_POSTGRES_DATA_DIR={self.root / "pg"}\nLG_ALLOW_SAME_FILESYSTEM_BACKUP=true\n'
-                            'LANGFUSE_INIT_USER_EMAIL=operator@gateway.test\n')
+    def compose_runner(self, selected):
+        """Answer Compose config like a file where only `selected` services are outside profiles."""
         base = runner_with()
-        def runner(argv, **options):
-            if any(str(part).endswith('/status_observer.py') for part in argv):
-                self.assertEqual(options, {'timeout': 120})
-                raise subprocess.TimeoutExpired(argv, options['timeout'])
-            return base(argv)
-        with patch.dict(os.environ, {}, clear=True), redirect_stderr(io.StringIO()) as warning, \
-             patch.object(bootstrap.shutil, 'which', return_value='docker'), \
-             patch.object(bootstrap, 'write_versions'), patch.object(bootstrap, 'images', return_value={}), \
-             patch.object(bootstrap, 'task_record'), patch.object(bootstrap, 'probe_gateway'):
-            self.assertEqual(bootstrap.bootstrap(['--env-file', str(self.env)], runner=runner), 0)
-        self.assertIn('Status observation failed', warning.getvalue())
+        services = {name: {"image": f"example/{name}:1.0@sha256:" + "c" * 64} for name, *_ in bootstrap.COMPONENTS}
+
+        def run(argv, **options):
+            if argv[-3:] == ["config", "--format", "json"]:
+                base.calls.append(argv)
+                every = argv[-5:-3] == ["--profile", "*"]
+                return subprocess.CompletedProcess(argv, 0, json.dumps({"services": {
+                    name: service for name, service in services.items() if every or name in selected}}), "")
+            return base(argv, **options)
+
+        run.calls = base.calls
+        return run
+
+    def test_status_document_is_the_closed_v2_schema_from_compose_config(self):
+        refs = {
+            "caddy": "caddy:2.11.4@sha256:" + "a" * 64,
+            "litellm": "ghcr.io/berriai/litellm:v1.101.0@sha256:" + "b" * 64,
+            "langfuse-web": "registry:5000/langfuse/langfuse:4.37.0",
+            "langfuse-worker": "langfuse/langfuse-worker:4garbage",
+            "postgres": "mirror.test/postgres@sha256:" + "c" * 64,
+            "clickhouse": "clickhouse/clickhouse-server:26.8.6.5",
+            "valkey": "valkey/valkey:9.1.2", "rustfs": "rustfs/rustfs:1.0.0-alpha.93",
+            "postgres-exporter": "prometheuscommunity/postgres-exporter:v0.19.0",
+            "valkey-exporter": "oliver006/redis_exporter:v1.80.1",
+            "rustfs-init": "amazon/aws-cli:2.32.0",
+        }
+        config = json.dumps({"services": {name: {"image": ref, "environment": {"PASSWORD": "private-secret"}}
+                                          for name, ref in refs.items()}})
+        available = bootstrap.images(["docker", "compose"], lambda argv: subprocess.CompletedProcess(argv, 0, config, ""))
+        backups = self.root / "backups"
+        for stamp, at in (("20260921T030000000000Z", "2026-09-21T03:00:00.5+00:00"),
+                          ("20260922T030000000000Z", "2026-09-22T05:00:00+02:00")):
+            (backups / stamp).mkdir(parents=True)
+            (backups / stamp / "manifest.json").write_text(json.dumps({"timestamp": at}))
+        (backups / "20260923T030000000000Z").mkdir()  # incomplete: no manifest
+        (backups / "20260924T030000000000Z").mkdir()
+        (backups / "20260924T030000000000Z" / "manifest.json").write_text("{")  # unreadable
+        settings = bootstrap.access_settings({"LG_PUBLIC_DOMAIN": "gateway.test"})
+        doc = bootstrap.status_document(available, available, settings, backups, "2026-09-23T16:00:00Z")
+        text = json.dumps(doc)
+        self.assertNotIn("private-secret", text)
+        self.assertNotIn("sha256", text)
+        self.assertEqual(set(doc), {"contract", "stack", "configuredAt", "components", "features"})
+        self.assertEqual((doc["contract"], doc["stack"], doc["configuredAt"]), (2, "gateway", "2026-09-23T16:00:00Z"))
+        self.assertEqual(doc["features"], {"backups": {"configured": True, "lastCheckpointAt": "2026-09-22T03:00:00Z"}})
+        self.assertEqual([c["id"] for c in doc["components"]],
+                         ["caddy", "litellm", "langfuse-web", "langfuse-worker", "postgres", "clickhouse",
+                          "valkey", "rustfs", "postgres-exporter", "valkey-exporter"])
+        fields = {"id", "name", "kind", "enabled", "image", "version", "health"}
+        for component in doc["components"]:
+            with self.subTest(component=component["id"]):
+                self.assertTrue(fields <= set(component) <= fields | {"url"})
+                self.assertRegex(component["id"], r"^[a-z][a-z0-9-]{0,31}$")
+                self.assertIn(component["kind"], ("app", "datastore", "gateway", "collector", "runtime"))
+                self.assertIs(component["enabled"], True)
+                self.assertEqual(component["health"], "/health/" + component["id"])
+                self.assertEqual(component["image"], refs[component["id"]].split("@")[0])
+        by_id = {c["id"]: c for c in doc["components"]}
+        self.assertEqual({key: c["version"] for key, c in by_id.items()}, {
+            "caddy": "2.11.4", "litellm": "v1.101.0", "langfuse-web": "4.37.0", "langfuse-worker": None,
+            "postgres": None, "clickhouse": "26.8.6.5", "valkey": "9.1.2", "rustfs": "1.0.0-alpha.93",
+            "postgres-exporter": "v0.19.0", "valkey-exporter": "v1.80.1"})
+        self.assertEqual({key: c["url"] for key, c in by_id.items() if "url" in c}, {
+            "litellm": "http://litellm.gateway.test", "langfuse-web": "http://langfuse.gateway.test",
+            "rustfs": "http://s3.gateway.test"})
+        self.assertIsNone(bootstrap.status_document({}, {}, settings, self.root / "absent", "x")
+                          ["features"]["backups"]["lastCheckpointAt"])
+
+    def test_status_marks_services_outside_selected_profiles_disabled(self):
+        self.installation()
+        written = []
+        runner = self.compose_runner(selected={"caddy", "litellm", "langfuse-web"})
+        with patch.dict(os.environ, {}, clear=True), redirect_stderr(io.StringIO()), \
+             patch.object(bootstrap.shutil, "which", return_value="docker"), \
+             patch.object(bootstrap, "probe_gateway"), patch.object(bootstrap, "console_dir"), \
+             patch.object(bootstrap, "write_status", side_effect=lambda root, doc: written.append(doc)):
+            self.assertEqual(bootstrap.bootstrap(["--env-file", str(self.env)], runner=runner), 0)
+        configs = [call for call in runner.calls if call[-3:] == ["config", "--format", "json"]]
+        self.assertEqual([call[-5:-3] == ["--profile", "*"] for call in configs], [True, False])
+        self.assertEqual({c["id"]: c["enabled"] for c in written[0]["components"]},
+                         {name: name in ("caddy", "litellm", "langfuse-web") for name, *_ in bootstrap.COMPONENTS})
+
+    def test_status_is_written_atomically_and_only_after_readiness(self):
+        self.installation()
+        public = self.root / "data" / "console" / "status.json"
+        console_dir = bootstrap.console_dir
+
+        def ready(*args):
+            self.assertFalse(public.exists(), "status published before readiness")
+            self.assertTrue(any("up" in call for call in runner.calls))
+
+        for failure in (bootstrap.Refused("not_ready", "gateway"), None):
+            runner = self.compose_runner(selected={name for name, *_ in bootstrap.COMPONENTS})
+            made = []
+
+            def console(root):
+                made.append(len(runner.calls))
+                return console_dir(self.root)
+
+            with self.subTest(failure=failure), patch.dict(os.environ, {}, clear=True), \
+                 redirect_stderr(io.StringIO()), patch.object(bootstrap.shutil, "which", return_value="docker"), \
+                 patch.object(bootstrap, "console_dir", side_effect=console), \
+                 patch.object(bootstrap, "probe_gateway", side_effect=failure or ready):
+                if failure:
+                    with self.assertRaises(bootstrap.Refused):
+                        bootstrap.bootstrap(["--env-file", str(self.env)], runner=runner)
+                    self.assertFalse(public.exists())
+                else:
+                    self.assertEqual(bootstrap.bootstrap(["--env-file", str(self.env)], runner=runner), 0)
+                # The mount exists before Compose starts, or Docker creates it as root.
+                self.assertLess(made[0], next(i for i, call in enumerate(runner.calls) if "up" in call))
+        document = json.loads(public.read_text())
+        self.assertEqual(document["contract"], 2)
+        self.assertEqual(public.stat().st_mode & 0o777, 0o644)
+        self.assertEqual(sorted(p.name for p in public.parent.iterdir()), ["status.json"])
+        with patch.object(bootstrap.os, "replace", side_effect=OSError("disk full")), self.assertRaises(OSError):
+            bootstrap.write_status(self.root, {"contract": 2, "partial": True})
+        self.assertEqual(json.loads(public.read_text()), document)
 
     def test_langfuse_login_is_required_before_startup(self):
         self.render()

@@ -148,10 +148,10 @@ its socket address in `LG_OPERATOR_ALLOW` and matching access restrictions at Ed
 ## Operator access
 
 `LG_OPERATOR_ALLOW` is a space-separated list of socket peer CIDRs, default
-`127.0.0.0/8 ::1`. It gates `/versions.json`, health JSON bodies, LiteLLM `/ui*` and
+`127.0.0.0/8 ::1`. It gates health JSON bodies, LiteLLM `/ui*` and
 `/openapi.json`, and the RustFS console. Other clients receive 404 for operator
 paths; health probes preserve the upstream HTTP status with an empty body. The public
-Stack Console can still show service health; pinned versions require operator access.
+Stack Console shows service health and the configured versions from `/status.json`.
 Forwarded client headers never grant operator access.
 
 Docker port forwarding can present the host's bridge address instead of loopback. Add
@@ -169,9 +169,8 @@ Checkpoint metrics are available at `http://lg-gateway:8081/metrics` on the plat
 network, under job `llm-gateway-checkpoints`. Add the scraper's address to
 `LG_CHECKPOINT_ALLOW`, or its dedicated scraper network CIDR. This setting grants only
 checkpoint metrics access; keep operator sources in `LG_OPERATOR_ALLOW`. Port 8081 is an unpublished container listener; the edge routes to
-port 80 and receives no checkpoint metrics there. The same listener serves
-`/versions.json` over loopback for Caddy's healthcheck in every TLS mode. Include loopback
-in `LG_OPERATOR_ALLOW` so that healthcheck continues to work.
+port 80 and receives no checkpoint metrics there. The same listener answers
+`/health/status` over loopback for Caddy's container healthcheck in every access mode.
 
 The observability stack must configure the checkpoint scrape plus
 `lg-valkey-exporter:9121` (job `llm-gateway-valkey`) and `lg-postgres-exporter:9187`

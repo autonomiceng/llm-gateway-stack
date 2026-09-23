@@ -23,6 +23,37 @@ Renovate's native Docker Compose manager supports inline defaults, covered by it
 [default-variable extraction test](https://github.com/renovatebot/renovate/blob/main/lib/modules/manager/docker-compose/extract.spec.ts).
 Langfuse grouping and major-update maintenance labels remain unchanged.
 
+## Status document
+
+Bootstrap writes `data/console/status.json` after the gateway passes its readiness
+probes, replacing the whole file at once. Caddy serves it as `GET /status.json` to any
+client, in every access mode, with `Cache-Control: no-store`. It follows Status v2 in
+[conventions](../conventions.md): the configured image of each component without its
+digest, the tag as `version` (null for a tag that is not a release), whether the selected
+Compose profiles enable the service, the LiteLLM, Langfuse and S3 origins, and the time of
+the newest Checkpoint in `LG_BACKUP_DIR` when bootstrap ran; later Checkpoints do not
+update it. It is configuration, not observation: a version
+is what bootstrap configured, not what runs. Rerun bootstrap after changing images,
+origins or profiles. The document never contains secrets, container names or host paths.
+
+Liveness comes from `/health/<component>`, status only for non-operators:
+
+| Component | Probe |
+| --- | --- |
+| `caddy` | Caddy answers |
+| `litellm`, `langfuse-web`, `langfuse-worker` | `/health/readiness`, `/api/public/health`, worker `/api/health` |
+| `clickhouse`, `rustfs` | `/ping`, `/health/live` |
+| `postgres` | Langfuse `/api/public/health?failIfDatabaseUnavailable=true` |
+| `postgres-exporter`, `valkey-exporter` | landing page, `/health` |
+| `valkey` | none over HTTP; always 404, read as unknown |
+
+Upgrading from the version 1 status timer: run `scripts/retire-status-timer.sh` as the
+installation user, then `python3 scripts/bootstrap.py`. The script disables and removes
+`llm-gateway-status.timer` and `.service` from the user's systemd directory, reloads the
+user manager, and deletes `data/status/bootstrap.json` and `data/console/.status.lock`.
+It prints each removal and is safe to rerun. Bootstrap then replaces the version 1
+`status.json`. `/versions.json` is gone; the Stack Console reads `/status.json`.
+
 ## Before touching a host
 
 1. Read the release notes for every image that changed. Langfuse, Postgres and ClickHouse majors are one-way for data.

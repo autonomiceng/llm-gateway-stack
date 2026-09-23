@@ -29,15 +29,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
-from status_io import Unavailable, now, task_record
-
-
-def record_bootstrap(root, env_file, started, state):
-    try:
-        task_record(root, env_file, started, state)
-    except (OSError, Unavailable):
-        print("Status execution record unavailable; check data directory ownership and permissions.", file=sys.stderr)
-
 PROJECT = "llm-gateway-stack"
 NETWORK = "platform"
 # Platform Network allocation shared by every stack (docs/conventions.md). Edge's reserved
@@ -75,6 +66,22 @@ MANAGED = set(SECRETS) | set(PREFIXED) | {"UI_USERNAME"}
 # Compose project names of earlier generations whose data must not be silently reused.
 LEGACY_PROJECTS = ("llm-gateway", "litellm-langfuse")
 ENV_LINE = re.compile(r"^(?:export\s+)?(?P<key>[A-Z][A-Z0-9_]*)=(?P<value>.*)$")
+# Status v2 components (docs/conventions.md): the contract's stable ID, which is also the
+# Compose service, then display name, kind and the setting holding its browser or API origin.
+COMPONENTS = (
+    ("caddy", "Caddy", "gateway", None),
+    ("litellm", "LiteLLM", "app", "LG_LITELLM_URL"),
+    ("langfuse-web", "Langfuse", "app", "LG_LANGFUSE_URL"),
+    ("langfuse-worker", "Langfuse worker", "app", None),
+    ("postgres", "PostgreSQL", "datastore", None),
+    ("clickhouse", "ClickHouse", "datastore", None),
+    ("valkey", "Valkey", "datastore", None),
+    ("rustfs", "RustFS", "datastore", "LG_S3_URL"),
+    ("postgres-exporter", "PostgreSQL exporter", "collector", None),
+    ("valkey-exporter", "Valkey exporter", "collector", None),
+)
+# Every component ships dotted numeric release tags, some with a `v` or a pre-release suffix.
+RELEASE_TAG = r"v?[0-9]+(?:\.[0-9]+)+(?:-[A-Za-z0-9.]+)?"
 
 
 class Refused(Exception):
@@ -203,7 +210,64 @@ def images(command: list[str], runner: Runner = run) -> dict[str, str]:
     return {name: service["image"] for name, service in json.loads(result.stdout)["services"].items()}
 
 
+def utc(moment: datetime) -> str:
+    return moment.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def last_checkpoint(backups: Path) -> str | None:
+    """Newest readable Checkpoint manifest time, or None when none can be read."""
+    times = []
+    try:
+        paths = [path for path in backups.iterdir() if re.fullmatch(r"\d{8}T\d{12}Z", path.name)]
+    except OSError:
+        return None
+    for path in paths:
+        try:
+            times.append(datetime.fromisoformat(json.loads((path / "manifest.json").read_text())["timestamp"]))
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+    return utc(max(times)) if times else None
+
+
+def status_document(available: dict[str, str], selected: dict[str, str], settings: dict[str, str],
+                    backups: Path, configured_at: str) -> dict:
+    """The public Status v2 document: configured images and origins, never secrets."""
+    components = []
+    for component, name, kind, origin in COMPONENTS:
+        if component not in available:
+            continue
+        image = available[component].split("@", 1)[0]
+        tag = image.rsplit(":", 1)[1] if ":" in image.rsplit("/", 1)[-1] else ""
+        record = {"id": component, "name": name, "kind": kind, "enabled": component in selected,
+                  "image": image,
+                  "version": tag if re.fullmatch(RELEASE_TAG, tag) else None,
+                  "health": "/health/" + component}
+        if origin and settings.get(origin):
+            record["url"] = settings[origin]
+        components.append(record)
+    return {"contract": 2, "stack": "gateway", "configuredAt": configured_at, "components": components,
+            "features": {"backups": {"configured": True, "lastCheckpointAt": last_checkpoint(backups)}}}
+
+
+def console_dir(root: Path) -> Path:
+    """Caddy mounts this directory; Docker would create a missing one owned by root."""
+    console = root / "data" / "console"
+    console.mkdir(parents=True, exist_ok=True, mode=0o755)
+    return console
+
+
+def write_status(root: Path, document: dict) -> None:
+    console = console_dir(root)
+    path = console / "status.json"
+    temporary = console / ".status.json.tmp"
+    temporary.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+    # Caddy reads the mount as another user; replace the file whole so it never sees a partial one.
+    os.chmod(temporary, 0o644)
+    os.replace(temporary, path)
+
+
 def write_versions(root: Path, compose: Path, refs: dict[str, str]) -> None:
+    """Restore's version record (scripts/checkpoint.py). Caddy no longer serves it."""
     console = root / "data" / "console"
     console.mkdir(parents=True, exist_ok=True, mode=0o755)
     tags = {}
@@ -445,7 +509,6 @@ def bootstrap(argv: list[str], runner: Runner = run) -> int:
     root = Path(__file__).resolve().parent.parent
     env_file = (root / args.env_file).resolve()
     template = (root / args.template).resolve()
-    compose = root / "compose.yaml"
 
     if shutil.which("docker") is None and not args.render_only:
         raise Refused("docker_missing", "install Docker with the Compose plugin")
@@ -523,34 +586,24 @@ def bootstrap(argv: list[str], runner: Runner = run) -> int:
         backup_dir = (root / backup_setting).resolve()
         check_backup_storage(backup_dir, data_dir, allow_same_filesystem)
 
-        started = now()
-        record_bootstrap(root, env_file, started, "unknown")
-        try:
-            # 0755: the postgres user must traverse this directory to reach its cluster,
-            # which the image creates underneath as 18/docker with mode 0700.
-            data_dir.mkdir(parents=True, exist_ok=True, mode=0o755)
-            os.chmod(data_dir, 0o755)
-            write_versions(root, compose, images([
-                "env", "LG_LANGFUSE_URL=" + canonical_langfuse,
-                "docker", "compose", "--project-directory", str(root), "--env-file", str(env_file),
-            ], runner))
+        configured_at = utc(datetime.now(timezone.utc))
+        # 0755: the postgres user must traverse this directory to reach its cluster,
+        # which the image creates underneath as 18/docker with mode 0700.
+        data_dir.mkdir(parents=True, exist_ok=True, mode=0o755)
+        os.chmod(data_dir, 0o755)
+        console_dir(root)
+        command = ["env", "LG_LANGFUSE_URL=" + canonical_langfuse, "docker", "compose",
+                   "--project-directory", str(root), "--env-file", str(env_file)]
+        # Every service, then those the selected profiles enable.
+        document = status_document(images(command + ["--profile", "*"], runner), images(command, runner),
+                                   settings, backup_dir, configured_at)
 
-            ensure_network(runner, settings.get("LG_PLATFORM_NETWORK", NETWORK), *allocation)
-            ensure_volumes(runner, prefix, project)
-            compose_up(root, env_file, runner, canonical_langfuse)
-            probe_gateway(settings, ["docker", "compose", "--project-directory", str(root),
-                                     "--env-file", str(env_file)], runner)
-        except BaseException:
-            record_bootstrap(root, env_file, started, "unavailable")
-            raise
-        record_bootstrap(root, env_file, started, "healthy")
-        try:
-            observed = runner([sys.executable, str(root / "scripts/status_observer.py"),
-                               "--checkout", str(root), "--env-file", str(env_file)], timeout=120)
-            if observed.returncode:
-                raise subprocess.SubprocessError()
-        except (OSError, subprocess.SubprocessError):
-            print("Status observation failed; run the observer after checking its publication permissions.", file=sys.stderr)
+        ensure_network(runner, settings.get("LG_PLATFORM_NETWORK", NETWORK), *allocation)
+        ensure_volumes(runner, prefix, project)
+        compose_up(root, env_file, runner, canonical_langfuse)
+        probe_gateway(settings, ["docker", "compose", "--project-directory", str(root),
+                                 "--env-file", str(env_file)], runner)
+        write_status(root, document)
         print(json.dumps({
             "console": settings["LG_CONSOLE_URL"] + "/",
             "litellm": settings["LG_LITELLM_URL"] + "/",

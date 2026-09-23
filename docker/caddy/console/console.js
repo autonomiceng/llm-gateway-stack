@@ -1,4 +1,4 @@
-// Stack Console. Reads /versions.json (configured images, written at bootstrap or restore) and
+// Stack Console. Reads /status.json (Status v2, configured images written at bootstrap) and
 // polls /health/<service> through the Stack Gateway. No secrets, no writes.
 (() => {
   const base = `${location.protocol}//${location.host}`;
@@ -107,11 +107,14 @@
 
   const versions = async () => {
     try {
-      const res = await fetch(`${base}/versions.json`, { cache: "no-store" });
+      const res = await fetch(`${base}/status.json`, { cache: "no-store", signal: AbortSignal.timeout(4000) });
       if (!res.ok) throw new Error(String(res.status));
       const v = await res.json();
+      if (v.contract !== 2) throw new Error("unsupported status contract");
+      const components = new Map((Array.isArray(v.components) ? v.components : []).map((c) => [c.id, c]));
       for (const el of document.querySelectorAll("[data-version]")) {
-        el.textContent = v.images?.[el.dataset.version] ?? "unknown";
+        const c = components.get(el.dataset.version);
+        el.textContent = c?.enabled === false ? "disabled" : (c?.version ?? "unknown");
       }
       const when = document.querySelector("[data-pinned]");
       when.dateTime = v.configuredAt ?? "";

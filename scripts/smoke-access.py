@@ -121,7 +121,7 @@ http.server.HTTPServer(('', 4000), Handler).serve_forever()
         finally:
             connection.close()
 
-    def test_observer_caddy_probe_is_independent_of_public_routes(self):
+    def test_healthcheck_probe_is_independent_of_public_routes(self):
         self.start()
         info = json.loads(docker("inspect", GATEWAY))[0]
         ip = info["NetworkSettings"]["Networks"][NETWORK]["IPAddress"]
@@ -133,13 +133,12 @@ http.server.HTTPServer(('', 4000), Handler).serve_forever()
         finally:
             connection.close()
 
-    def test_public_status_transport_and_frozen_evidence(self):
-        frozen = {"schemaVersion": 1, "stack": "gateway", "generatedAt": "2026-09-20T12:00:00Z",
-                  "configurationObservedAt": "2026-09-20T11:00:00Z",
-                  "configurationValidForSeconds": 120, "telemetry": "unknown",
-                  "components": [{"id": "postgres", "kind": "service", "configured": True,
-                                  "state": "healthy", "observedAt": "2026-09-20T11:00:00Z",
-                                  "validForSeconds": 120}]}
+    def test_public_status_transport(self):
+        frozen = {"contract": 2, "stack": "gateway", "configuredAt": "2026-09-20T11:00:00Z",
+                  "components": [{"id": "postgres", "name": "PostgreSQL", "kind": "datastore",
+                                  "enabled": True, "image": "postgres:18.6", "version": "18.6",
+                                  "health": "/health/postgres"}],
+                  "features": {"backups": {"configured": True, "lastCheckpointAt": None}}}
         path = Path(self.state.name) / "status.json"
         for mode, host in (("local", "localhost"), ("proxy", "gateway.test")):
             path.write_text(json.dumps(frozen))
@@ -161,6 +160,7 @@ http.server.HTTPServer(('', 4000), Handler).serve_forever()
                 status, headers, body = self.request("/status.json", host, tls, method="POST")
                 self.assertEqual((status, body), (405, b""))
                 self.assertEqual(headers["Allow"], "GET, HEAD")
+                self.assertEqual(self.request("/versions.json", host, tls)[0], 404)
             path.unlink()
             status, headers, body = self.request("/status.json", host)
             self.assertEqual((status, body), (404, b""))
