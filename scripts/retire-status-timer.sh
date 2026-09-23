@@ -4,11 +4,18 @@ set -eu
 root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 units=${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user
 name=llm-gateway-status
-if [ -e "$units/$name.timer" ] || [ -e "$units/$name.service" ]; then
-  systemctl --user disable --now "$name.timer" "$name.service"
-  rm -f -- "$units/$name.timer" "$units/$name.service"
+# Name only units whose files exist; systemctl fails on a missing one.
+set --
+for unit in "$name.timer" "$name.service"; do
+  [ ! -e "$units/$unit" ] || set -- "$@" "$unit"
+done
+if [ "$#" -gt 0 ]; then
+  systemctl --user disable --now "$@"
+  for unit in "$@"; do
+    rm -f -- "$units/$unit"
+    echo "disabled and removed $unit"
+  done
   systemctl --user daemon-reload
-  echo "disabled and removed $name.timer and $name.service"
 else
   echo "no $name units in $units"
 fi

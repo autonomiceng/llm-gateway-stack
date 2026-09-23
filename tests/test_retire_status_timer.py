@@ -14,6 +14,11 @@ class RetireStatusTimerTests(unittest.TestCase):
         # validate.sh requires shellcheck; a bare interpreter still runs the behaviour check.
         if shutil.which("shellcheck"):
             subprocess.run(["shellcheck", "--shell=sh", str(SCRIPT)], check=True)
+        for present in (("llm-gateway-status.service", "llm-gateway-status.timer"), ("llm-gateway-status.service",)):
+            with self.subTest(present=present):
+                self.retire_twice(present)
+
+    def retire_twice(self, present):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             checkout, home, bin_dir = root / "checkout", root / "home", root / "bin"
@@ -21,7 +26,7 @@ class RetireStatusTimerTests(unittest.TestCase):
             shutil.copy(SCRIPT, checkout / "scripts")
             units = home / ".config/systemd/user"
             units.mkdir(parents=True)
-            for name in ("llm-gateway-status.service", "llm-gateway-status.timer", "other.timer"):
+            for name in (*present, "other.timer"):
                 (units / name).write_text("[Unit]\n")
             (checkout / "data/status").mkdir(parents=True)
             (checkout / "data/status/bootstrap.json").write_text("{}")
@@ -30,14 +35,20 @@ class RetireStatusTimerTests(unittest.TestCase):
                 (checkout / "data/console" / name).write_text("")
             bin_dir.mkdir()
             log = root / "systemctl.log"
-            (bin_dir / "systemctl").write_text(f'#!/bin/sh\necho "$*" >> "{log}"\n')
+            # Like systemctl, refuse a unit that has no file.
+            (bin_dir / "systemctl").write_text(f"""#!/bin/sh
+echo "$*" >> "{log}"
+for unit in "$@"; do
+  case "$unit" in *.timer|*.service) [ -e "{units}/$unit" ] || exit 1;; esac
+done
+""")
             (bin_dir / "systemctl").chmod(0o755)
             env = {"HOME": str(home), "PATH": f"{bin_dir}:/usr/bin:/bin"}
             runs = [subprocess.run(["sh", str(checkout / "scripts/retire-status-timer.sh")], env=env,
                                    capture_output=True, text=True, check=True) for _ in range(2)]
 
             self.assertEqual(log.read_text().splitlines(), [
-                "--user disable --now llm-gateway-status.timer llm-gateway-status.service",
+                "--user disable --now " + " ".join(sorted(present, reverse=True)),
                 "--user daemon-reload"])
             self.assertEqual(sorted(p.name for p in units.iterdir()), ["other.timer"])
             self.assertFalse((checkout / "data/status").exists())

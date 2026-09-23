@@ -26,7 +26,7 @@ _Avoid_: Dashboard, admin UI, launchpad
 The public Status v2 file bootstrap writes after readiness and the Stack Gateway serves at
 `/status.json` in every access mode: each component's configured image and version, whether
 the selected profiles enable it, its health path, application origins, and the newest
-Checkpoint time. It records configuration, never observed runtime state.
+Checkpoint time at that bootstrap. It records configuration, never observed runtime state.
 _Avoid_: Status observation, versions file
 
 **Local Mode**:

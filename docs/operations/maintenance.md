@@ -31,7 +31,8 @@ client, in every access mode, with `Cache-Control: no-store`. It follows Status 
 [conventions](../conventions.md): the configured image of each component without its
 digest, the tag as `version` (null for a tag that is not a release), whether the selected
 Compose profiles enable the service, the LiteLLM, Langfuse and S3 origins, and the time of
-the newest Checkpoint in `LG_BACKUP_DIR`. It is configuration, not observation: a version
+the newest Checkpoint in `LG_BACKUP_DIR` when bootstrap ran; later Checkpoints do not
+update it. It is configuration, not observation: a version
 is what bootstrap configured, not what runs. Rerun bootstrap after changing images,
 origins or profiles. The document never contains secrets, container names or host paths.
 
