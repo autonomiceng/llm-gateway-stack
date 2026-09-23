@@ -80,8 +80,8 @@ holds the reserved address `172.30.0.2` outside the dynamic range. Whichever boo
 first creates the network with these parameters. Every bootstrap validates an existing
 network and refuses a different subnet or range, or a network with no IPAM configuration,
 with `platform_network_mismatch`. To repair a network created before this contract, stop
-every stack on it, run `docker network rm platform`, then rerun bootstrap. Every stack on the
-host must use the same values.
+every stack on it, run `docker network rm` on the network the error names (`LG_PLATFORM_NETWORK`,
+default `platform`), then rerun bootstrap. Every stack on the host must use the same values.
 
 Two stacks cannot both publish 80 and 443. On a shared host Platform Edge owns those ports,
 terminates TLS, and routes explicit application hostnames to `lg-gateway:80`.

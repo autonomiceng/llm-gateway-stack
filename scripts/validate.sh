@@ -138,7 +138,7 @@ echo "Caddyfile: PASS (16 configurations)"
 
 # The canonical contract lives in platform-edge; CI has no sibling checkout to compare with.
 sync="${PLATFORM_EDGE_DIR:-$root/../platform-edge}/scripts/sync-conventions.sh"
-if [[ -x "$sync" ]]; then
+if [[ -x "$sync" || -n "${PLATFORM_EDGE_DIR:-}" ]]; then
   "$sync" --check . >/dev/null
   echo "conventions: PASS (matches platform-edge)"
 else

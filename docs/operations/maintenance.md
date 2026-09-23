@@ -149,7 +149,9 @@ Before applying the Fable ingress changes to an existing installation, set a rea
 and append `UI_USERNAME=admin` and a generated `UI_PASSWORD` to the protected `.env`.
 Bootstrap refuses to invent missing credentials when data already exists. Use the same
 append-only secret-generation procedure above for `UI_PASSWORD` (24 random bytes).
-Keep the default `LG_TRUSTED_PROXIES` (Edge's reserved address) behind the edge and choose specific
+Behind the edge, set `LG_TRUSTED_PROXIES=172.30.0.2/32` (Edge's reserved address) or delete the line to
+use that default. Bootstrap keeps a nonempty older value, such as a subnet or a discovered Edge IP,
+and refuses one that overlaps the dynamic range. Choose specific
 operator addresses for `LG_OPERATOR_ALLOW` and scraper addresses for `LG_CHECKPOINT_ALLOW`; see [ingress](ingress.md).
 
 After completing the exporter role setup and credentials, run bootstrap and recreate the
