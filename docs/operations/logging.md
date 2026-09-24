@@ -1,5 +1,12 @@
 # Runtime logs and persistent data
 
+Where runtime logs go, what stays on disk on purpose, and the override for hosts without
+journald.
+
+- [Application audit](#application-audit)
+- [Intentional persistent state](#intentional-persistent-state)
+- [Hosts without journald](#hosts-without-journald)
+
 The deployment default is Docker's `journald` driver for every service, with
 `cache-disabled: "true"`. It requires a Linux Docker host with journald available.
 There is no remote logging driver and no dependency on Alloy, Loki or the observability
@@ -50,6 +57,20 @@ continuous server text-log duplicate is disabled. Langfuse owns its application 
 No local DDL, table cleanup or volume deletion accompanies this logging change.
 Loki storage, when an external observability stack is installed, is that stack's product
 state and retention policy.
+
+## Verification and troubleshooting
+
+`docker compose logs --tail=20 caddy` must print JSON lines, and
+`journalctl CONTAINER_NAME="$(docker compose ps --format '{{.Name}}' caddy)" -n 20` must show
+the same lines (`llm-gateway-stack-caddy-1` with the default project name).
+Access log entries must carry no headers and a `?REDACTED` query string.
+
+| Symptom | Cause and fix |
+| --- | --- |
+| `docker compose up` fails with `journald` driver errors | The host has no journald (non-systemd host, or Docker in a container). Use the override below. |
+| `docker compose logs` shows nothing from before the last reboot | The journal is volatile (`Storage=volatile`), so entries did not survive the reboot; host policy, not the stack. |
+| Older entries are missing within one boot | Journal retention or size limits dropped them; host policy, not the stack. |
+| Loki shows no `compose_project="llm-gateway-stack"` stream | Alloy is not running or has no Docker discovery on this host; the stack does not depend on it. |
 
 ## Hosts without journald
 

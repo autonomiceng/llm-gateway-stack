@@ -3,7 +3,16 @@
 One host, one Compose project: an OpenAI-compatible gateway with keys, budgets and routing in
 front of any provider, and full tracing of every call, for people and for agents.
 
-Status: accepted 2026-09-17. Decisions live in adr/. Vocabulary lives in `../CONTEXT.md`. This document is the map.
+Status: accepted 2026-09-17. Decisions live in `adr/`. Vocabulary lives in `../CONTEXT.md`.
+This document is the map; the runbooks in `operations/` hold the procedures.
+
+- [Why it exists](#why-it-exists)
+- [Guarantees](#guarantees)
+- [Shape](#shape)
+- [Access modes](#access-modes)
+- [Operations](#operations)
+- [Stack](#stack)
+- [Explicitly not built](#explicitly-not-built)
 
 ## Why it exists
 
@@ -13,12 +22,12 @@ goes wrong, and a key rotation that touches every consumer. The gateway gives th
 one virtual key each, and a trace for every request. Self-hosted, because prompts and
 responses are the most sensitive data most teams have.
 
-## Guarantees, stated exactly
+## Guarantees
 
 - Every request through the gateway is authenticated by a LiteLLM key and produces a
   Langfuse trace with cost, latency and the caller's identity. Budgets and rate limits are
   per key and are set when the key is created; the master key has none. The operator
-  creates consumer keys before handing out access (docs/operations/keys.md).
+  creates consumer keys before handing out access ([keys](operations/keys.md)).
 - A fresh install on a clean host is one command and takes minutes, with no provider
   credentials required to prove it works.
 - A Checkpoint restores the whole stack to a consistent point: traces, media, keys, spend.
@@ -73,36 +82,34 @@ ingestion queue in the same Valkey instance. LiteLLM sends spans to Langfuse ove
 
 `LG_ACCESS_MODE` selects Local, Public or Proxy Mode. Local Mode serves HTTP and
 private-CA HTTPS on loopback, without redirects or HSTS. Public Mode uses ACME and
-redirects HTTP except root health probes. `LG_TLS_ISSUER` can replace the mode's issuer
-with a private ACME directory or operator certificate files. Proxy Mode listens on HTTP behind Platform
-Edge with no published HTTPS port. Bootstrap records the matching small Compose override
-in a literal `COMPOSE_FILE`; the application and datastore topology stays in `compose.yaml`
-(ADR-0015).
-Application origins are configured independently of the listener scheme and request Host.
-See [ingress](operations/ingress.md) for ports, explicit application hostnames and trust.
+redirects HTTP except root health probes. Proxy Mode listens on HTTP behind Platform Edge
+or another gateway with no published HTTPS port. `LG_TLS_ISSUER` can replace the mode's
+issuer with a private ACME directory or operator certificate files. Bootstrap records the
+matching small Compose overlays in a literal `COMPOSE_FILE`; the application and datastore
+topology stays in `compose.yaml` (ADR-0015). Application URLs are configured independently
+of the listener scheme and request Host. See [ingress](operations/ingress.md) for ports,
+hostnames, Tailscale and trust.
 
 ## Operations
 
-- Public status: bootstrap writes the Status v2 document to `data/console/status.json`
-  after readiness; Caddy serves it at `/status.json` and each component's liveness at
-  `/health/<component>`. No host observer or timer. See
-  [maintenance](operations/maintenance.md#status-document).
-
 - Bootstrap: `scripts/bootstrap.py`. Generates secrets once, refuses to invent secrets over
   existing data, records the Compose files and defaults direct Compose needs, creates or
-  validates the platform network allocation, starts the stack, waits for readiness. A clean
-  clone starts in Local Mode without edits.
-  Newly created external volumes carry the Compose project label so interrupted installs
-  can identify them. Existing volumes retain their names, labels and contents.
+  validates the Platform Network allocation, starts the stack, waits for readiness, then
+  writes the Status Document. A clean clone starts in Local Mode without edits. Newly
+  created external volumes carry the Compose project label so interrupted installs can
+  identify them; existing volumes keep their names, labels and contents.
+- Status: Caddy serves the Status Document at `/status.json` and each component's liveness
+  at `/health/<component>`. No host observer or timer. See
+  [status document](operations/maintenance.md#status-document).
 - Validate: `scripts/validate.sh` for static checks; `scripts/smoke.sh` boots the pinned
   images and proves the Smoke Contract.
-- Backup and restore: `scripts/backup.sh`, `scripts/restore.sh`, `docs/operations/backup.md`.
-  Every Checkpoint is fenced. Backups default to `./backups`; Local Mode warns when they share
-  the Postgres filesystem, Public and Proxy Mode refuse that without an explicit opt-in.
-- Upgrades: Renovate proposes, the smoke contract gates, `docs/operations/maintenance.md`
+- Backup and restore: `scripts/backup.sh`, `scripts/restore.sh`, [backup](operations/backup.md).
+  Every Checkpoint is fenced. Backups default to `./backups`; Local Mode warns when they
+  share the Postgres filesystem, Public and Proxy Mode refuse that without an explicit opt-in.
+- Upgrades: Renovate proposes, the smoke contract gates, [maintenance](operations/maintenance.md)
   tells the operator what a major changes and where the rollback boundary is.
-- Observability: runtime logs go to the host journal with no Docker file cache.
-  Alloy collection and metrics scraping are optional; startup has no observability-stack
+- Observability: runtime logs go to the host journal with no Docker file cache. Alloy
+  collection and metrics scraping are optional; startup has no observability-stack
   dependency. Scrapers read LiteLLM and Checkpoint metrics from the gateway's unpublished
   port 8081; the datastore exporters start only with the `metrics` Compose profile, which
   bootstrap records when `LG_METRICS=true`. LLM traces live in Langfuse. See
@@ -111,9 +118,9 @@ See [ingress](operations/ingress.md) for ports, explicit application hostnames a
 ## Stack
 
 Caddy 2.11, LiteLLM 1.101, Langfuse 4.37, PostgreSQL 18, ClickHouse 26.8 LTS, RustFS 1.0,
-Valkey 9.1. Default images are pinned by digest in `compose.yaml`; optional `LG_*_IMAGE` settings
-replace complete references through native Compose interpolation. Python 3 standard library for scripts.
-No repository build step; prepare operator images separately.
+Valkey 9.1. Default images are pinned by digest in `compose.yaml`; optional `LG_*_IMAGE`
+settings replace complete references through native Compose interpolation. Python 3
+standard library for scripts. No repository build step; prepare operator images separately.
 
 ## Explicitly not built
 

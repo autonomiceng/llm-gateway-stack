@@ -8,6 +8,17 @@ One URL for every model, one key per app or agent, and a trace for every call. S
 [![Langfuse 4.37](https://img.shields.io/badge/Langfuse-4.37-informational)](https://github.com/langfuse/langfuse)
 [![PostgreSQL 18](https://img.shields.io/badge/PostgreSQL-18-4169E1)](https://www.postgresql.org)
 
+- [What it is](#what-it-is)
+- [Quick start](#quick-start)
+- [Access modes](#access-modes)
+- [What's inside](#whats-inside)
+- [Upgrade](#upgrade)
+- [Day two](#day-two)
+- [The other stacks](#the-other-stacks)
+- [Development](#development)
+- [Security](#security)
+- [License](#license)
+
 ## What it is
 
 You have agents, scripts and internal tools that all need an LLM. Handing each one a provider key means no budgets, no idea who spent what, and a painful rotation. This stack puts [LiteLLM](https://github.com/BerriAI/litellm) in front of your providers and [Langfuse](https://github.com/langfuse/langfuse) behind it.
@@ -25,7 +36,7 @@ git clone https://github.com/autonomiceng/llm-gateway-stack.git && cd llm-gatewa
 python3 scripts/bootstrap.py
 ```
 
-Bootstrap writes `.env` from `.env.example` with generated secrets, creates the shared `platform` network, starts everything, waits for it to be healthy and prints the links and the Langfuse login. About a minute after the images are pulled.
+Bootstrap writes `.env` from `.env.example` with generated secrets, creates the shared `platform` network, starts everything, waits for it to be healthy and prints the links and the Langfuse login. It takes about a minute after the images are pulled.
 
 On a laptop that is all: Local Mode logs in to Langfuse as `admin@localhost.test` and keeps backups in `./backups`, warning that they share the disk with the data. For a server, copy `.env.example` to `.env` first and set `LANGFUSE_INIT_USER_EMAIL`, the access mode and an `LG_BACKUP_DIR` on a separate mounted filesystem; Public and Proxy Mode refuse backups on the Postgres filesystem unless `LG_ALLOW_SAME_FILESYSTEM_BACKUP=true`.
 
@@ -47,7 +58,19 @@ curl -s http://litellm.localhost/v1/chat/completions \
 
 Log in to Langfuse with `LANGFUSE_INIT_USER_EMAIL` and `LANGFUSE_INIT_USER_PASSWORD` from `.env`. The trace is there. Add real models in `config.yaml`, put their keys in `.env`, and run `docker compose up -d litellm`. The master key has no budget; before handing out access, create per-consumer keys with limits as shown in [keys and budgets](docs/operations/keys.md).
 
-Local Mode serves HTTP and self-signed HTTPS without redirecting HTTP or telling browsers to require HTTPS. To put it on the internet, set `LG_ACCESS_MODE=public`, a domain and a public bind address in `.env`. Choose `LG_ACCESS_MODE=proxy` when Platform Edge or another gateway handles HTTPS; behind Edge also set `LG_HTTP_PORT=18080`, and the default `LG_TRUSTED_PROXIES=172.30.0.2/32` already trusts Edge's reserved address. Details in [ingress](docs/operations/ingress.md). For a private ACME CA or certificate files from your own PKI, set `LG_TLS_ISSUER` as described in [corporate certificates and private ACME](docs/operations/ingress.md#corporate-certificates-and-private-acme). Linux journald receives runtime logs; optional Alloy collection and portability are covered in [logging](docs/operations/logging.md).
+## Access modes
+
+`LG_ACCESS_MODE` in `.env` selects how the stack is reached. Rerun `python3 scripts/bootstrap.py` after changing it. Details and every setting are in the [ingress runbook](docs/operations/ingress.md).
+
+| You want | Settings | Read |
+| --- | --- | --- |
+| Localhost only (default) | `LG_ACCESS_MODE=local`; HTTP and self-signed HTTPS on loopback, no redirects | [Local Mode](docs/operations/ingress.md#local-mode-default) |
+| Private access from your devices over Tailscale | `LG_ACCESS_MODE=proxy`, one `LG_*_URL` per application, host `tailscale serve` | [Tailscale](docs/operations/ingress.md#tailscale) |
+| Public hostname with Let's Encrypt | `LG_ACCESS_MODE=public`, `LG_PUBLIC_DOMAIN`, `LG_BIND_HOST=0.0.0.0` | [Public Mode](docs/operations/ingress.md#public-mode) |
+| Corporate CA or certificate files | `LG_TLS_ISSUER=acme` with `LG_ACME_CA`, or `LG_TLS_ISSUER=files` with `LG_TLS_DIR` | [Corporate certificates](docs/operations/ingress.md#corporate-certificates-and-private-acme) |
+| Behind Platform Edge on a shared host | `LG_ACCESS_MODE=proxy`, `LG_HTTP_PORT=18080`; Edge's bundle installer writes these | [Shared host](docs/operations/ingress.md#shared-host) |
+
+Runtime logs go to Linux journald; optional Alloy collection and portability are covered in [logging](docs/operations/logging.md).
 
 ## What's inside
 
@@ -61,9 +84,7 @@ Local Mode serves HTTP and self-signed HTTPS without redirecting HTTP or telling
 | RustFS | S3-compatible store for events, media, exports | volume |
 | Valkey | Ingestion queue and cache, `noeviction`, AOF | volume |
 
-Default images are pinned as `tag@sha256` in `compose.yaml`.
-Override any service with its complete `LG_*_IMAGE` reference in `.env`; see
-[image overrides](docs/operations/maintenance.md#image-overrides). Renovate opens the bump; a human merges it after the smoke test passes.
+Default images are pinned as `tag@sha256` in `compose.yaml`. Override any service with its complete `LG_*_IMAGE` reference in `.env`; see [image overrides](docs/operations/maintenance.md#image-overrides). Renovate opens the bump; a human merges it after the smoke test passes.
 
 ## Upgrade
 
@@ -74,20 +95,17 @@ docker compose pull
 python3 scripts/bootstrap.py
 ```
 
-`git pull` brings new pins and configuration (once, for an installation from before the literal `COMPOSE_FILE`, run `python3 scripts/bootstrap.py --render-only` next so Compose finds its files; see [maintenance](docs/operations/maintenance.md)); `docker compose pull` fetches the pinned images; bootstrap records any new setting, recreates what changed and waits for health. The pins in `compose.yaml` are the versions the smoke test passed. An `LG_*_IMAGE` value in `.env` is your own experiment: it replaces the pin until you remove it, and upgrades do not touch it. Read [maintenance](docs/operations/maintenance.md) before a major version of Postgres, ClickHouse or Langfuse; those are one-way for data.
+`git pull` brings new pins and configuration (an installation from before the literal `COMPOSE_FILE` runs `python3 scripts/bootstrap.py --render-only` once before `docker compose pull`; see [older installations](docs/operations/maintenance.md#older-installations)); `docker compose pull` fetches the pinned images; bootstrap records any new setting, recreates what changed and waits for health. The pins in `compose.yaml` are the versions the smoke test passed. An `LG_*_IMAGE` value in `.env` is your own experiment: it replaces the pin until you remove it, and upgrades do not touch it. Read [maintenance](docs/operations/maintenance.md) before a major version of Postgres, ClickHouse or Langfuse; those are one-way for data.
 
-## Built on
+## Day two
 
-| Project | Stars | What we use it for |
-| --- | --- | --- |
-| [LiteLLM](https://github.com/BerriAI/litellm) | ![stars](https://img.shields.io/github/stars/BerriAI/litellm?style=flat) | OpenAI-compatible proxy, virtual keys, budgets, routing |
-| [Langfuse](https://github.com/langfuse/langfuse) | ![stars](https://img.shields.io/github/stars/langfuse/langfuse?style=flat) | Tracing, evals, prompt management |
-| [Caddy](https://github.com/caddyserver/caddy) | ![stars](https://img.shields.io/github/stars/caddyserver/caddy?style=flat) | Ingress and automatic HTTPS |
-| [PostgreSQL](https://github.com/postgres/postgres) | ![stars](https://img.shields.io/github/stars/postgres/postgres?style=flat) | Relational state for both apps |
-| [ClickHouse](https://github.com/ClickHouse/ClickHouse) | ![stars](https://img.shields.io/github/stars/ClickHouse/ClickHouse?style=flat) | Trace analytics for Langfuse |
-| [RustFS](https://github.com/rustfs/rustfs) | ![stars](https://img.shields.io/github/stars/rustfs/rustfs?style=flat) | S3-compatible object storage |
-| [Valkey](https://github.com/valkey-io/valkey) | ![stars](https://img.shields.io/github/stars/valkey-io/valkey?style=flat) | Queue and cache |
-| [Docker Compose](https://github.com/docker/compose) | ![stars](https://img.shields.io/github/stars/docker/compose?style=flat) | Running it all |
+- [Ingress and access modes](docs/operations/ingress.md)
+- [Consumer keys and budgets](docs/operations/keys.md)
+- [Backup, restore and the monthly drill](docs/operations/backup.md)
+- [Maintenance and version bumps](docs/operations/maintenance.md)
+- [Runtime logs](docs/operations/logging.md)
+- [Host sizing](docs/operations/capacity.md)
+- [Design](docs/DESIGN.md), [vocabulary](CONTEXT.md), [decisions](docs/adr/)
 
 ## The other stacks
 
@@ -99,14 +117,6 @@ This is one of four repos that deploy the same way and work together on one host
 
 Each runs alone. Shared conventions are in [docs/conventions.md](docs/conventions.md).
 
-## Day two
-
-- [Ingress and access modes](docs/operations/ingress.md)
-- [Backup, restore and the monthly drill](docs/operations/backup.md)
-- [Maintenance and version bumps](docs/operations/maintenance.md)
-- [Host sizing](docs/operations/capacity.md)
-- [Design](docs/DESIGN.md), [vocabulary](CONTEXT.md), [decisions](docs/adr/)
-
 ## Development
 
 ```sh
@@ -116,7 +126,7 @@ scripts/smoke.sh                       # boots a disposable copy and proves it w
 scripts/backup-drill.sh                # backup, wipe, restore, verify
 ```
 
-CI runs the first two on every push and the smoke test on every PR, weekly, and on demand. See [CONTRIBUTING.md](CONTRIBUTING.md).
+CI runs the first two on every push and the smoke test and recovery drill on every PR, weekly, and on demand. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Security
 

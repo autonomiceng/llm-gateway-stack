@@ -4,7 +4,7 @@ status: accepted
 
 # Set the durability contract
 
-Safe Upgrades target an RPO of zero: ingestion is stopped and the operator attests that
+Safe Upgrades target an RPO of zero: ingestion is stopped and the operator confirms that
 a usable recovery point exists before persistent data is migrated. Tooling must warn
 and document recovery options, but operators may explicitly choose an Unprotected
 Upgrade; doing so waives the stack's durability and rollback claims. Unexpected host

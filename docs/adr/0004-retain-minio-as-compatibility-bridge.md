@@ -14,4 +14,4 @@ supports another self-hosted store, RustFS reaches GA and passes that contract, 
 unpatched MinIO vulnerability forces action; any retained image remains pinned by a
 validated version or digest. The real installation runs `cgr.dev/chainguard/minio` on a
 floating `latest`; Stack Adoption resolves it to the pinned official image at an
-equal-or-newer MinIO release — object-store downgrades are never part of adoption.
+equal-or-newer MinIO release; object-store downgrades are never part of adoption.

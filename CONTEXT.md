@@ -1,83 +1,63 @@
 # LLM Gateway Stack
 
-This glossary defines the operational language for the self-hosted LiteLLM and Langfuse
-stack and the promises it makes to operators.
+The terms this repository uses, one sentence each. Use these words in code, docs and
+commits; avoid the listed alternatives.
 
-## Language
+**Reference Stack**: a production-capable single-host deployment with secure defaults,
+durable local data and tested backup, restore and upgrade procedures, without high
+availability, zero-downtime upgrades or failover.
+_Avoid_: production distribution, demo stack, highly available stack
 
-**Reference Stack**:
-A production-capable, single-host deployment with secure defaults, durable local data, and
-tested backup, restore, and upgrade procedures. It does not promise high availability,
-zero-downtime upgrades, automated failover, or SLA-backed support.
-_Avoid_: Production distribution, demo stack, highly available stack
+**Stack Gateway**: the Caddy instance that is the only published network entry, routing
+by hostname to every application and serving the Stack Console.
+_Avoid_: landing page, service router, public port set
 
-**Stack Gateway**:
-The Caddy instance that is the only published network entry to the Reference Stack. It
-routes by hostname to every application and serves the Stack Console.
-_Avoid_: Landing page, service router, public port set
+**Stack Console**: the page the Stack Gateway serves at the root hostname, with links to
+every application, live health and the configured versions from the Status Document, with
+no login and no write actions.
+_Avoid_: dashboard, admin UI, launchpad
 
-**Stack Console**:
-The page the Stack Gateway serves at the root hostname: links to every application, live
-health, and the configured image versions from the Status Document. It has no login and
-no write actions.
-_Avoid_: Dashboard, admin UI, launchpad
+**Status Document**: the public Status v2 file bootstrap writes after readiness and the
+Stack Gateway serves at `/status.json`, recording each component's configured image,
+version, profile state and health path, never observed runtime state.
+_Avoid_: status observation, versions file
 
-**Status Document**:
-The public Status v2 file bootstrap writes after readiness and the Stack Gateway serves at
-`/status.json` in every access mode: each component's configured image and version, whether
-the selected profiles enable it, its health path, application origins, and the newest
-Checkpoint time at that bootstrap. It records configuration, never observed runtime state.
-_Avoid_: Status observation, versions file
+**Local Mode**: the default access mode, serving HTTP and HTTPS (internal CA by default)
+on loopback without redirects or HSTS, so a clean clone starts without edits.
+_Avoid_: development mode, insecure mode
 
-**Local Mode**:
-The default access mode: HTTP and HTTPS on loopback, without redirects or HSTS. HTTPS uses
-the internal CA unless another Issuer is selected.
-Application origins use HTTP by default and keep explicit hostnames. A clean clone starts in
-it without edits; backups may share the Postgres filesystem, with a warning.
-_Avoid_: Development mode, insecure mode
+**Public Mode**: the access mode for public DNS hostnames, with HTTPS redirects and
+certificates from ACME by default.
+_Avoid_: TLS mode, production mode
 
-**Public Mode**:
-The access mode for public DNS hostnames with HTTPS redirects. Certificates come from ACME
-by default. Application and datastore ports stay private.
-_Avoid_: TLS Mode, production mode
-
-**Issuer**:
-The source of the Stack Gateway's HTTPS certificates, selected by `LG_TLS_ISSUER`
-independently of the access mode: Caddy's internal CA, an ACME directory, or operator
-certificate files.
-_Avoid_: Certificate mode, TLS provider
-
-**Proxy Mode**:
-The access mode behind Platform Edge: the Stack Gateway listens on HTTP and trusts only
-configured proxies, while application origins retain their configured external scheme.
+**Proxy Mode**: the access mode behind Platform Edge or another gateway, listening on HTTP
+only and trusting the configured proxies while application URLs keep their external scheme.
 _Avoid_: TLS passthrough, shared certificates
 
-**Pinned Version**:
-The default image reference in `compose.yaml`, written as tag plus digest inside an
-`LG_*_IMAGE` fallback. It is the newest stable release of that component that has passed
-the smoke contract. Operator image overrides are separate from the Pinned Version.
-_Avoid_: Latest, floating tag, release manifest
+**Issuer**: the source of the Stack Gateway's HTTPS certificates, selected by
+`LG_TLS_ISSUER` independently of the access mode: Caddy's internal CA, an ACME directory,
+or operator certificate files.
+_Avoid_: certificate mode, TLS provider
 
-**Smoke Contract**:
-The executable check that a fresh install of the pinned versions is usable: every service
-healthy, a completion through the gateway, its trace visible in Langfuse, metrics exposed,
-object storage round-trips, and the queue surviving a restart. Passing it is what makes a
-version a Pinned Version.
-_Avoid_: Validation ladder, rehearsal, CI
+**Pinned Version**: the default image reference in `compose.yaml`, written as tag plus
+digest inside an `LG_*_IMAGE` fallback, being the newest stable release that passed the
+Smoke Contract.
+_Avoid_: latest, floating tag, release manifest
 
-**Checkpoint**:
-One consistent backup set across Postgres, ClickHouse, object storage and configuration,
-taken with ingestion fenced; there is no unfenced capture. The unit of restore and the
-rollback boundary before a persistent change.
-_Avoid_: Recovery point, snapshot, dump
+**Smoke Contract**: the executable check (`scripts/smoke.sh`) that a fresh install of the
+Pinned Versions is usable: every service healthy, a completion through the gateway, its
+trace in Langfuse, metrics exposed, object storage round-trips, the queue surviving a restart.
+_Avoid_: validation ladder, rehearsal, CI
 
-**Platform Network**:
-The Docker network named `platform` shared by the four repos on one host (see `docs/conventions.md`), with the
-fixed allocation `172.30.0.0/24` and Platform Edge at the reserved address `172.30.0.2`. Only ingress
-targets and metrics endpoints join it, under stack-prefixed aliases.
-_Avoid_: Default network, bridge, mesh
+**Checkpoint**: one consistent backup set across Postgres, ClickHouse, object storage and
+configuration, taken with ingestion fenced, and the unit of restore and rollback.
+_Avoid_: recovery point, snapshot, dump
 
-**Experience Change**:
-A release change that intentionally alters operator- or caller-visible behavior even when
-service interfaces stay compatible. Release notes name it and its rollback.
-_Avoid_: Internal change, transparent upgrade, breaking change
+**Platform Network**: the external Docker network `platform` shared by the four stacks on
+one host, with the fixed allocation `172.30.0.0/24` and Platform Edge at `172.30.0.2`,
+joined only by ingress targets and metrics endpoints under stack-prefixed aliases.
+_Avoid_: default network, bridge, mesh
+
+**Experience Change**: a release change that intentionally alters what an operator or a
+caller sees even when interfaces stay compatible, named with its rollback in the release notes.
+_Avoid_: internal change, transparent upgrade, breaking change
