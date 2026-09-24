@@ -30,8 +30,9 @@ Decision:
   `noeviction`, AOF, a TTL on every LiteLLM key and memory headroom.
 - Postgres 18, host path mounted at `/var/lib/postgresql` per the image layout.
 - Langfuse 4 in `events_only` mode; LiteLLM reports through `langfuse_otel`.
-- Migration of the pre-2026 production installation is a separate effort with its own
-  handoff document. This repo does not ship adoption tooling.
+- Migration of the pre-2026 production installation was a separate effort with its own
+  handoff document, since removed (see the 2026-09-24 amendment). This repo does not ship
+  adoption tooling.
 
 Amended 2026-09-20: every service, including helpers, accepts an optional complete image
 reference in `.env` through native Compose interpolation. Empty values use the unchanged
