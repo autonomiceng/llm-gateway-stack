@@ -732,8 +732,9 @@ def bootstrap(argv: list[str], runner: Runner = run) -> int:
             write_env(env_file, read_env(env_file)[0], template, {"COMPOSE_FILE": selected_files})
         # A shell LG_METRICS is saved with the recorded profiles it selects; a shell
         # COMPOSE_PROFILES applies to this run only.
-        metrics = settings.get("LG_METRICS", "")
-        changes = {"LG_METRICS": metrics.lower()} if metrics != recorded_metrics else {}
+        # Empty selects the default, like other LG_ settings; save the value it resolves to.
+        metrics = (settings.get("LG_METRICS") or "false").lower()
+        changes = {"LG_METRICS": metrics} if metrics != (recorded_metrics or "false").lower() else {}
         saved_profiles = compose_profiles({"LG_METRICS": metrics, "COMPOSE_PROFILES": recorded_profiles})
         if saved_profiles != recorded_profiles:
             changes["COMPOSE_PROFILES"] = saved_profiles
