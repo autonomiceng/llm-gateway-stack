@@ -209,7 +209,10 @@ run after an uncatchable kill.
 
 Fence the old installation and all its writers first. Keep its data and archive intact.
 Use the exact immutable image references recorded in the manifest, setting the matching
-`LG_*_IMAGE` variables in the target `.env` when needed. Tag overrides are captured as
+`LG_*_IMAGE` variables in the target `.env` when needed. The recorded images include the
+datastore exporters when the source ran them, which is every Checkpoint taken before the
+`metrics` profile existed; set `LG_METRICS=true` and `COMPOSE_PROFILES=metrics` in the target
+`.env` to restore those. Tag overrides are captured as
 registry digest references; restore refuses mutable tags even when they currently resolve
 to the right content. Existing v1 Checkpoints with digest pins remain supported.
 Restore refuses a running project,

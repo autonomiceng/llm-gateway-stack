@@ -274,8 +274,13 @@ to `/metrics/litellm` before LiteLLM leaves that network.
 
 The datastore exporters run only with the Compose profile `metrics`. Set `LG_METRICS=true`
 and rerun bootstrap; it records `metrics` in `COMPOSE_PROFILES` and keeps any other profiles
-listed there. Platform Edge's bundle installer sets `LG_METRICS=true` when Observability is
-selected. Setting it back to `false` leaves running exporters in place until
+listed there. A shell `LG_METRICS` that differs from the saved value is saved with the
+profile. Set `LG_METRICS=true` whenever Observability scrapes this stack; Platform Edge's
+bundle installer owns this setting when Observability is selected, and until the installed
+Edge sets it, set it yourself. Bootstrap never removes running exporters, and a Checkpoint refuses a running
+container its selected profiles do not include. After setting `LG_METRICS=false`, or when
+upgrading an installation whose exporters predate the profile, either keep them with
+`LG_METRICS=true` and a bootstrap run before the next Checkpoint, or remove them:
 `docker compose --profile metrics rm --stop --force valkey-exporter postgres-exporter`.
 The observability stack must configure both 8081 scrapes plus
 `lg-valkey-exporter:9121` (job `llm-gateway-valkey`) and `lg-postgres-exporter:9187`

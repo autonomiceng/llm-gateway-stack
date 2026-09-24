@@ -678,6 +678,7 @@ def bootstrap(argv: list[str], runner: Runner = run) -> int:
         }
         recorded_files = settings.get("COMPOSE_FILE", COMPOSE_FILE)
         recorded_profiles = settings.get("COMPOSE_PROFILES", "")
+        recorded_metrics = settings.get("LG_METRICS", "")
         # Match Compose's shell precedence for operator settings as well as secrets.
         settings.update({key: value for key, value in os.environ.items()
                          if key in settings or key.startswith("LG_") or key in ("COMPOSE_FILE", "COMPOSE_PROFILES")})
@@ -731,8 +732,14 @@ def bootstrap(argv: list[str], runner: Runner = run) -> int:
             write_env(env_file, read_env(env_file)[0], template, {"COMPOSE_FILE": selected_files})
         if "COMPOSE_PROFILES" in os.environ:
             os.environ["COMPOSE_PROFILES"] = selected_profiles
-        elif selected_profiles != recorded_profiles:
-            write_env(env_file, read_env(env_file)[0], template, {"COMPOSE_PROFILES": selected_profiles})
+        else:
+            # A shell LG_METRICS is saved with the profile it selects, so the next run keeps both.
+            metrics = settings.get("LG_METRICS", "")
+            changes = {"LG_METRICS": metrics.lower()} if metrics != recorded_metrics else {}
+            if selected_profiles != recorded_profiles:
+                changes["COMPOSE_PROFILES"] = selected_profiles
+            if changes:
+                write_env(env_file, read_env(env_file)[0], template, changes)
         if args.render_only:
             print(json.dumps({"env": str(env_file), "project": project, "generated": sorted(missing)}))
             return 0

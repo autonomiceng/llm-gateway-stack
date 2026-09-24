@@ -669,6 +669,12 @@ sys.exit(19)
             self.render()
             self.assertEqual(os.environ["COMPOSE_PROFILES"], "trial,metrics")
         self.assertEqual(profiles()[-1], "COMPOSE_PROFILES=debug")
+        # A shell selection is saved with its profile; the next plain run keeps it.
+        with patch.dict(os.environ, {"LG_METRICS": "TRUE"}):
+            self.render()
+        self.render()
+        self.assertEqual(profiles()[-1], "COMPOSE_PROFILES=debug,metrics")
+        self.assertEqual(re.findall(r"^LG_METRICS=.*$", self.env.read_text(), re.M)[-1], "LG_METRICS=true")
         with patch.dict(os.environ, {"LG_METRICS": "yes"}), self.assertRaises(bootstrap.Refused) as raised:
             self.render()
         self.assertEqual(raised.exception.code, "invalid_settings")
