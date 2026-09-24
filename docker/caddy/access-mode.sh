@@ -17,10 +17,12 @@ esac
 case "$LG_ACCESS_MODE" in
   local)
     [ "$LG_LISTEN_SCHEME" = dual ] || refuse "local requires both HTTP and HTTPS"
+    case "$LG_TLS_ISSUER" in internal|files) ;; *) refuse "local requires LG_TLS_ISSUER internal or files" ;; esac
     ;;
   public)
     [ "$LG_SCHEME" = https ] && [ "$LG_LISTEN_SCHEME" = https ] || refuse "public requires trusted HTTPS; include compose.public.yaml"
     case "$LG_PUBLIC_DOMAIN" in localhost|*.localhost|127.*|*:*|"") refuse "public requires a DNS domain" ;; esac
+    case "$LG_TLS_ISSUER" in acme|files) ;; *) refuse "public requires LG_TLS_ISSUER acme or files" ;; esac
     ;;
   proxy)
     # Reject native and IPv4-mapped wildcard spellings, including compressed IPv6.

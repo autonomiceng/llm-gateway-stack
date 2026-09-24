@@ -409,8 +409,8 @@ def access_settings(settings: dict[str, str]) -> dict[str, str]:
     values["LG_LISTEN_SCHEME"] = listener
     values["LG_TLS_ISSUER"] = tls_issuer(mode, values.get("LG_TLS_ISSUER", ""))
     values.setdefault("LG_PUBLIC_DOMAIN", "localhost")
-    # docker/caddy/access-mode.sh is the one validator of access settings and application
-    # origins; it refuses the same values here that it would refuse at container start.
+    # docker/caddy/access-mode.sh is the one validator of access settings, the issuer the
+    # mode accepts and application origins; it refuses here what it refuses at container start.
     access_keys = {"LG_ACCESS_MODE", "LG_BIND_HOST", "LG_SCHEME", "LG_PUBLIC_DOMAIN", "LG_PUBLIC_PORT_SUFFIX",
                    "LG_TRUSTED_PROXIES", "LG_LISTEN_SCHEME", "LG_TLS_ISSUER"}
     access_keys.update("LG_" + app + "_URL" for app in ("CONSOLE", "LITELLM", "LANGFUSE", "S3", "RUSTFS"))
@@ -423,9 +423,6 @@ def access_settings(settings: dict[str, str]) -> dict[str, str]:
     if origins.returncode:
         raise Refused("invalid_access_settings", origins.stderr.strip())
     values.update(json.loads(origins.stdout))
-    # Compose interpolates the raw .env value, so only names with a Caddy snippet may pass.
-    if values["LG_TLS_ISSUER"] not in {"local": ("internal", "files"), "public": ("acme", "files"), "proxy": ("",)}[mode]:
-        raise Refused("invalid_settings", "LG_TLS_ISSUER must be internal or files in local mode and acme or files in public mode")
     files = values.get("COMPOSE_FILE", COMPOSE_FILE).replace(MODE_TOKEN, mode).split(os.pathsep)
     if mode != "local" and not any(Path(name).name == f"compose.{mode}.yaml" for name in files):
         raise Refused("invalid_access_settings", f"COMPOSE_FILE must include compose.{mode}.yaml")

@@ -578,7 +578,9 @@ sys.exit(19)
         for mode, issuer in (("public", "internal"), ("local", "acme"), ("local", "none"), ("public", "self-signed")):
             with self.subTest(mode=mode, issuer=issuer), self.assertRaises(bootstrap.Refused) as raised:
                 bootstrap.access_settings({**base, "LG_ACCESS_MODE": mode, "LG_TLS_ISSUER": issuer})
-            self.assertEqual(raised.exception.code, "invalid_settings")
+            # The gateway entrypoint refuses the pair, so direct Compose starts are refused too.
+            self.assertEqual(raised.exception.code, "invalid_access_settings")
+            self.assertIn("LG_TLS_ISSUER", raised.exception.detail)
 
     def tls_settings(self, **values):
         return {"LG_ACCESS_MODE": "public", "LG_PUBLIC_DOMAIN": "gateway.test", "LG_TLS_ISSUER": "files",

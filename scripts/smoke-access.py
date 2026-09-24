@@ -46,7 +46,8 @@ class AccessSmoke(unittest.TestCase):
 import http.server, json, threading
 class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
-        self.send_response(200)
+        # The worker probe fails on purpose: the gateway must answer 503 and nothing else.
+        self.send_response(500 if self.server.server_port == 3030 else 200)
         self.send_header('Strict-Transport-Security', 'max-age=1000')
         self.send_header('X-Smoke-Upstream', str(self.server.server_port))
         self.send_header('X-Smoke-Path', self.path)
@@ -55,12 +56,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
     do_POST = do_GET
     def log_message(self, *args):
         pass
-for port in (3000, 9000, 9001):
+for port in (3000, 3030, 9000, 9001):
     threading.Thread(target=http.server.HTTPServer(('', port), Handler).serve_forever, daemon=True).start()
 http.server.HTTPServer(('', 4000), Handler).serve_forever()
 """
         docker("run", "-d", "--name", BACKEND, "--network", NETWORK,
-               "--network-alias", "litellm", "--network-alias", "langfuse-web", "--network-alias", "rustfs",
+               "--network-alias", "litellm", "--network-alias", "langfuse-web", "--network-alias", "langfuse-worker",
+               "--network-alias", "rustfs",
                "--log-driver", "journald", "--log-opt", "cache-disabled=true",
                "--entrypoint", "python3", IMAGES["litellm"], "-u", "-c", backend)
         cls.addClassCleanup(docker, "rm", "-f", BACKEND)
@@ -192,8 +194,10 @@ http.server.HTTPServer(('', 4000), Handler).serve_forever()
             # The stub answers every probe with a JSON body; none of it leaves the gateway.
             self.assertEqual(self.request("/health/litellm", host)[::2], (200, b""))
             self.assertEqual(self.request("/health/rustfs-console", host)[::2], (200, b""))
-            # Nothing answers at clickhouse:8123 in this stub network: a failed probe is 503.
+            # Nothing answers at clickhouse:8123 in this stub network and the worker stub answers
+            # 500: either failure is 503 with an empty body.
             self.assertEqual(self.request("/health/clickhouse", host)[::2], (503, b""))
+            self.assertEqual(self.request("/health/langfuse-worker", host)[::2], (503, b""))
             for sibling in ("backplane", "grafana", "unknown"):
                 self.assertEqual(self.request(f"/health/{sibling}", host)[::2], (404, b""))
         # Docker presents the bridge address, never loopback; the applications' own logins apply.
@@ -201,7 +205,8 @@ http.server.HTTPServer(('', 4000), Handler).serve_forever()
             status, headers, _ = self.request(path, "litellm.localhost")
             self.assertEqual((status, headers["X-Smoke-Upstream"]), (200, "4000"), path)
         self.assertEqual(self.request("/metrics", "litellm.localhost")[0], 404)
-        self.assertEqual(self.request("/health/readiness", "litellm.localhost")[::2], (200, b""))
+        for path in ("/health", "/health/readiness", "/api/public/health", "/api/public/ready"):
+            self.assertEqual(self.request(path, "litellm.localhost")[::2], (200, b""), path)
         self.assertEqual(self.request("/rustfs/console/", "rustfs.localhost")[1]["X-Smoke-Upstream"], "9001")
 
     def test_proxy_forwarding_and_http_only(self):
