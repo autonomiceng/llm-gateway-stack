@@ -22,8 +22,8 @@ that reads or writes `.env` keeps every unmanaged line as it was and appends, ne
 
 ## docker/caddy
 
-One Caddyfile for local, public and proxy modes; the template selects the matching small
-Compose override. Test a change with `caddy validate` in all modes (validate.sh does this)
+One Caddyfile for local, public and proxy modes; bootstrap records the matching small
+Compose override for public and proxy mode in `COMPOSE_FILE`. Test a change with `caddy validate` in all modes (validate.sh does this)
 and the isolated gateway contract in `scripts/smoke-access.py` (smoke.sh runs it).
 The console under
 `docker/caddy/console/` is static: no build step, no framework, no continuous animation.

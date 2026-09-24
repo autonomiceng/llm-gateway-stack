@@ -37,9 +37,14 @@ NETWORK = "platform"
 PLATFORM_SUBNET = "172.30.0.0/24"
 PLATFORM_IP_RANGE = "172.30.0.128/25"
 EDGE_PROXY = "172.30.0.2/32"
-MODE_TOKEN = "${LG_ACCESS_MODE:-local}"
-COMPOSE_FILE = f"compose.yaml:compose.{MODE_TOKEN}.yaml"
 TLS_OVERLAYS = ("compose.files.yaml", "compose.acme-ca-root.yaml", "compose.acme-eab.yaml")
+# Files bootstrap selects from the mode and issuer. Earlier templates recorded the mode as a
+# Compose token and shipped an empty compose.local.yaml; the next run replaces both.
+SELECTED_FILES = {"compose.local.yaml", "compose.public.yaml", "compose.proxy.yaml", *TLS_OVERLAYS}
+MODE_TOKEN_FILE = "compose.${LG_ACCESS_MODE:-local}.yaml"
+# Local Mode starts from a clean clone without edits; public and proxy installations set both.
+DEFAULT_BACKUP_DIR = "./backups"
+LOCAL_LOGIN = "admin@localhost.test"
 SAN_NAME = re.compile(r"DNS:([^,\s]+)")
 VOLUMES = ("clickhouse-data", "clickhouse-logs", "rustfs-data", "valkey-data", "caddy-data", "caddy-config")
 
@@ -68,8 +73,6 @@ PREFIXED: dict[str, tuple[str, int]] = {
 }
 # Settings with a default the template already carries; bootstrap never rewrites them.
 MANAGED = set(SECRETS) | set(PREFIXED) | {"UI_USERNAME"}
-# Compose project names of earlier generations whose data must not be silently reused.
-LEGACY_PROJECTS = ("llm-gateway", "litellm-langfuse")
 ENV_LINE = re.compile(r"^(?:export\s+)?(?P<key>[A-Z][A-Z0-9_]*)=(?P<value>.*)$")
 # Status v2 components (docs/conventions.md): the contract's stable ID, which is also the
 # Compose service, then display name, kind and the setting holding its browser or API origin.
@@ -158,15 +161,14 @@ def unquote(value: str) -> str:
 
 
 def backup_policy(settings: dict[str, str]) -> bool:
-    """Storage policy follows Compose precedence, including an explicitly empty shell value."""
+    """Whether backups may share the Postgres filesystem: in Local Mode, or by explicit opt-in.
+    Settings follow Compose precedence, including an explicitly empty shell value."""
     value = os.environ.get("LG_ALLOW_SAME_FILESYSTEM_BACKUP",
                            settings.get("LG_ALLOW_SAME_FILESYSTEM_BACKUP", "false"))
     if value not in ("true", "false"):
         raise Refused("invalid_backup_policy", "LG_ALLOW_SAME_FILESYSTEM_BACKUP must be true or false")
-    if value == "true":
-        print("WARNING: development same-filesystem backups enabled; disk loss affects both "
-              "live data and backups. This does not meet the production backup contract.", file=sys.stderr)
-    return value == "true"
+    mode = os.environ.get("LG_ACCESS_MODE", settings.get("LG_ACCESS_MODE")) or "local"
+    return value == "true" or mode == "local"
 
 
 def check_backup_storage(backups: Path, data: Path, allow_same_filesystem: bool = False) -> None:
@@ -179,8 +181,12 @@ def check_backup_storage(backups: Path, data: Path, allow_same_filesystem: bool 
     parent = data
     while not parent.exists():
         parent = parent.parent
-    if backups.stat().st_dev == parent.stat().st_dev and not allow_same_filesystem:
-        raise Refused("backup_dir_same_filesystem", "backup and Postgres data must use different filesystems")
+    if backups.stat().st_dev == parent.stat().st_dev:
+        if not allow_same_filesystem:
+            raise Refused("backup_dir_same_filesystem", "backup and Postgres data must use different filesystems "
+                          "in public and proxy mode; LG_ALLOW_SAME_FILESYSTEM_BACKUP=true accepts the risk")
+        print("WARNING: backups share the Postgres data filesystem; disk loss affects both live data and "
+              "backups, and backup growth can fill it. Keep an off-host copy.", file=sys.stderr)
 
 
 def project_name(settings: dict[str, str]) -> str:
@@ -192,7 +198,6 @@ def installation_state(root: Path, data_dir: Path, runner: Runner, project: str 
                        prefix: str = PROJECT) -> list[str]:
     """Every place an earlier installation of this project could have left data."""
     found: list[str] = []
-    prefixes = tuple(f"{name}_" for name in (project, *LEGACY_PROJECTS))
     if data_dir.exists():
         if not os.access(data_dir, os.R_OK | os.X_OK):
             raise Refused("postgres_dir_unreadable", str(data_dir))
@@ -202,7 +207,7 @@ def installation_state(root: Path, data_dir: Path, runner: Runner, project: str 
     if result.returncode != 0:
         raise Refused("docker_unavailable", result.stderr.strip())
     for name in result.stdout.split():
-        if name.startswith(prefixes) or name in volume_names(prefix):
+        if name.startswith(project + "_") or name in volume_names(prefix):
             found.append(f"volume {name}")
     return found
 
@@ -258,6 +263,8 @@ def console_dir(root: Path) -> Path:
     """Caddy mounts this directory; Docker would create a missing one owned by root."""
     console = root / "data" / "console"
     console.mkdir(parents=True, exist_ok=True, mode=0o755)
+    # Restore runs under umask 077; Caddy reads the mount as root without DAC_OVERRIDE.
+    os.chmod(console, 0o755)
     return console
 
 
@@ -269,31 +276,6 @@ def write_status(root: Path, document: dict) -> None:
     # Caddy reads the mount as another user; replace the file whole so it never sees a partial one.
     os.chmod(temporary, 0o644)
     os.replace(temporary, path)
-
-
-def write_versions(root: Path, compose: Path, refs: dict[str, str]) -> None:
-    """Restore's version record (scripts/checkpoint.py). Caddy no longer serves it."""
-    console = root / "data" / "console"
-    console.mkdir(parents=True, exist_ok=True, mode=0o755)
-    tags = {}
-    for service, ref in refs.items():
-        name, _, digest = ref.partition("@")
-        tags[service] = (name.rsplit(":", 1)[-1] if ":" in name.rsplit("/", 1)[-1]
-                         else digest or "latest")
-    doc = {
-        "pinnedAt": datetime.fromtimestamp(compose.stat().st_mtime, timezone.utc).isoformat(),
-        "configuredAt": datetime.now(timezone.utc).isoformat(),
-        "images": {
-            "litellm": re.sub(r"^v(?=\d)", "", tags.get("litellm", "unknown")),
-            "langfuse": tags.get("langfuse-web", "unknown"),
-            "rustfs": tags.get("rustfs", "unknown"),
-            "postgres": tags.get("postgres", "unknown"),
-            "clickhouse": tags.get("clickhouse", "unknown"),
-            "valkey": tags.get("valkey", "unknown"),
-            "caddy": tags.get("caddy", "unknown"),
-        },
-    }
-    (console / "versions.json").write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
 
 
 def volume_names(prefix: str) -> list[str]:
@@ -335,11 +317,7 @@ def platform_allocation(settings: dict[str, str]) -> tuple[str, str]:
     return str(network), str(dynamic)
 
 
-def ensure_network(runner: Runner, name: str = NETWORK, subnet: str | None = None,
-                   ip_range: str | None = None) -> None:
-    if subnet is None or ip_range is None:
-        # Checkpoint restore passes no settings; the shell may carry a disposable allocation.
-        subnet, ip_range = platform_allocation(os.environ)
+def ensure_network(runner: Runner, name: str, subnet: str, ip_range: str) -> None:
     inspect = ["docker", "network", "inspect", "--format", "{{json .IPAM.Config}}", name]
     probe = runner(inspect)
     if probe.returncode != 0:
@@ -372,8 +350,7 @@ def check_tls_files_readable(runner: Runner, settings: dict[str, str], root: Pat
     mounted = mounted_tls_files(settings)
     if not mounted:
         return
-    selected = compose_files(settings).replace(MODE_TOKEN, settings["LG_ACCESS_MODE"])
-    files = [str(root / name) for name in selected.split(os.pathsep)]
+    files = [str(root / name) for name in compose_files(settings).split(os.pathsep)]
     # Off every network: a one-off Caddy must never answer as lg-gateway on the Platform Network.
     with tempfile.NamedTemporaryFile("w", suffix=".yaml") as isolated:
         isolated.write("services:\n  caddy:\n    networks: !reset []\n    network_mode: none\n")
@@ -423,9 +400,6 @@ def access_settings(settings: dict[str, str]) -> dict[str, str]:
     if origins.returncode:
         raise Refused("invalid_access_settings", origins.stderr.strip())
     values.update(json.loads(origins.stdout))
-    files = values.get("COMPOSE_FILE", COMPOSE_FILE).replace(MODE_TOKEN, mode).split(os.pathsep)
-    if mode != "local" and not any(Path(name).name == f"compose.{mode}.yaml" for name in files):
-        raise Refused("invalid_access_settings", f"COMPOSE_FILE must include compose.{mode}.yaml")
     return values
 
 
@@ -511,22 +485,23 @@ def compose_profiles(settings: dict[str, str]) -> str:
 
 
 def compose_files(settings: dict[str, str]) -> str:
-    """COMPOSE_FILE with the TLS overlays the issuer needs directly after the mode file."""
-    issuer = settings["LG_TLS_ISSUER"]
-    overlays = ["compose.files.yaml"] if issuer == "files" else []
+    """The literal COMPOSE_FILE: compose.yaml, the mode's file, the issuer's TLS overlays, then
+    any operator files in their recorded order."""
+    mode, issuer = settings["LG_ACCESS_MODE"], settings["LG_TLS_ISSUER"]
+    selected = [f"compose.{mode}.yaml"] if mode != "local" else []
+    selected += ["compose.files.yaml"] if issuer == "files" else []
     if issuer == "acme":
-        overlays += [name for name, key in (("compose.acme-ca-root.yaml", "LG_ACME_CA_ROOT"),
+        selected += [name for name, key in (("compose.acme-ca-root.yaml", "LG_ACME_CA_ROOT"),
                                             ("compose.acme-eab.yaml", "LG_ACME_EAB_KEY_ID")) if settings.get(key)]
-    # The recorded mode token contains the path separator; hold it aside while splitting.
-    held = "\0mode\0"
-    # A recorded TLS overlay from an earlier issuer would demand its unused input.
-    files = [name for name in settings.get("COMPOSE_FILE", COMPOSE_FILE).replace(MODE_TOKEN, held).split(os.pathsep)
-             if name and Path(name).name not in TLS_OVERLAYS]
-    mode_files = {f"compose.{held}.yaml", f"compose.{settings['LG_ACCESS_MODE']}.yaml"}
-    at = next((index + 1 for index, name in enumerate(files) if Path(name).name in mode_files), len(files))
-    anchor = Path(files[at - 1] if at else "compose.yaml")
-    selected = files[:at] + [str(anchor.with_name(name)) for name in overlays] + files[at:]
-    return os.pathsep.join(selected).replace(held, MODE_TOKEN)
+    # The legacy token contains the path separator; it names the mode file, which is reselected.
+    recorded = (settings.get("COMPOSE_FILE") or "compose.yaml").replace(MODE_TOKEN_FILE, "compose.local.yaml")
+    # A recorded file from an earlier mode or issuer would demand its unused input.
+    files = [name for name in recorded.split(os.pathsep) if name and Path(name).name not in SELECTED_FILES]
+    at = next((index + 1 for index, name in enumerate(files) if Path(name).name == "compose.yaml"), 0)
+    if not at:
+        files, at = ["compose.yaml", *files], 1
+    anchor = Path(files[at - 1])
+    return os.pathsep.join(files[:at] + [str(anchor.with_name(name)) for name in selected] + files[at:])
 
 
 class LocalHTTPSConnection(http.client.HTTPSConnection):
@@ -643,7 +618,8 @@ def bootstrap(argv: list[str], runner: Runner = run) -> int:
             m.group("key"): unquote(m.group("value"))
             for m in (ENV_LINE.match(line) for line in (lines or template.read_text().splitlines())) if m
         }
-        recorded_files = settings.get("COMPOSE_FILE", COMPOSE_FILE)
+        recorded_files = settings.get("COMPOSE_FILE", "")
+        recorded_mode = settings.get("LG_ACCESS_MODE") or "local"
         recorded_profiles = settings.get("COMPOSE_PROFILES", "")
         recorded_metrics = settings.get("LG_METRICS", "")
         # Match Compose's shell precedence for operator settings as well as secrets.
@@ -691,12 +667,16 @@ def bootstrap(argv: list[str], runner: Runner = run) -> int:
             if saved_langfuse != canonical_langfuse:
                 write_env(env_file, saved_lines, template, {"LG_LANGFUSE_URL": canonical_langfuse})
         # Direct Compose commands, backups and restores read the recorded overlays; a shell
-        # COMPOSE_FILE applies to this run only.
+        # COMPOSE_FILE applies to this run only. The files follow the mode, so a shell
+        # LG_ACCESS_MODE is saved with them.
         selected_files = compose_files(settings)
         if "COMPOSE_FILE" in os.environ:
             os.environ["COMPOSE_FILE"] = selected_files
         elif selected_files != recorded_files:
-            write_env(env_file, read_env(env_file)[0], template, {"COMPOSE_FILE": selected_files})
+            record = {"COMPOSE_FILE": selected_files}
+            if settings["LG_ACCESS_MODE"] != recorded_mode:
+                record["LG_ACCESS_MODE"] = settings["LG_ACCESS_MODE"]
+            write_env(env_file, read_env(env_file)[0], template, record)
         # A shell LG_METRICS is saved with the recorded profiles it selects; a shell
         # COMPOSE_PROFILES applies to this run only.
         # Empty selects the default, like other LG_ settings; save the value it resolves to.
@@ -705,6 +685,11 @@ def bootstrap(argv: list[str], runner: Runner = run) -> int:
         saved_profiles = compose_profiles({"LG_METRICS": metrics, "COMPOSE_PROFILES": recorded_profiles})
         if saved_profiles != recorded_profiles:
             changes["COMPOSE_PROFILES"] = saved_profiles
+        # Compose requires both; record the defaults so direct Compose commands see them too.
+        if not settings.get("LG_BACKUP_DIR"):
+            settings["LG_BACKUP_DIR"] = changes["LG_BACKUP_DIR"] = DEFAULT_BACKUP_DIR
+        if settings["LG_ACCESS_MODE"] == "local" and not settings.get("LANGFUSE_INIT_USER_EMAIL", "").strip():
+            settings["LANGFUSE_INIT_USER_EMAIL"] = changes["LANGFUSE_INIT_USER_EMAIL"] = LOCAL_LOGIN
         if changes:
             write_env(env_file, read_env(env_file)[0], template, changes)
         if "COMPOSE_PROFILES" in os.environ:
@@ -716,10 +701,12 @@ def bootstrap(argv: list[str], runner: Runner = run) -> int:
         email = settings.get("LANGFUSE_INIT_USER_EMAIL", "").strip()
         if not email or email.lower().endswith("@example.com"):
             raise Refused("langfuse_login_required", "set LANGFUSE_INIT_USER_EMAIL to your login email")
-        backup_setting = os.environ.get("LG_BACKUP_DIR", settings.get("LG_BACKUP_DIR", ""))
-        if not backup_setting:
-            raise Refused("backup_dir_required", "set LG_BACKUP_DIR to a separate mounted filesystem")
-        backup_dir = (root / backup_setting).resolve()
+        backup_dir = (root / settings["LG_BACKUP_DIR"]).resolve()
+        if settings["LG_ACCESS_MODE"] == "local" and not backup_dir.exists():
+            # Public and proxy installations name a mounted repository; creating one could hide
+            # an unmounted disk. ClickHouse lists the root at startup, so 0700 is not enough.
+            backup_dir.mkdir(parents=True, mode=0o755)
+            os.chmod(backup_dir, 0o755)
         check_backup_storage(backup_dir, data_dir, allow_same_filesystem)
 
         configured_at = utc(datetime.now(timezone.utc))

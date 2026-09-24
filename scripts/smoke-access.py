@@ -11,6 +11,7 @@ import tempfile
 from email.utils import parsedate_to_datetime
 import time
 import unittest
+import zlib
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import bootstrap
@@ -22,6 +23,9 @@ if not PROJECT.startswith("llm-gateway-smoke-"):
 HTTP_PORT = int(os.environ.get("SMOKE_HTTP_PORT", "18080"))
 HTTPS_PORT = int(os.environ.get("SMOKE_HTTPS_PORT", "18443"))
 NETWORK = PROJECT + "-access"
+# Disjoint from the installed Platform Network (172.30.0.0/24), like smoke.sh; smoke.sh removes
+# this network before it creates its own, so both may share SMOKE_PLATFORM_SUBNET.
+SUBNET = os.environ.get("SMOKE_PLATFORM_SUBNET") or f"172.31.{zlib.crc32(PROJECT.encode()) % 256}.0/24"
 GATEWAY = NETWORK + "-gateway"
 BACKEND = NETWORK + "-backend"
 IMAGES = {}
@@ -40,7 +44,7 @@ def docker(*args):
 class AccessSmoke(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        docker("network", "create", NETWORK)
+        docker("network", "create", "--subnet", SUBNET, NETWORK)
         cls.addClassCleanup(docker, "network", "rm", NETWORK)
         backend = """
 import http.server, json, threading
@@ -210,7 +214,7 @@ http.server.HTTPServer(('', 4000), Handler).serve_forever()
         self.assertEqual(self.request("/rustfs/console/", "rustfs.localhost")[1]["X-Smoke-Upstream"], "9001")
 
     def test_proxy_forwarding_and_http_only(self):
-        hostname = "darkforge.tail694fe2.ts.net"
+        hostname = "gateway.tail-example.ts.net"
         origins = {f"LG_{app}_URL": f"https://{hostname}:{port}" for app, port in (
             ("LITELLM", 8443), ("LANGFUSE", 8444), ("S3", 8445), ("CONSOLE", 8446), ("RUSTFS", 8449))}
         for trust, expected in (("192.0.2.0/24", "http"), (self.subnet, "https")):
@@ -249,15 +253,15 @@ http.server.HTTPServer(('', 4000), Handler).serve_forever()
                 self.gateway_started = False
 
     def test_proxy_ui_redirect_keeps_https_origin(self):
-        origin = "https://darkforge.tail694fe2.ts.net:8443"
-        self.start("proxy", self.subnet, origins={"LG_LITELLM_URL": origin, "LG_RUSTFS_URL": "https://darkforge.tail694fe2.ts.net:8449"})
-        self.assertEqual(self.request("/rustfs/console/", "darkforge.tail694fe2.ts.net:8449")[1]["X-Smoke-Upstream"], "9001")
-        status, headers, _ = self.request("/ui?view=models", "darkforge.tail694fe2.ts.net:8443")
+        origin = "https://gateway.tail-example.ts.net:8443"
+        self.start("proxy", self.subnet, origins={"LG_LITELLM_URL": origin, "LG_RUSTFS_URL": "https://gateway.tail-example.ts.net:8449"})
+        self.assertEqual(self.request("/rustfs/console/", "gateway.tail-example.ts.net:8449")[1]["X-Smoke-Upstream"], "9001")
+        status, headers, _ = self.request("/ui?view=models", "gateway.tail-example.ts.net:8443")
         self.assertEqual(status, 308)
         self.assertEqual(headers["Location"], origin + "/ui/?view=models")
-        self.assertEqual(self.request("/", "darkforge.tail694fe2.ts.net:8449", headers={"Accept": "text/html"})[1]["Location"], "/rustfs/console/")
-        self.assertEqual(self.request("/", "darkforge.tail694fe2.ts.net:8449", headers={"Accept": "application/json"})[1]["X-Smoke-Upstream"], "9001")
-        self.assertEqual(self.request("/", "darkforge.tail694fe2.ts.net:8449", method="POST")[1]["X-Smoke-Upstream"], "9001")
+        self.assertEqual(self.request("/", "gateway.tail-example.ts.net:8449", headers={"Accept": "text/html"})[1]["Location"], "/rustfs/console/")
+        self.assertEqual(self.request("/", "gateway.tail-example.ts.net:8449", headers={"Accept": "application/json"})[1]["X-Smoke-Upstream"], "9001")
+        self.assertEqual(self.request("/", "gateway.tail-example.ts.net:8449", method="POST")[1]["X-Smoke-Upstream"], "9001")
 
     def test_ip_root_and_configured_application_origins(self):
         self.start()

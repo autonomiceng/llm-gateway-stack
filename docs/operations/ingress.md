@@ -31,13 +31,15 @@ S3 signatures and CORS do not acquire arbitrary aliases.
 
 If another service owns port 80 or 443, set `LG_HTTP_PORT` and `LG_HTTPS_PORT`, and set `LG_PUBLIC_PORT_SUFFIX` to the application's browser-facing port (for example `:8080`) so Langfuse's login URL, presigned S3 URLs and CORS carry it. URLs then look like `http://litellm.localhost:8080`. Optional `LG_SCHEME=https` selects HTTPS as the configured application URL and needs the HTTPS port suffix instead; it does not disable HTTP. The second listener provides transport access, while applications retain a single configured application URL.
 
-The template's `COMPOSE_FILE=compose.yaml:compose.${LG_ACCESS_MODE:-local}.yaml`
-selects mode defaults and publishing. Use Compose 2.24.4 or newer. Keep that assignment
-when changing modes, and recreate services with `python3 scripts/bootstrap.py`.
-Explicit `-f` or `COMPOSE_FILE` overrides must include the matching mode file.
+Bootstrap records `COMPOSE_FILE` in `.env` as a literal list: `compose.yaml`, then
+`compose.public.yaml` or `compose.proxy.yaml` for those modes (Local Mode needs no mode
+file), then the issuer's TLS overlays, then any files you added. Use Compose 2.24.4 or
+newer. After changing `LG_ACCESS_MODE`, run `python3 scripts/bootstrap.py`; it records the
+new list and recreates services. Explicit `-f` overrides must include the matching mode file.
 For a lasting deployment choice, edit `.env`. Shell overrides apply only to that command;
-bootstrap does not save them into existing settings. Use the same overrides for backup
-and restore, or save them in `.env` first.
+bootstrap does not save them into existing settings, except that an exported
+`LG_ACCESS_MODE` is saved together with the `COMPOSE_FILE` it selects. Use the same
+overrides for backup and restore, or save them in `.env` first.
 The listener scheme is derived from the mode. The certificate issuer follows the mode unless
 `LG_TLS_ISSUER` selects another; bootstrap refuses an issuer the mode cannot use. See
 [corporate certificates and private ACME](#corporate-certificates-and-private-acme).
@@ -81,7 +83,7 @@ Mode). Proxy Mode ignores it. Relative `LG_TLS_DIR`, `LG_TLS_CA` and `LG_ACME_CA
 paths resolve against this checkout.
 
 Bootstrap records the Compose overlays the issuer needs in the `.env` `COMPOSE_FILE`,
-directly after the mode file, and drops overlays an earlier issuer needed. Backups,
+directly after the mode file, and drops overlays an earlier mode or issuer needed. Backups,
 restores and direct Compose commands then use the same files. A `COMPOSE_FILE` exported in
 the shell gets the overlays for that bootstrap run only; add them to the shell value for
 later commands.
@@ -196,14 +198,14 @@ In Proxy Mode, set full browser origins when the applications share one hostname
 
 ```dotenv
 LG_ACCESS_MODE=proxy
-LG_CONSOLE_URL=https://darkforge.tail694fe2.ts.net:8446
-LG_LITELLM_URL=https://darkforge.tail694fe2.ts.net:8443
-LG_LANGFUSE_URL=https://darkforge.tail694fe2.ts.net:8444
-LG_S3_URL=https://darkforge.tail694fe2.ts.net:8445
-LG_RUSTFS_URL=https://darkforge.tail694fe2.ts.net:8449
+LG_CONSOLE_URL=https://gateway.tail-example.ts.net:8446
+LG_LITELLM_URL=https://gateway.tail-example.ts.net:8443
+LG_LANGFUSE_URL=https://gateway.tail-example.ts.net:8444
+LG_S3_URL=https://gateway.tail-example.ts.net:8445
+LG_RUSTFS_URL=https://gateway.tail-example.ts.net:8449
 ```
 
-Keep the template's `COMPOSE_FILE` setting and the default `LG_TRUSTED_PROXIES`,
+Keep the `COMPOSE_FILE` bootstrap records and the default `LG_TRUSTED_PROXIES`,
 and choose a free loopback `LG_HTTP_PORT`. Platform Edge must serve HTTPS on these five
 ports and forward each request to `lg-gateway:80`. It must preserve the complete `Host`,
 including the port, and set `X-Forwarded-Proto` to `https`. Rewriting the S3 Host breaks

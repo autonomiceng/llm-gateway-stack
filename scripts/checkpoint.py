@@ -270,6 +270,8 @@ class Stack:
             raise RuntimeError('shell secrets differ from the original .env: ' + ', '.join(conflicts))
         settings = {m.group('key'): bootstrap.unquote(m.group('value'))
                     for m in map(bootstrap.ENV_LINE.match, lines) if m}
+        # Compose precedence: exported stack settings override the env file.
+        self.settings = {**settings, **{key: value for key, value in os.environ.items() if key.startswith('LG_')}}
         allow_same_filesystem = bootstrap.backup_policy(settings)
         backup_dir = os.environ.get('LG_BACKUP_DIR', settings.get('LG_BACKUP_DIR', ''))
         if not backup_dir:
@@ -416,8 +418,8 @@ class Stack:
 
     def queue_count(self, mode='all'):
         result = self.dc('exec', '-T', 'valkey', 'sh', '-ec',
-                         'export VALKEYCLI_AUTH="$VALKEY_PASSWORD"; '
-                         'exec valkey-cli --raw EVAL "$1" 0 "$2" "$3"',
+                         'VALKEYCLI_AUTH=$(sed -n "s/^requirepass //p" /etc/valkey/valkey.conf); '
+                         'export VALKEYCLI_AUTH; exec valkey-cli --raw EVAL "$1" 0 "$2" "$3"',
                          'sh', QUEUE_LUA, str(int(time.time() * 1000) * 4096 + 4095), mode)
         return int(result)
 
@@ -477,7 +479,7 @@ class Stack:
                 aws('\n'.join(commands[offset:offset + 100]))
 
 
-def backup(stack, no_fence, timeout, stop_timeout=120):
+def backup(stack, timeout, stop_timeout=120):
     stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')
     dest = stack.backups / stamp
     point = 'checkpoint_' + stamp
@@ -500,30 +502,21 @@ def backup(stack, no_fence, timeout, stop_timeout=120):
              'chown "101:$2" "$1"; chmod 750 "$1"',
              'sh', f'/backup/{stamp}/clickhouse', str(os.getgid()))
     stopped = []
-    paused = False
     capture_error = None
     handlers = {}
     try:
-        if not no_fence:
-            for service in ('caddy', 'litellm', 'langfuse-web'):
-                stopped.append(service)
-                stack.stop(service, stop_timeout)
-            wait_idle(stack.queue_depth, timeout)
-            stopped.append('langfuse-worker')
-            stack.stop('langfuse-worker', stop_timeout)
-            if stack.queue_count('active'):
-                raise RuntimeError('worker still had jobs in flight after stopping; retry backup')
-            stopped.append('valkey')
-            stack.stop('valkey', stop_timeout)
-        else:
-            # Freeze AOF rotation for the copy. The unfenced stores can diverge.
-            paused = True
-            stack.dc('pause', 'valkey')
+        for service in ('caddy', 'litellm', 'langfuse-web'):
+            stopped.append(service)
+            stack.stop(service, stop_timeout)
+        wait_idle(stack.queue_depth, timeout)
+        stopped.append('langfuse-worker')
+        stack.stop('langfuse-worker', stop_timeout)
+        if stack.queue_count('active'):
+            raise RuntimeError('worker still had jobs in flight after stopping; retry backup')
+        stopped.append('valkey')
+        stack.stop('valkey', stop_timeout)
         stack.helper('valkey', 'umask 077; tar -C /data -cf "$1" appendonlydir',
                      f'/backup/{stamp}/valkey.tar', mounts=('-v', f'{stack.backups}:/backup'))
-        if paused:
-            stack.dc('unpause', 'valkey', label='fence-resume')
-            paused = False
         stack.ch(f"BACKUP DATABASE default TO Disk('backups', '{stamp}/clickhouse/backup.zip')")
         stack.dc('exec', '-T', '--user', '0', 'postgres', 'sh', '-ec',
                  'chown "101:$2" "$1"; chmod 640 "$1"',
@@ -565,7 +558,7 @@ def backup(stack, no_fence, timeout, stop_timeout=120):
         doc = manifest(dest, stack.images, stack.env_file,
                        checked(['git', '-C', str(ROOT), 'rev-parse', 'HEAD'],
                                diagnostics=stack.backups / '.diagnostics', label='git-revision'),
-                       datetime.now(timezone.utc).isoformat(), not no_fence, point, int(first[:8], 16))
+                       datetime.now(timezone.utc).isoformat(), True, point, int(first[:8], 16))
         with (dest / 'manifest.json').open('x') as handle:
             json.dump(doc, handle, indent=2)
             handle.write('\n')
@@ -586,7 +579,7 @@ def backup(stack, no_fence, timeout, stop_timeout=120):
                 for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
                     handlers[sig] = signal.signal(sig, signal.SIG_IGN)
             finally:
-                resume(stack, stopped, paused, stop_timeout + 10 if capture_error else 0)
+                resume(stack, stopped, stop_timeout + 10 if capture_error else 0)
         except BaseException as resume_error:
             if capture_error is not None:
                 raise RuntimeError(f'capture failed: {capture_error}; '
@@ -597,9 +590,7 @@ def backup(stack, no_fence, timeout, stop_timeout=120):
                 signal.signal(sig, handler)
 
 
-def resume(stack, stopped, paused, settle=0):
-    if paused:
-        stack.dc('unpause', 'valkey', label='fence-resume', timeout=120)
+def resume(stack, stopped, settle=0):
     if stopped:
         try:
             stack.dc('up', '-d', '--no-deps', '--no-recreate', *reversed(stopped),
@@ -677,15 +668,20 @@ def verify_checkpoint(source, images):
     return doc
 
 
-def health(stack, timeout=None):
+def gateway_settings(stack):
+    """Access settings as the running gateway resolved them, with its published ports."""
     caddy = stack.config['services']['caddy']
     settings = dict(caddy['environment'])
     for port in caddy['ports']:
         if port['target'] in (80, 443):
             settings['LG_HTTP_PORT' if port['target'] == 80 else 'LG_HTTPS_PORT'] = str(port['published'])
             settings['LG_BIND_HOST'] = port.get('host_ip', '127.0.0.1')
+    return settings
+
+
+def health(stack, timeout=None):
     runner = stack.runner if timeout is None else lambda argv: stack.runner(argv, timeout=timeout)
-    bootstrap.probe_gateway(settings, stack.command, runner)
+    bootstrap.probe_gateway(gateway_settings(stack), stack.command, runner)
 
 
 def restore(stack, source, allow_unfenced=False):
@@ -703,11 +699,12 @@ def restore(stack, source, allow_unfenced=False):
     missing_names = sorted(set(doc.get('env_keys', [])) - saved_names)
     if missing_names:
         print('Checkpoint settings absent from target .env: ' + ', '.join(missing_names), file=sys.stderr)
-    bootstrap.ensure_network(stack.runner, stack.config['networks']['platform']['name'])
+    bootstrap.ensure_network(stack.runner, stack.config['networks']['platform']['name'],
+                             *bootstrap.platform_allocation(stack.settings))
     if not stack.data.exists():
         stack.data.mkdir(parents=True, mode=0o755)
         os.chmod(stack.data, 0o755)
-    bootstrap.write_versions(ROOT, ROOT / 'compose.yaml', stack.images)
+    bootstrap.console_dir(ROOT)
     check_empty(stack.data, stack.project, stack.images['postgres'], stack.runner,
                 diagnostics=stack.backups / '.diagnostics', volumes=stack.volumes)
     bootstrap.ensure_volumes(stack.runner, stack.prefix, stack.project)
@@ -783,6 +780,11 @@ def restore(stack, source, allow_unfenced=False):
     stack.objects('restore', f'{target}/objects')
     stack.dc('up', '-d', '--wait', '--wait-timeout', '300')
     health(stack)
+    # Like bootstrap, publish the Status Document only after readiness: every service, then
+    # those the selected profiles enable.
+    bootstrap.write_status(ROOT, bootstrap.status_document(
+        bootstrap.images(stack.command + ['--profile', '*'], stack.runner), image_refs(stack.config),
+        bootstrap.access_settings(gateway_settings(stack)), stack.backups, bootstrap.utc(datetime.now(timezone.utc))))
     print('Restore complete; gateway and Langfuse health probes passed. '
           'Verify historical encrypted values using the original secrets; Checkpoint v1 cannot attest secret identity.')
 
@@ -791,7 +793,6 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest='command', required=True)
     backup_parser = commands.add_parser('backup')
-    backup_parser.add_argument('--no-fence', action='store_true')
     backup_parser.add_argument('--fence-timeout', type=int, default=300)
     backup_parser.add_argument('--stop-timeout', type=int, default=120)
     restore_parser = commands.add_parser('restore')
@@ -800,7 +801,7 @@ def main():
     for command in (backup_parser, restore_parser):
         command.add_argument('--env-file', type=Path, default=ROOT / '.env')
     args = parser.parse_args()
-    if args.command == 'backup' and not args.no_fence and args.stop_timeout < 120:
+    if args.command == 'backup' and args.stop_timeout < 120:
         parser.error('--stop-timeout must be at least 120 for a fenced backup')
     os.umask(0o077)
     env_file = args.env_file.resolve()
@@ -839,7 +840,7 @@ def main():
             restore(stack, args.checkpoint, args.allow_unfenced)
         else:
             write_metrics(False)
-            backup(stack, args.no_fence, args.fence_timeout, args.stop_timeout)
+            backup(stack, args.fence_timeout, args.stop_timeout)
             prune(stack)
             write_metrics(True)
 

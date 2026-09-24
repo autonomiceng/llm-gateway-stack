@@ -30,8 +30,9 @@ Decision:
   `noeviction`, AOF, a TTL on every LiteLLM key and memory headroom.
 - Postgres 18, host path mounted at `/var/lib/postgresql` per the image layout.
 - Langfuse 4 in `events_only` mode; LiteLLM reports through `langfuse_otel`.
-- Migration of the pre-2026 production installation is a separate effort with its own
-  handoff document. This repo does not ship adoption tooling.
+- Migration of the pre-2026 production installation was a separate effort with its own
+  handoff document, since removed (see the 2026-09-24 amendment). This repo does not ship
+  adoption tooling.
 
 Amended 2026-09-20: every service, including helpers, accepts an optional complete image
 reference in `.env` through native Compose interpolation. Empty values use the unchanged
@@ -43,5 +44,8 @@ registry identities; images without one are refused before capture or fencing. R
 requires the recorded immutable references. Default pins alone carry the Smoke Contract.
 
 Consequence: existing installations cannot upgrade in place. Every rename and one-way step
-is listed in `docs/operations/migrating-pre-2026-installs.md`. The stack promises fresh
-install, backup, restore and forward upgrades between validated pins, and nothing else.
+was listed in a migration handoff document. The stack promises fresh install, backup,
+restore and forward upgrades between validated pins, and nothing else.
+
+Amended 2026-09-24: the handoff document and the Langfuse v4 migration write-mode setting
+are removed; no predecessor installation remains to migrate.
