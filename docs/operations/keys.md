@@ -59,7 +59,7 @@ cache invalidation and test again before declaring revocation complete.
 
 ## UI
 
-From a source in `LG_OPERATOR_ALLOW`, open `litellm.<domain>/ui` and sign in with
+Open `litellm.<domain>/ui` and sign in with
 `UI_USERNAME` (generated as `admin`) and the generated `UI_PASSWORD` from `.env`.
 The master key is never used in a browser. Select **Virtual Keys → Create New Key**. Name the consumer, select its
 allowed models, and set **Max Budget**, **Budget Duration**, **RPM Limit** and **TPM Limit**

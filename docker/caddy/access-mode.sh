@@ -1,6 +1,7 @@
 #!/bin/sh
 set -eu
 refuse() { echo "Conflicting access settings: $*; see docs/operations/ingress.md" >&2; exit 1; }
+case "$LG_ACCESS_MODE" in local|public|proxy) ;; *) refuse "LG_ACCESS_MODE must be local, public or proxy" ;; esac
 case "$LG_SCHEME" in http|https) ;; *) refuse LG_SCHEME ;; esac
 case "$LG_PUBLIC_DOMAIN" in ""|*[!a-zA-Z0-9.-]*) refuse LG_PUBLIC_DOMAIN ;; esac
 case "$LG_PUBLIC_DOMAIN" in *[!0-9.]*) ;; *) refuse "use a DNS application domain; 127.0.0.1 is a local root alias" ;; esac
@@ -38,7 +39,6 @@ case "$LG_ACCESS_MODE" in
     [ "$LG_HTTPS_PUBLISHED" = false ] || refuse "proxy requires compose.proxy.yaml"
     [ -n "$LG_TRUSTED_PROXIES" ] || refuse "proxy requires LG_TRUSTED_PROXIES"
     ;;
-  *) refuse "LG_ACCESS_MODE must be local, public or proxy" ;;
 esac
 # Validate before expanding values into Caddyfile expressions and JSON. Only full
 # DNS/IPv4 origins are accepted, with canonical decimal ports and no URL suffix.
@@ -87,7 +87,7 @@ for app in CONSOLE LITELLM LANGFUSE S3 RUSTFS; do
   case "$seen_authorities" in *" $origin_authority "*) refuse "duplicate application authority at LG_${app}_URL" ;; esac
   seen_authorities="$seen_authorities$origin_authority "
   # Existing hostname routes are interfaces. An override cannot claim another
-  # application's hostname, including the disabled RustFS operator console.
+  # application's hostname.
   for route in CONSOLE LITELLM LANGFUSE S3 RUSTFS; do
     [ "$route" != "$app" ] || continue
     case "$route" in
@@ -105,20 +105,10 @@ for app in CONSOLE LITELLM LANGFUSE S3 RUSTFS; do
   export "LG_${app}_URL=$origin_value" "LG_${app}_AUTHORITY=$origin_authority"
 done
 
-# Companion links do not add gateway routes or require those stacks to be installed.
-for app in GRAFANA BACKPLANE; do
-  case "$app" in
-    GRAFANA) value=${LG_GRAFANA_URL:-}; default_host=grafana.$LG_PUBLIC_DOMAIN ;;
-    BACKPLANE) value=${LG_BACKPLANE_URL:-}; default_host=backplane.$LG_PUBLIC_DOMAIN ;;
-  esac
-  origin "LG_${app}_URL" "${value:-$LG_SCHEME://$default_host${LG_PUBLIC_PORT_SUFFIX:-}}"
-  export "LG_${app}_URL=$origin_value"
-done
-
-# Bootstrap uses the same validation without requiring Caddy or Docker.
+# Bootstrap runs this same validation once, without Caddy or Docker, and trusts its result.
 if [ "${1:-}" = --origins ]; then
-  printf '{"LG_CONSOLE_URL":"%s","LG_LITELLM_URL":"%s","LG_LANGFUSE_URL":"%s","LG_S3_URL":"%s","LG_RUSTFS_URL":"%s","LG_GRAFANA_URL":"%s","LG_BACKPLANE_URL":"%s"}\n' \
-    "$LG_CONSOLE_URL" "$LG_LITELLM_URL" "$LG_LANGFUSE_URL" "$LG_S3_URL" "$LG_RUSTFS_URL" "$LG_GRAFANA_URL" "$LG_BACKPLANE_URL"
+  printf '{"LG_CONSOLE_URL":"%s","LG_LITELLM_URL":"%s","LG_LANGFUSE_URL":"%s","LG_S3_URL":"%s","LG_RUSTFS_URL":"%s"}\n' \
+    "$LG_CONSOLE_URL" "$LG_LITELLM_URL" "$LG_LANGFUSE_URL" "$LG_S3_URL" "$LG_RUSTFS_URL"
   exit 0
 fi
 exec "$@"

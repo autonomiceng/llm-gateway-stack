@@ -36,7 +36,7 @@ update it. It is configuration, not observation: a version
 is what bootstrap configured, not what runs. Rerun bootstrap after changing images,
 origins or profiles. The document never contains secrets, container names or host paths.
 
-Liveness comes from `/health/<component>`, status only for non-operators:
+Liveness comes from `/health/<component>`, a status with an empty body for every client:
 
 | Component | Probe |
 | --- | --- |
@@ -186,8 +186,12 @@ Bootstrap refuses to invent missing credentials when data already exists. Use th
 append-only secret-generation procedure above for `UI_PASSWORD` (24 random bytes).
 Behind the edge, set `LG_TRUSTED_PROXIES=172.30.0.2/32` (Edge's reserved address) or delete the line to
 use that default. Bootstrap keeps a nonempty older value, such as a subnet or a discovered Edge IP,
-and refuses one that overlaps the dynamic range. Choose specific
-operator addresses for `LG_OPERATOR_ALLOW` and scraper addresses for `LG_CHECKPOINT_ALLOW`; see [ingress](ingress.md).
+and refuses one that overlaps the dynamic range. Choose scraper addresses for
+`LG_CHECKPOINT_ALLOW`; see [ingress](ingress.md). An older `.env` also carries the operator
+allow list, the RustFS console switch and the Grafana and Backplane link URLs: delete those
+four lines, the gateway no longer reads them. Applications authenticate themselves, the
+RustFS console is always on, and Edge owns the links between stacks. LiteLLM leaves the
+Platform Network at the same time; scrapers use `lg-gateway:8081/metrics/litellm`.
 
 After completing the exporter role setup and credentials, run bootstrap and recreate the
 stack in the maintenance window so healthchecks, PID/memory limits and exporters apply.

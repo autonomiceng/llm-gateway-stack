@@ -10,7 +10,7 @@ resolves the digest with `docker buildx imagetools inspect <ref> --format '{{.Ma
 Either way the smoke contract runs before merge. Langfuse web and worker move together.
 Majors of Postgres, ClickHouse and Langfuse are one-way for data: read
 `docs/operations/maintenance.md` first and take a Checkpoint before applying them anywhere real.
-Only Caddy publishes ports. Only Caddy, LiteLLM and the two datastore exporters join the platform network. No `env_file`.
+Only Caddy publishes ports. Only Caddy and the two datastore exporters join the platform network. No `env_file`.
 `scripts/validate.sh` enforces all three.
 
 ## .env.example or scripts/bootstrap.py

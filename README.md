@@ -34,9 +34,9 @@ Bootstrap writes `.env` with generated secrets, creates the shared `platform` ne
 | URL | What |
 | --- | --- |
 | `http://localhost/` | Console: links, live health, configured versions; `/status.json` is the same data for machines |
-| `http://litellm.localhost/` | The gateway API; `/ui/` restricted to operators |
+| `http://litellm.localhost/` | The gateway API; `/ui/` is the admin UI behind LiteLLM's login |
 | `http://langfuse.localhost/` | Traces, evals, prompts |
-| `http://rustfs.localhost/` | RustFS admin console; operator access and RustFS login required |
+| `http://rustfs.localhost/` | RustFS admin console, behind RustFS's login |
 
 Try it without any provider keys:
 

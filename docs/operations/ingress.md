@@ -5,10 +5,10 @@ Caddy is the only published entry. By default, applications use these hostnames 
 | Hostname | Upstream |
 | --- | --- |
 | `<domain>` | Stack Console and `/health/*` probes |
-| `litellm.<domain>` | LiteLLM API; admin UI restricted to operators |
+| `litellm.<domain>` | LiteLLM API and admin UI (`/ui/`, LiteLLM's own login) |
 | `langfuse.<domain>` | Langfuse |
 | `s3.<domain>` | RustFS S3 API, for presigned media and export URLs |
-| `rustfs.<domain>` | RustFS admin console, enabled by default; operators only |
+| `rustfs.<domain>` | RustFS admin console (RustFS's own login) |
 
 | Mode | HTTP | HTTPS | Issuer (`LG_TLS_ISSUER`) |
 | --- | --- | --- | --- |
@@ -124,7 +124,7 @@ LG_TLS_CA=/etc/ssl/corp/root_ca.crt
 ```
 
 The certificate must cover every HTTPS hostname: the root domain and the `litellm.`,
-`langfuse.`, `s3.` and, unless `LG_RUSTFS_CONSOLE=off`, `rustfs.` subdomains, by name or by
+`langfuse.`, `s3.` and `rustfs.` subdomains, by name or by
 a one-label wildcard (`*.example.com` covers `s3.example.com`, not `example.com`).
 Configured application URLs add no certificate names. Bootstrap reads the subject
 alternative names with `openssl` and refuses a certificate that leaves a hostname
@@ -133,10 +133,13 @@ readiness probes; leave it empty when that CA is in the host's trust store. Boot
 selects `compose.files.yaml`, which mounts `LG_TLS_DIR` read-only at `/certs` and never
 creates it.
 
+Caddy runs as uid 0 with every capability dropped, so it reads the files by permission
+bits: own `tls.key` by root with mode 0600, and keep `tls.crt` and the CA file readable.
 Bootstrap reads the mounted files from a throwaway Caddy container, off every network,
 before starting, and refuses with `tls_files_unreadable` when Caddy cannot read them, for
-example through a symlink that points outside the directory. In Local Mode, `127.0.0.1`
-keeps its internal-CA certificate; the application hostnames use the files.
+example a key another user owns with mode 0600, or a symlink that points outside the
+directory. In Local Mode, `127.0.0.1` keeps its internal-CA certificate; the application
+hostnames use the files.
 
 Replace a certificate by writing the new pair into the directory, then restart Caddy and
 verify the handshake:
@@ -153,11 +156,11 @@ the Checkpoint; back them up with your PKI.
 
 ## What is never published
 
-PostgreSQL, ClickHouse, Valkey and the RustFS API on its internal port are reachable only inside the Compose network. LiteLLM's `/metrics` is served without authentication because only the Docker networks can reach it. Caddy answers 404 for `/metrics` on the LiteLLM application listener in every mode; scrapers read it through the gateway's unpublished listener (see [metrics](#metrics)).
+PostgreSQL, ClickHouse, Valkey and the RustFS API on its internal port are reachable only inside the Compose network. LiteLLM's `/metrics` is served without authentication because only this project's Compose network can reach it. Caddy answers 404 for `/metrics` on the LiteLLM application listener in every mode; scrapers read it through the gateway's unpublished listener (see [metrics](#metrics)).
 
 ## Shared host
 
-When the backplane or the observability stack runs on the same host, the gateway joins the external Docker network `platform` as `lg-gateway` and LiteLLM as `lg-litellm`. With `LG_METRICS=true` the monitoring sidecars also join as `lg-valkey-exporter:9121` and `lg-postgres-exporter:9187`; the datastores remain private.
+When the backplane or the observability stack runs on the same host, the gateway joins the external Docker network `platform` as `lg-gateway`; LiteLLM stays on the project network and is reachable only through the gateway. With `LG_METRICS=true` the monitoring sidecars also join as `lg-valkey-exporter:9121` and `lg-postgres-exporter:9187`; the datastores remain private.
 
 The Platform Network has one allocation on every host, defined in the shared contract
 ([conventions](../conventions.md)): subnet `172.30.0.0/24` (`LG_PLATFORM_SUBNET`), dynamic
@@ -227,31 +230,23 @@ external origin for redirects and secure cookies. `PUBLIC_URL` is not used. The 
 Console reads these URLs from `/origins.json`.
 
 The existing access rules still apply. LiteLLM API calls need their usual keys; users
-need their usual app login. LiteLLM `/ui*` remains operator-restricted, and trusting Edge
-alone does not grant UI access. Any deliberate operator access through Edge requires
-its socket address in `LG_OPERATOR_ALLOW` and matching access restrictions at Edge.
+need their usual application login. Trusting Edge changes only which forwarded headers
+are believed.
 
 ## Operator access
 
-`LG_OPERATOR_ALLOW` is a space-separated list of socket peer CIDRs, default
-`127.0.0.0/8 ::1`. It gates health JSON bodies, LiteLLM `/ui*` and
-`/openapi.json`, and the RustFS console. Other clients receive 404 for operator
-paths; health probes preserve the upstream HTTP status with an empty body. The public
-Stack Console shows service health and the configured versions from `/status.json`.
-Forwarded client headers never grant operator access.
+Applications authenticate themselves. LiteLLM's admin UI at `litellm.<domain>/ui/` and
+its `/openapi.json` sit behind LiteLLM's login (`UI_USERNAME`, `UI_PASSWORD`), the RustFS
+console behind RustFS's login, Langfuse behind its own. The gateway has no address-based
+operator layer: Docker port forwarding presents the bridge address instead of loopback,
+and behind Platform Edge every request arrives from Edge, so a socket-peer allow list
+either locked the operator out or admitted every Edge client. Edge or Tailscale controls
+who can reach the gateway at all; the applications control who may act.
 
-Docker port forwarding can present the host's bridge address instead of loopback. Add
-that specific address to the allow list when needed for local operator access. Behind
-platform-edge, socket peers are the edge: allowing the edge's subnet would also allow its
-public callers. Keep public operator-path exclusions at the edge and use a direct local
-connection for administration. `LG_TRUSTED_PROXIES` does not grant operator access.
-
-The RustFS console is enabled by default. Set `LG_RUSTFS_CONSOLE=off` and recreate
-RustFS and Caddy to disable it. The S3 API remains available for presigned media and
-exports. Edge can route its separate admin hostname or private Tailscale port; application
-login and the gateway's operator allow list still apply.
-
-`LG_GRAFANA_URL` and `LG_BACKPLANE_URL` optionally set the companion links in the gateway overview. They do not install those stacks or add application routes. Platform Edge’s Tailscale setup fills them in automatically.
+Health probes (`/health/<component>` on the root hostname, `/health/*` on the application
+hostnames) return the upstream status with an empty body for every client: 200 when the
+probe passes, 503 when the upstream cannot answer, 404 for an unknown component. The
+public Stack Console shows service health and the configured versions from `/status.json`.
 
 Bootstrap canonicalizes application URL hostnames and default ports. It appends a canonical `LG_LANGFUSE_URL` override when needed, so RustFS CORS uses the exact origin sent by browsers, while preserving existing env lines. If invoking Compose directly with shell URL overrides, use lowercase hostnames and omit `:80` for HTTP or `:443` for HTTPS. Non-default ports remain explicit.
 
@@ -266,11 +261,10 @@ network, both restricted to socket peers in `LG_CHECKPOINT_ALLOW`:
 | `http://lg-gateway:8081/metrics/litellm` | LiteLLM's Prometheus metrics | `llm-gateway` |
 
 Add the scraper's address to `LG_CHECKPOINT_ALLOW`, or its dedicated scraper network CIDR;
-other peers receive 404. This setting grants only metrics access; keep operator sources
-in `LG_OPERATOR_ALLOW`. The edge routes to port 80 and receives no metrics there. The same
-listener answers `/health/status` over loopback for Caddy's container healthcheck in every
-access mode. `lg-litellm:4000/metrics` still answers on the platform network; scrapers move
-to `/metrics/litellm` before LiteLLM leaves that network.
+other peers receive 404. This setting grants only metrics access. The edge routes to port
+80 and receives no metrics there. The same listener answers `/health/status` over loopback
+for Caddy's container healthcheck in every access mode. LiteLLM is not on the platform
+network; `/metrics/litellm` through the gateway is the only scrape path.
 
 The datastore exporters run only with the Compose profile `metrics`. Set `LG_METRICS=true`
 and rerun bootstrap; it records `metrics` in `COMPOSE_PROFILES` and keeps any other profiles
@@ -288,14 +282,12 @@ The observability stack must configure both 8081 scrapes plus
 
 ## RustFS browser admin console
 
-The RustFS admin console is enabled by default at `http://rustfs.localhost` locally,
-or `https://rustfs.<your-domain>` with public HTTPS. Sign in using the installation's
-`RUSTFS_ACCESS_KEY` and `RUSTFS_SECRET_KEY` from its private `.env`. Keep those values private.
-The console retains the same `LG_OPERATOR_ALLOW` restriction as other operator pages.
-Set `LG_RUSTFS_CONSOLE=off` to disable it. This does not disable the S3 API.
+The RustFS admin console is always on, at `http://rustfs.localhost` locally or
+`https://rustfs.<your-domain>` with public HTTPS. Sign in using the installation's
+`RUSTFS_ACCESS_KEY` and `RUSTFS_SECRET_KEY` from its private `.env`. Keep those values
+private. The S3 API on `s3.<domain>` is separate and serves presigned media and exports.
 
 For access through Platform Edge and Tailscale, rerun Edge's `scripts/tailscale_serve.py`
 after updating both repositories. It connects the admin console at HTTPS port 8449 by
-default, independently of the S3 API on 8445. The gateway overview shows the current
-console setting and refreshes application addresses along with health every 30 seconds.
-`LG_RUSTFS_URL` sets a full browser origin when another gateway handles HTTPS.
+default, independently of the S3 API on 8445. `LG_RUSTFS_URL` sets a full browser origin
+when another gateway handles HTTPS.
