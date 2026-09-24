@@ -22,8 +22,8 @@ Stack Gateway serves at `/status.json`, recording each component's configured im
 version, profile state and health path, never observed runtime state.
 _Avoid_: status observation, versions file
 
-**Local Mode**: the default access mode, serving HTTP and internal-CA HTTPS on loopback
-without redirects or HSTS, so a clean clone starts without edits.
+**Local Mode**: the default access mode, serving HTTP and HTTPS (internal CA by default)
+on loopback without redirects or HSTS, so a clean clone starts without edits.
 _Avoid_: development mode, insecure mode
 
 **Public Mode**: the access mode for public DNS hostnames, with HTTPS redirects and

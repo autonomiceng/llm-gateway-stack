@@ -14,6 +14,7 @@ on a host until an operator merges and pulls.
 - [Resource limits](#resource-limits)
 - [External volumes and deliberate destruction](#external-volumes-and-deliberate-destruction)
 - [Older installations](#older-installations)
+- [Verification and troubleshooting](#verification-and-troubleshooting)
 
 ## Before touching a host
 
@@ -147,92 +148,114 @@ and `.env` remain. The command accepts `--env-file`.
 
 ## Older installations
 
-Installations created before the current bootstrap need a few one-time steps after
-`git pull`. Each is safe to repeat.
+An installation created before the current bootstrap needs these one-time steps, in this
+order, after `git pull` and before the next full bootstrap. Take a Checkpoint with the old
+checkout first and keep it, with its `.env`, for rollback.
 
-- **Status timer.** Run `scripts/retire-status-timer.sh` as the installation user, then
-  `python3 scripts/bootstrap.py`. The script disables and removes
-  `llm-gateway-status.timer` and `.service` from the user's systemd directory, reloads the
-  user manager, and deletes `data/status/bootstrap.json` and `data/console/.status.lock`.
-  Bootstrap then writes the Status v2 `status.json`; `/versions.json` is gone.
-- **Literal `COMPOSE_FILE`.** Run `python3 scripts/bootstrap.py --render-only` before
-  `docker compose pull` or any other direct Compose command. It replaces a recorded
-  `compose.${LG_ACCESS_MODE:-local}.yaml` token with the literal list
-  (`compose.local.yaml` no longer exists) and starts nothing. The following full bootstrap
-  recreates Valkey, which now reads its password from a Compose config file instead of its
-  command line.
-- **Removed settings.** Delete from `.env` the Langfuse v3-to-v4 migration write-mode
-  line, the operator allow list, the RustFS console switch and the Grafana and Backplane
-  link URLs; the gateway no longer reads them. Applications authenticate themselves, the
-  RustFS console is always on, and Edge owns the links between stacks.
-- **Required values.** Set a real `LANGFUSE_INIT_USER_EMAIL`; set `LG_BACKUP_DIR` (in
-  Public and Proxy Mode, a mount separate from Postgres); append `UI_USERNAME=admin` and a
-  generated `UI_PASSWORD` to the protected `.env`, since bootstrap refuses to invent
-  missing credentials when data already exists. Behind Edge, set
-  `LG_TRUSTED_PROXIES=172.30.0.2/32` or delete the line to use that default; bootstrap
-  keeps a nonempty older value and refuses one that overlaps the dynamic range. Choose
-  scraper addresses for `LG_CHECKPOINT_ALLOW` ([ingress](ingress.md#metrics)); scrapers
-  now read LiteLLM metrics at `lg-gateway:8081/metrics/litellm`.
-- **Backups.** Every new Checkpoint is fenced; restore still accepts an older unfenced one
-  with `--allow-unfenced`.
-- **Monitoring role on an existing cluster.** Init scripts run only on an empty cluster, so
-  add the exporter secret and role by hand. Append only the new secret to the protected
-  `.env`, recreate Postgres to pass it through, and run the idempotent monitoring script:
+1. **Settings.** Run `python3 scripts/bootstrap.py --render-only`; it replaces a recorded
+   `compose.${LG_ACCESS_MODE:-local}.yaml` token in `COMPOSE_FILE` with the literal list
+   (`compose.local.yaml` no longer exists), records any new setting, and starts nothing.
+   Then edit `.env`: delete the Langfuse v3-to-v4 migration write-mode line, the operator
+   allow list, the RustFS console switch and the Grafana and Backplane link URLs (the
+   gateway no longer reads them); set a real `LANGFUSE_INIT_USER_EMAIL`; set
+   `LG_BACKUP_DIR` (in Public and Proxy Mode, a mount separate from Postgres); behind Edge
+   set `LG_TRUSTED_PROXIES=172.30.0.2/32` or delete the line to use that default (bootstrap
+   keeps a nonempty older value and refuses one that overlaps the dynamic range); choose
+   scraper addresses for `LG_CHECKPOINT_ALLOW` ([metrics](ingress.md#metrics)); scrapers
+   now read LiteLLM metrics at `lg-gateway:8081/metrics/litellm`.
+2. **Credentials.** Bootstrap refuses to invent missing credentials when data already
+   exists, so append them yourself, without printing them. `UI_USERNAME=admin` and a
+   generated `UI_PASSWORD` for LiteLLM's admin UI, and `LG_POSTGRES_EXPORTER_PASSWORD` for
+   the monitoring role:
 
-  ```sh
-  python3 - <<'PYCODE'
-  from pathlib import Path
-  import re, secrets
-  path = Path('.env')
-  text = path.read_text()
-  if not re.search(r'^(?:export )?LG_POSTGRES_EXPORTER_PASSWORD=', text, re.M):
-      with path.open('a') as handle:
-          handle.write('\nLG_POSTGRES_EXPORTER_PASSWORD=' + secrets.token_hex(24) + '\n')
-  path.chmod(0o600)
-  PYCODE
-  docker compose up -d --no-deps --wait postgres
-  docker compose exec -T postgres bash /docker-entrypoint-initdb.d/02-monitor.sh
-  python3 scripts/bootstrap.py
-  ```
+   ```sh
+   python3 - <<'PYCODE'
+   from pathlib import Path
+   import re, secrets
+   path = Path('.env')
+   text = path.read_text()
+   for key in ('UI_PASSWORD', 'LG_POSTGRES_EXPORTER_PASSWORD'):
+       if not re.search(r'^(?:export )?' + key + '=', text, re.M):
+           with path.open('a') as handle:
+               handle.write('\n' + key + '=' + secrets.token_hex(24) + '\n')
+   path.chmod(0o600)
+   PYCODE
+   grep -q '^UI_USERNAME=' .env || printf 'UI_USERNAME=admin\n' >> .env
+   ```
 
-  Use the same append-only procedure for `UI_PASSWORD` (24 random bytes). The
-  `lg_monitor` login has `pg_monitor` and read-only transactions, with no application
-  write grants. Preserve `LG_POSTGRES_EXPORTER_PASSWORD` with the other secrets.
-- **Volume names.** Installations with `<project>_<volume>` volume names need an offline
-  copy before starting this Compose revision. Take a Checkpoint with the old checkout
-  first and keep it, with its `.env`, for rollback. Stop the old project without `-v`,
-  then run from the new checkout after setting the old project name and the new prefix:
+3. **Volume names.** Installations with `<project>_<volume>` volume names need an offline
+   copy before this Compose revision starts, because bootstrap creates missing external
+   volumes and would start the stack on empty stores. Stop the old project without `-v`, then run from the new
+   checkout after setting the old project name and the new prefix:
 
-  ```sh
-  old_project=llm-gateway-stack
-  volume_prefix=llm-gateway-stack
-  docker compose -f /opt/gateway-old/compose.yaml --project-directory /opt/gateway-old down
-  pg_image=$(docker compose config --images postgres)
-  for volume in clickhouse-data clickhouse-logs rustfs-data valkey-data caddy-data caddy-config; do
-    source_volume="${old_project}_${volume}"
-    target_volume="${volume_prefix}-${volume}"
-    docker volume inspect "$source_volume" >/dev/null || exit 1
-    if docker volume inspect "$target_volume" >/dev/null 2>&1; then
-      echo "Destination already exists: $target_volume" >&2; exit 1
-    fi
-    docker volume create "$target_volume" >/dev/null || exit 1
-    docker run --rm --network none --user 0 --entrypoint sh \
-      --mount "type=volume,src=$source_volume,dst=/source,readonly" \
-      --mount "type=volume,src=$target_volume,dst=/target" "$pg_image" \
-      -ec 'cp -a /source/. /target/; sync -f /target' || exit 1
-  done
-  ```
+   ```sh
+   old_project=llm-gateway-stack
+   volume_prefix=llm-gateway-stack
+   docker compose -f /opt/gateway-old/compose.yaml --project-directory /opt/gateway-old down
+   pg_image=$(docker compose config --images postgres)
+   for volume in clickhouse-data clickhouse-logs rustfs-data valkey-data caddy-data caddy-config; do
+     source_volume="${old_project}_${volume}"
+     target_volume="${volume_prefix}-${volume}"
+     docker volume inspect "$source_volume" >/dev/null || exit 1
+     if docker volume inspect "$target_volume" >/dev/null 2>&1; then
+       echo "Destination already exists: $target_volume" >&2; exit 1
+     fi
+     docker volume create "$target_volume" >/dev/null || exit 1
+     docker run --rm --network none --user 0 --entrypoint sh \
+       --mount "type=volume,src=$source_volume,dst=/source,readonly" \
+       --mount "type=volume,src=$target_volume,dst=/target" "$pg_image" \
+       -ec 'cp -a /source/. /target/; sync -f /target' || exit 1
+   done
+   ```
 
-  Set `LG_VOLUME_PREFIX` in the new `.env` to the chosen prefix. Keep the old volumes
-  until restore and application checks pass. Do not start both incarnations together.
-  Before new writes, rollback is stopping the new project and starting the saved old
-  checkout with its original volumes. After new writes, restore a Checkpoint.
-- **Postgres archive timeout.** The forced one-minute `archive_timeout` command setting is
-  gone; the next Compose apply recreates PostgreSQL once. To restore a timed archival
-  bound, budget archive storage and run
-  `ALTER SYSTEM SET archive_timeout='60s'; SELECT pg_reload_conf();`;
-  `ALTER SYSTEM RESET archive_timeout; SELECT pg_reload_conf();` returns to the upstream
-  default.
+   Set `LG_VOLUME_PREFIX` in the new `.env` to the chosen prefix. Keep the old volumes
+   until restore and application checks pass. Never start both incarnations together.
+4. **Status timer.** Run `scripts/retire-status-timer.sh` as the installation user. It
+   disables and removes `llm-gateway-status.timer` and `.service` from the user's systemd
+   directory, reloads the user manager, and deletes `data/status/bootstrap.json` and
+   `data/console/.status.lock`. It is safe to rerun.
+5. **Monitoring role.** Init scripts run only on an empty cluster, so create the exporter
+   role on the existing cluster by hand. This recreates Postgres once (the forced
+   one-minute `archive_timeout` command setting is gone as well) and touches neither
+   application database:
 
-After these steps, run bootstrap in the maintenance window so healthchecks, PID and memory
-limits and exporters apply, and verify the limits as shown in [resource limits](#resource-limits).
+   ```sh
+   docker compose up -d --no-deps --wait postgres
+   docker compose exec -T postgres bash /docker-entrypoint-initdb.d/02-monitor.sh
+   ```
+
+   The `lg_monitor` login has `pg_monitor` and read-only transactions, with no application
+   write grants.
+6. **Bootstrap.** Run `python3 scripts/bootstrap.py` in the maintenance window. It
+   recreates Valkey (its password now comes from a Compose config file, not its command
+   line), applies healthchecks, PID and memory limits and the exporters, and writes the
+   Status v2 `status.json`; `/versions.json` is gone.
+
+Afterwards: every new Checkpoint is fenced, and restore still accepts an older unfenced
+one with `--allow-unfenced`. To restore a timed archival bound, budget archive storage and
+run `ALTER SYSTEM SET archive_timeout='60s'; SELECT pg_reload_conf();`;
+`ALTER SYSTEM RESET archive_timeout; SELECT pg_reload_conf();` returns to the upstream
+default. Before new writes, rollback is stopping the new project and starting the saved
+old checkout with its original volumes; after new writes, restore a Checkpoint.
+
+## Verification and troubleshooting
+
+After any bump or one-time step, bootstrap must exit 0 and print the links; then check:
+
+```sh
+curl -fsS http://localhost/status.json | python3 -m json.tool | head -20
+curl -fsS -o /dev/null -w '%{http_code}\n' http://localhost/health/litellm
+docker compose ps
+```
+
+The status document must list the new image tags, every `/health/<component>` must answer
+200, and `docker compose ps` must show every service healthy. Run `scripts/backup.sh` once
+more so the next Checkpoint records the new pins.
+
+| Symptom | Cause and fix |
+| --- | --- |
+| Bootstrap exits 1 with `shell_env_conflict` | A shell export differs from `.env`. Unset it or fix `.env`. |
+| Bootstrap exits 3 with `not_ready` | A service did not pass its probe within the deadline. Read `docker compose logs <service>`; a Postgres or ClickHouse major that cannot open its data directory shows up here. |
+| Compose recreates Postgres unexpectedly | Its command or environment changed with the release (for example the archive timeout removal). One restart is expected; data is untouched. |
+| A Checkpoint refuses a running container | Its selected profiles do not include it (exporters after `LG_METRICS=false`). Keep or remove the exporters as described in [metrics](ingress.md#metrics). |
+| The console shows an old version | The status document is written by bootstrap only. Rerun `python3 scripts/bootstrap.py`. |

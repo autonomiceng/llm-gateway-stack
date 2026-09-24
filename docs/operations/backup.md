@@ -184,6 +184,23 @@ Failed archiving retains WAL regardless of `max_wal_size`. Repair archive storag
 permissions while preserving existing archives; never use `pg_resetwal` or make the archive
 command report success without saving data.
 
+## Verification and troubleshooting
+
+A capture succeeded when the Checkpoint directory holds `manifest.json`, backup exited 0
+and the gateway answered its probe on resumption; `data/console/metrics.txt` then shows
+`lg_checkpoint_success 1`. A restore succeeded when restore exited 0, the gateway answers,
+and a Langfuse login and a key created before the Checkpoint work. The drill proves both
+on a disposable copy.
+
+| Symptom | Cause and fix |
+| --- | --- |
+| Backup refuses before stopping anything | Image drift, a leftover one-off container, a running container outside the selected profiles, or an image without a registry digest. The error names the check; fix it and rerun. |
+| Backup aborts during fencing | A clean stop or the shutdown log line did not arrive within the grace. Raise `--stop-timeout` (minimum 120) or `--fence-timeout`, and inspect failed BullMQ jobs. |
+| `backup_dir_same_filesystem` | Public and Proxy Mode need a separate backup filesystem; mount one or set `LG_ALLOW_SAME_FILESYSTEM_BACKUP=true` knowingly. |
+| Restore refuses a non-empty target | Restore never clears data. Use fresh `LG_POSTGRES_DATA_DIR`, `LG_BACKUP_DIR` and `LG_VOLUME_PREFIX` values. |
+| Restore refuses `fenced: false` | An old unfenced Checkpoint; pass `--allow-unfenced` if the loss of cross-store consistency is acceptable. |
+| Failed command details | `LG_BACKUP_DIR/.diagnostics/` holds stdout and stderr (0600); treat them as secret-bearing. |
+
 ## Known limitations
 
 Events and exports are restored as `application/json`; custom object metadata, tags, ACLs,

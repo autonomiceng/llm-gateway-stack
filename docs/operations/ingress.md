@@ -110,7 +110,11 @@ daemon serves each application on its own HTTPS port of the machine's tailnet na
 forwards to the stack's loopback HTTP port.
 
 Prerequisites: Tailscale installed and logged in on the host, MagicDNS and HTTPS
-certificates enabled for the tailnet (`https://login.tailscale.com/admin/dns`).
+certificates enabled for the tailnet (`https://login.tailscale.com/admin/dns`). Proxy
+Mode has two requirements of its own: `LANGFUSE_INIT_USER_EMAIL` set on a fresh install
+(bootstrap refuses with `langfuse_login_required`), and `LG_BACKUP_DIR` on a filesystem
+separate from Postgres data, or `LG_ALLOW_SAME_FILESYSTEM_BACKUP=true` to accept the
+shared disk (bootstrap refuses with `backup_dir_same_filesystem`); see [backup](backup.md#storage).
 
 1. In `.env`, select Proxy Mode on a loopback port and give every application its full
    browser origin. The hostname is the machine's tailnet name; the ports are yours to
@@ -126,8 +130,20 @@ certificates enabled for the tailnet (`https://login.tailscale.com/admin/dns`).
    LG_RUSTFS_URL=https://gateway.tail-example.ts.net:8449
    ```
 
-   Keep the default `LG_TRUSTED_PROXIES` and let bootstrap record `COMPOSE_FILE`.
-2. Run `python3 scripts/bootstrap.py`.
+2. Run `python3 scripts/bootstrap.py`, then find the address the host's Tailscale daemon
+   will appear from. Connections to the published loopback port reach Caddy from the
+   project network's gateway, not from Edge's reserved address:
+
+   ```sh
+   docker network inspect llm-gateway-stack_default --format '{{(index .IPAM.Config 0).Gateway}}'
+   ```
+
+   Set `LG_TRUSTED_PROXIES` to that address as a `/32` (for example
+   `LG_TRUSTED_PROXIES=172.19.0.1/32`) and run `python3 scripts/bootstrap.py` again. An
+   untrusted peer's forwarded scheme is discarded and the applications receive
+   `X-Forwarded-Proto: http`, which breaks secure cookies and login redirects behind HTTPS.
+   Trusting the bridge gateway means every host-local connection to the loopback port can
+   assert the scheme; the port is bound to loopback, so only processes on this host can.
 3. Serve each port from the host daemon, one command per application, with the port
    from the matching `LG_*_URL`:
 
@@ -139,15 +155,16 @@ certificates enabled for the tailnet (`https://login.tailscale.com/admin/dns`).
    tailscale serve --bg --https=8449 http://127.0.0.1:18080
    ```
 
-   `tailscale serve status` lists the result; `tailscale serve --https=<port> off` removes
-   one entry.
+   `tailscale serve status` lists the result; `tailscale serve --https=<port> --set-path=/ off`
+   removes one entry.
 
-Caddy routes each request by its complete `Host`, including the port, to the matching
-application, so the forwarding proxy must preserve `Host` (Tailscale serve does). Rewriting
-the S3 `Host` breaks presigned media and export links. Who can reach these ports is decided
-by your tailnet access controls; application login is still required. Opening firewall
-ports alone does not configure anything. See [application URLs](#application-urls) for the
-rules the origins must follow.
+Verify from a tailnet device: open the console URL and follow the links, sign in to
+Langfuse and LiteLLM's `/ui/`, and open a trace's media. A login that loops back to the
+sign-in page means the scheme is not trusted (step 2). Caddy routes each request by its
+complete `Host`, including the port, so the forwarding proxy must preserve `Host` (Tailscale
+serve does); rewriting the S3 `Host` breaks presigned media and export links. Who can reach
+these ports is decided by your tailnet access controls; application login is still required.
+See [application URLs](#application-urls) for the rules the origins must follow.
 
 ## Corporate certificates and private ACME
 

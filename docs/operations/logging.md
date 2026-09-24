@@ -58,6 +58,18 @@ No local DDL, table cleanup or volume deletion accompanies this logging change.
 Loki storage, when an external observability stack is installed, is that stack's product
 state and retention policy.
 
+## Verification and troubleshooting
+
+`docker compose logs --tail=20 caddy` must print JSON lines, and
+`journalctl CONTAINER_NAME=llm-gateway-stack-caddy-1 -n 20` must show the same lines.
+Access log entries must carry no headers and a `?REDACTED` query string.
+
+| Symptom | Cause and fix |
+| --- | --- |
+| `docker compose up` fails with `journald` driver errors | The host has no journald (non-systemd host, or Docker in a container). Use the override below. |
+| `docker compose logs` prints nothing | The journal is not persistent or its retention dropped the entries; host policy, not the stack. |
+| Loki shows no `compose_project="llm-gateway-stack"` stream | Alloy is not running or has no Docker discovery on this host; the stack does not depend on it. |
+
 ## Hosts without journald
 
 For a deliberate no-runtime-logs deployment, add an untracked Compose override and append
