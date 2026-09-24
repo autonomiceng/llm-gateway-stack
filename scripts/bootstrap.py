@@ -262,10 +262,9 @@ def status_document(available: dict[str, str], selected: dict[str, str], setting
 def console_dir(root: Path) -> Path:
     """Caddy mounts this directory; Docker would create a missing one owned by root."""
     console = root / "data" / "console"
-    if not console.is_dir():
-        console.mkdir(parents=True, mode=0o755)
-        # Restore runs under umask 077; Caddy reads the mount as root without DAC_OVERRIDE.
-        os.chmod(console, 0o755)
+    console.mkdir(parents=True, exist_ok=True, mode=0o755)
+    # Restore runs under umask 077; Caddy reads the mount as root without DAC_OVERRIDE.
+    os.chmod(console, 0o755)
     return console
 
 
@@ -620,6 +619,7 @@ def bootstrap(argv: list[str], runner: Runner = run) -> int:
             for m in (ENV_LINE.match(line) for line in (lines or template.read_text().splitlines())) if m
         }
         recorded_files = settings.get("COMPOSE_FILE", "")
+        recorded_mode = settings.get("LG_ACCESS_MODE") or "local"
         recorded_profiles = settings.get("COMPOSE_PROFILES", "")
         recorded_metrics = settings.get("LG_METRICS", "")
         # Match Compose's shell precedence for operator settings as well as secrets.
@@ -667,12 +667,16 @@ def bootstrap(argv: list[str], runner: Runner = run) -> int:
             if saved_langfuse != canonical_langfuse:
                 write_env(env_file, saved_lines, template, {"LG_LANGFUSE_URL": canonical_langfuse})
         # Direct Compose commands, backups and restores read the recorded overlays; a shell
-        # COMPOSE_FILE applies to this run only.
+        # COMPOSE_FILE applies to this run only. The files follow the mode, so a shell
+        # LG_ACCESS_MODE is saved with them.
         selected_files = compose_files(settings)
         if "COMPOSE_FILE" in os.environ:
             os.environ["COMPOSE_FILE"] = selected_files
         elif selected_files != recorded_files:
-            write_env(env_file, read_env(env_file)[0], template, {"COMPOSE_FILE": selected_files})
+            record = {"COMPOSE_FILE": selected_files}
+            if settings["LG_ACCESS_MODE"] != recorded_mode:
+                record["LG_ACCESS_MODE"] = settings["LG_ACCESS_MODE"]
+            write_env(env_file, read_env(env_file)[0], template, record)
         # A shell LG_METRICS is saved with the recorded profiles it selects; a shell
         # COMPOSE_PROFILES applies to this run only.
         # Empty selects the default, like other LG_ settings; save the value it resolves to.

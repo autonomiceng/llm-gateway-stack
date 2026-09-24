@@ -37,8 +37,9 @@ file), then the issuer's TLS overlays, then any files you added. Use Compose 2.2
 newer. After changing `LG_ACCESS_MODE`, run `python3 scripts/bootstrap.py`; it records the
 new list and recreates services. Explicit `-f` overrides must include the matching mode file.
 For a lasting deployment choice, edit `.env`. Shell overrides apply only to that command;
-bootstrap does not save them into existing settings. Use the same overrides for backup
-and restore, or save them in `.env` first.
+bootstrap does not save them into existing settings, except that an exported
+`LG_ACCESS_MODE` is saved together with the `COMPOSE_FILE` it selects. Use the same
+overrides for backup and restore, or save them in `.env` first.
 The listener scheme is derived from the mode. The certificate issuer follows the mode unless
 `LG_TLS_ISSUER` selects another; bootstrap refuses an issuer the mode cannot use. See
 [corporate certificates and private ACME](#corporate-certificates-and-private-acme).

@@ -74,7 +74,7 @@ docker compose pull
 python3 scripts/bootstrap.py
 ```
 
-`git pull` brings new pins and configuration; `docker compose pull` fetches the pinned images; bootstrap records any new setting, recreates what changed and waits for health. The pins in `compose.yaml` are the versions the smoke test passed. An `LG_*_IMAGE` value in `.env` is your own experiment: it replaces the pin until you remove it, and upgrades do not touch it. Read [maintenance](docs/operations/maintenance.md) before a major version of Postgres, ClickHouse or Langfuse; those are one-way for data.
+`git pull` brings new pins and configuration (once, for an installation from before the literal `COMPOSE_FILE`, run `python3 scripts/bootstrap.py --render-only` next so Compose finds its files; see [maintenance](docs/operations/maintenance.md)); `docker compose pull` fetches the pinned images; bootstrap records any new setting, recreates what changed and waits for health. The pins in `compose.yaml` are the versions the smoke test passed. An `LG_*_IMAGE` value in `.env` is your own experiment: it replaces the pin until you remove it, and upgrades do not touch it. Read [maintenance](docs/operations/maintenance.md) before a major version of Postgres, ClickHouse or Langfuse; those are one-way for data.
 
 ## Built on
 

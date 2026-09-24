@@ -713,6 +713,11 @@ sys.exit(19)
             self.assertEqual(os.environ["COMPOSE_FILE"], "compose.yaml:compose.proxy.yaml:trial.yaml")
         self.assertEqual(len(recorded()), 2)
         self.assertNotIn("${", self.env.read_text().rsplit(legacy, 1)[1])
+        # A shell mode is saved with the files it selects, so direct Compose never mixes them.
+        with patch.dict(os.environ, {"LG_ACCESS_MODE": "local"}):
+            self.render()
+        self.assertEqual(recorded()[-1], "COMPOSE_FILE=compose.yaml")
+        self.assertEqual(re.findall(r"^LG_ACCESS_MODE=.*$", self.env.read_text(), re.M)[-1], "LG_ACCESS_MODE=local")
 
     def test_metrics_setting_records_the_compose_profile(self):
         def profiles():

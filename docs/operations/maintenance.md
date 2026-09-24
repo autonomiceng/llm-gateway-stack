@@ -212,10 +212,11 @@ budgeting archive storage; `ALTER SYSTEM RESET archive_timeout; SELECT pg_reload
 returns to the upstream default.
 
 Installations from before the literal `COMPOSE_FILE`: after `git pull`, run
-`python3 scripts/bootstrap.py` once before any direct `docker compose` command. It
-replaces a recorded `compose.${LG_ACCESS_MODE:-local}.yaml` token with the literal list
-(`compose.local.yaml` no longer exists) and recreates Valkey, which now reads its password
-from a Compose config file instead of its command line. Delete any Langfuse v3-to-v4
+`python3 scripts/bootstrap.py --render-only` before `docker compose pull` or any other
+direct Compose command. It replaces a recorded `compose.${LG_ACCESS_MODE:-local}.yaml`
+token with the literal list (`compose.local.yaml` no longer exists) and starts nothing.
+The following full bootstrap recreates Valkey, which now reads its password from a
+Compose config file instead of its command line. Delete any Langfuse v3-to-v4
 migration write-mode line from `.env`; Compose no longer passes it. Backups no longer have
 an unfenced option: every new Checkpoint is fenced, and restore still accepts an older
 unfenced one with `--allow-unfenced`.

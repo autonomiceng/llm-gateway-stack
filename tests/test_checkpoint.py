@@ -305,6 +305,8 @@ class CaptureAndRestoreTests(unittest.TestCase):
             stack.volumes = bootstrap.volume_names('drill')
             stack.images = {'postgres': 'postgres:pinned'}
             checked_mounts = []
+            # An earlier restore under umask 077 left the console directory unreadable to Caddy.
+            (root / 'data/console').mkdir(parents=True, mode=0o700)
 
             def runner(argv):
                 code = 0
