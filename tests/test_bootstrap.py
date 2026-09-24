@@ -665,16 +665,20 @@ sys.exit(19)
         self.render()
         self.assertEqual(profiles()[-1], "COMPOSE_PROFILES=debug")
         # A shell COMPOSE_PROFILES applies to this run only, as Compose would read it.
-        with patch.dict(os.environ, {"COMPOSE_PROFILES": "trial", "LG_METRICS": "true"}):
+        with patch.dict(os.environ, {"COMPOSE_PROFILES": "trial"}):
             self.render()
-            self.assertEqual(os.environ["COMPOSE_PROFILES"], "trial,metrics")
+            self.assertEqual(os.environ["COMPOSE_PROFILES"], "trial")
         self.assertEqual(profiles()[-1], "COMPOSE_PROFILES=debug")
-        # A shell selection is saved with its profile; the next plain run keeps it.
-        with patch.dict(os.environ, {"LG_METRICS": "TRUE"}):
+        # A shell LG_METRICS is saved with the recorded profiles, never the shell's; the next plain run keeps it.
+        for shell in ({"LG_METRICS": "TRUE"}, {"LG_METRICS": "TRUE", "COMPOSE_PROFILES": "trial"}):
+            self.env.write_text(self.env.read_text() + "LG_METRICS=false\nCOMPOSE_PROFILES=debug\n")
+            with patch.dict(os.environ, shell):
+                self.render()
+                if "COMPOSE_PROFILES" in shell:
+                    self.assertEqual(os.environ["COMPOSE_PROFILES"], "trial,metrics")
             self.render()
-        self.render()
-        self.assertEqual(profiles()[-1], "COMPOSE_PROFILES=debug,metrics")
-        self.assertEqual(re.findall(r"^LG_METRICS=.*$", self.env.read_text(), re.M)[-1], "LG_METRICS=true")
+            self.assertEqual(profiles()[-1], "COMPOSE_PROFILES=debug,metrics")
+            self.assertEqual(re.findall(r"^LG_METRICS=.*$", self.env.read_text(), re.M)[-1], "LG_METRICS=true")
         with patch.dict(os.environ, {"LG_METRICS": "yes"}), self.assertRaises(bootstrap.Refused) as raised:
             self.render()
         self.assertEqual(raised.exception.code, "invalid_settings")

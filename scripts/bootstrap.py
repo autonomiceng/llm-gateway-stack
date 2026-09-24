@@ -730,16 +730,17 @@ def bootstrap(argv: list[str], runner: Runner = run) -> int:
             os.environ["COMPOSE_FILE"] = selected_files
         elif selected_files != recorded_files:
             write_env(env_file, read_env(env_file)[0], template, {"COMPOSE_FILE": selected_files})
+        # A shell LG_METRICS is saved with the recorded profiles it selects; a shell
+        # COMPOSE_PROFILES applies to this run only.
+        metrics = settings.get("LG_METRICS", "")
+        changes = {"LG_METRICS": metrics.lower()} if metrics != recorded_metrics else {}
+        saved_profiles = compose_profiles({"LG_METRICS": metrics, "COMPOSE_PROFILES": recorded_profiles})
+        if saved_profiles != recorded_profiles:
+            changes["COMPOSE_PROFILES"] = saved_profiles
+        if changes:
+            write_env(env_file, read_env(env_file)[0], template, changes)
         if "COMPOSE_PROFILES" in os.environ:
             os.environ["COMPOSE_PROFILES"] = selected_profiles
-        else:
-            # A shell LG_METRICS is saved with the profile it selects, so the next run keeps both.
-            metrics = settings.get("LG_METRICS", "")
-            changes = {"LG_METRICS": metrics.lower()} if metrics != recorded_metrics else {}
-            if selected_profiles != recorded_profiles:
-                changes["COMPOSE_PROFILES"] = selected_profiles
-            if changes:
-                write_env(env_file, read_env(env_file)[0], template, changes)
         if args.render_only:
             print(json.dumps({"env": str(env_file), "project": project, "generated": sorted(missing)}))
             return 0
