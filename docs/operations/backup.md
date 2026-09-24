@@ -1,5 +1,17 @@
 # Backup and restore
 
+Take, keep and restore Checkpoints, and prove the pair with the drill.
+
+- [Storage](#storage)
+- [Secrets](#secrets)
+- [What a Checkpoint contains](#what-a-checkpoint-contains)
+- [Fencing](#fencing)
+- [Restore](#restore)
+- [RPO, RTO and the drill](#rpo-rto-and-the-drill)
+- [Retention](#retention)
+- [Scheduling and monitoring](#scheduling-and-monitoring)
+- [Known limitations](#known-limitations)
+
 Run from the checkout, with Python 3, Docker Compose and the pinned images available:
 
 ```sh
@@ -63,8 +75,8 @@ Each UTC timestamp directory holds:
 
 Before any fencing, backup compares every project container's image, image content and
 persistent mounts with resolved Compose and refuses drift or leftover one-off containers.
-Every image must be local and resolve to a registry digest; custody of those images (a
-registry or a tested image archive) is separate from the data Checkpoint. Custom Postgres
+Every image must be local and resolve to a registry digest; keeping those images
+available (a registry or a tested image archive) is separate from the data Checkpoint. Custom Postgres
 tablespaces are refused.
 
 ## Fencing

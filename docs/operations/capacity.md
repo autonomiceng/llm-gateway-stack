@@ -71,6 +71,6 @@ Verify `redis_up{job="llm-gateway-valkey"} == 1`,
 `redis_memory_used_bytes{job="llm-gateway-valkey"} / redis_memory_max_bytes{job="llm-gateway-valkey"}`,
 and [archive/Checkpoint queries](backup.md). Alert above 80% Valkey maxmemory, below 15%
 free disk bytes or inodes, on scrape failure and Checkpoint age over 26 hours. Check
-ClickHouse merge backlog and Langfuse latency separately; this slice adds no ClickHouse
+ClickHouse merge backlog and Langfuse latency separately; the stack ships no ClickHouse
 exporter or merge alert. A configured scrape and tested real receiver in the observability
 stack are required before relying on alerts.

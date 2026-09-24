@@ -7,9 +7,7 @@ remain with their respective owners.
 - LiteLLM: https://github.com/BerriAI/litellm/blob/main/litellm/proxy/swagger/favicon.png
 - Langfuse: https://github.com/langfuse/langfuse/blob/main/web/public/icon.svg
 - RustFS: https://github.com/rustfs/console/blob/main/app/icon.svg
-- Grafana: https://github.com/grafana/grafana/blob/main/public/img/grafana_icon.svg
 
-Gateway and Backplane use simple original SVG symbols until those projects have brand marks.
 Icons are decorative; adjacent text supplies the accessible link name.
 
 GitHub mark: https://github.com/primer/octicons/blob/main/icons/mark-github-16.svg (MIT; see ../licenses/octicons.txt).

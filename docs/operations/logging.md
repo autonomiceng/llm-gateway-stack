@@ -1,5 +1,12 @@
 # Runtime logs and persistent data
 
+Where runtime logs go, what stays on disk on purpose, and the override for hosts without
+journald.
+
+- [Application audit](#application-audit)
+- [Intentional persistent state](#intentional-persistent-state)
+- [Hosts without journald](#hosts-without-journald)
+
 The deployment default is Docker's `journald` driver for every service, with
 `cache-disabled: "true"`. It requires a Linux Docker host with journald available.
 There is no remote logging driver and no dependency on Alloy, Loki or the observability

@@ -34,14 +34,14 @@ Model choice and the brief templates every delegation carries: `docs/agents/mode
 
 ## Where things live
 
-- `compose.yaml` - the whole stack. Default images are pinned inline as tag plus digest, with full-reference `LG_*_IMAGE` overrides; default versions are written only here.
-- `.env.example` - every operator setting, one comment line each, no secrets. `scripts/bootstrap.py` renders `.env` with generated secrets and starts the stack.
-- `config.yaml` - LiteLLM proxy config. `docker/litellm/` holds its callback code.
-- `docker/caddy/Caddyfile` - one file for Local and Public Mode; `docker/caddy/console/` is the static Stack Console.
-- `docker/postgres/init/` - first-boot SQL. Runs only on an empty cluster.
-- `scripts/` - `bootstrap.py` (also writes the Status Document, `data/console/status.json`), `validate.sh` (static gates, what CI runs), `smoke.sh` (the Smoke Contract, boots a disposable project), `backup.sh` and `restore.sh`, `retire-status-timer.sh` (one-time removal of the version 1 status timer).
-- `tests/` - Python unittest with a fake runner; never calls Docker.
-- `docs/DESIGN.md` the map, `docs/adr/` decisions, `docs/operations/` runbooks, `docs/agents/` guidance, `docs/conventions.md` what the four repos share.
+- `compose.yaml`: the whole stack. Default images are pinned inline as tag plus digest, with full-reference `LG_*_IMAGE` overrides; default versions are written only here. `compose.public.yaml`, `compose.proxy.yaml`, `compose.files.yaml`, `compose.acme-ca-root.yaml` and `compose.acme-eab.yaml` are the small overlays bootstrap records in `COMPOSE_FILE` for the mode and issuer.
+- `.env.example`: every operator setting, one comment line each, no secrets. `scripts/bootstrap.py` renders `.env` with generated secrets and starts the stack.
+- `config.yaml`: LiteLLM proxy config. `docker/litellm/` holds its callback code.
+- `docker/caddy/Caddyfile`: one file for Local, Public and Proxy Mode; `docker/caddy/access-mode.sh` validates the settings before Caddy starts; `docker/caddy/console/` is the static Stack Console.
+- `docker/postgres/init/`: first-boot SQL. Runs only on an empty cluster.
+- `scripts/`: `bootstrap.py` (also writes the Status Document, `data/console/status.json`), `validate.sh` (static gates, what CI runs), `smoke.sh` (the Smoke Contract, boots a disposable project), `backup.sh` and `restore.sh` (Checkpoints), `backup-drill.sh` (proves the pair), `destroy.sh` (deliberate removal), `retire-status-timer.sh` (one-time removal of the version 1 status timer).
+- `tests/`: Python unittest with a fake runner; never calls Docker.
+- `docs/DESIGN.md` the map, `docs/adr/` decisions, `docs/operations/` runbooks, `docs/agents/` guidance, `docs/conventions.md` what the four repos share (vendored from platform-edge; never edit it here).
 
 Conventions: only Caddy publishes ports; only Caddy and the two datastore exporters join the `platform` network; each service lists its environment explicitly, no `env_file`; stack-owned settings are `LG_*`, upstream apps keep their names. Service and volume names are interfaces: renaming one needs a documented migration.
 
@@ -55,4 +55,4 @@ Conventions: only Caddy publishes ports; only Caddy and the two datastore export
 
 ## Finish
 
-Run the validation ladder in `docs/agents/change-map.md`. Report what ran, what could not run, and any operator action or compatibility break.
+Run the gates: `scripts/validate.sh`, `python3 -m unittest discover -s tests`, and `scripts/smoke.sh` when Compose, an image pin, the Caddyfile or bootstrap changed. Report what ran with counts, what could not run, and any operator action or compatibility break.
