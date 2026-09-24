@@ -416,20 +416,34 @@ sys.exit(19)
             bootstrap.ensure_network(runner_with(network_exists=False, create_fails=True, ipam="[]"))
         self.assertEqual(raised.exception.code, "platform_network_mismatch")
 
-    def test_access_mode_defaults_and_conflicts(self):
+    def resolve(self, settings):
+        """access_settings, with the arguments of every gateway entrypoint run it makes."""
+        validator = str(self.template.parent / "docker/caddy/access-mode.sh")
+        calls, real_run = [], subprocess.run
+
+        def run(argv, **options):
+            if validator in argv:
+                calls.append(argv[argv.index(validator) + 1:])
+            return real_run(argv, **options)
+
+        with patch.object(bootstrap.subprocess, "run", run):
+            return bootstrap.access_settings(settings), calls
+
+    def test_access_settings_resolve_defaults_and_are_validated_once_by_the_gateway_entrypoint(self):
+        validator = str(self.template.parent / "docker/caddy/access-mode.sh")
         for mode, scheme, listener, issuer in (
             ("local", "http", "dual", "internal"),
             ("public", "https", "https", "acme"),
             ("proxy", "https", "http", ""),
         ):
             with self.subTest(mode=mode):
-                values = bootstrap.access_settings({"LG_ACCESS_MODE": mode, "LG_PUBLIC_DOMAIN": "gateway.test",
-                                                    "LG_TRUSTED_PROXIES": "172.30.0.0/24"})
+                values, calls = self.resolve({"LG_ACCESS_MODE": mode, "LG_PUBLIC_DOMAIN": "gateway.test",
+                                              "LG_TRUSTED_PROXIES": "172.30.0.0/24"})
                 self.assertEqual(tuple(values[key] for key in ("LG_SCHEME", "LG_LISTEN_SCHEME", "LG_TLS_ISSUER")),
                                  (scheme, listener, issuer))
+                self.assertEqual(calls, [["--origins"]])
                 environment = {**values, "LG_HTTPS_PUBLISHED": str(mode != "proxy").lower()}
-                result = subprocess.run(["sh", str(self.template.parent / "docker/caddy/access-mode.sh"), "true"],
-                                        env=environment, capture_output=True, text=True)
+                result = subprocess.run(["sh", validator, "true"], env=environment, capture_output=True, text=True)
                 self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(bootstrap.access_settings({})["LG_ACCESS_MODE"], "local")
         for proxies in (None, ""):
@@ -437,17 +451,25 @@ sys.exit(19)
             if proxies is not None:
                 values["LG_TRUSTED_PROXIES"] = proxies
             self.assertEqual(bootstrap.access_settings(values)["LG_TRUSTED_PROXIES"], "172.30.0.2/32")
-        for values in (
-            {"LG_ACCESS_MODE": "invalid"},
-            {"LG_SCHEME": "ftp"},
-            {"LG_ACCESS_MODE": "public"},
-            {"LG_ACCESS_MODE": "public", "LG_PUBLIC_DOMAIN": "gateway.test", "LG_SCHEME": "http"},
-            {"LG_ACCESS_MODE": "proxy", "LG_TRUSTED_PROXIES": "172.30.0.0/24", "COMPOSE_FILE": "compose.yaml"},
-            {"LG_PUBLIC_DOMAIN": "127.0.0.1"},
-            {"LG_PUBLIC_DOMAIN": 'untrusted"host'},
+        # The entrypoint's refusal reaches the operator verbatim; Python keeps no copy of its rules.
+        for values, named in (
+            ({"LG_ACCESS_MODE": "invalid"}, "LG_ACCESS_MODE"),
+            ({"LG_SCHEME": "ftp"}, "LG_SCHEME"),
+            ({"LG_ACCESS_MODE": "public"}, "DNS domain"),
+            ({"LG_ACCESS_MODE": "public", "LG_PUBLIC_DOMAIN": "gateway.test", "LG_SCHEME": "http"}, "HTTPS"),
+            ({"LG_PUBLIC_DOMAIN": "127.0.0.1"}, "127.0.0.1"),
+            ({"LG_PUBLIC_DOMAIN": 'untrusted"host'}, "LG_PUBLIC_DOMAIN"),
+            ({"LG_ACCESS_MODE": "proxy", "LG_BIND_HOST": "0.0.0.0", "LG_TRUSTED_PROXIES": "172.30.0.0/24"}, "LG_BIND_HOST"),
         ):
-            with self.subTest(values=values), self.assertRaises(bootstrap.Refused):
+            with self.subTest(values=values), self.assertRaises(bootstrap.Refused) as raised:
                 bootstrap.access_settings(values)
+            self.assertEqual(raised.exception.code, "invalid_access_settings")
+            self.assertTrue(raised.exception.detail.startswith("Conflicting access settings:"), raised.exception.detail)
+            self.assertIn(named, raised.exception.detail)
+        # The Compose overlay check is bootstrap's own: the entrypoint never sees COMPOSE_FILE.
+        with self.assertRaises(bootstrap.Refused) as raised:
+            bootstrap.access_settings({"LG_ACCESS_MODE": "proxy", "LG_TRUSTED_PROXIES": "172.30.0.0/24", "COMPOSE_FILE": "compose.yaml"})
+        self.assertIn("compose.proxy.yaml", raised.exception.detail)
 
     def test_public_port_suffix_range_matches_gateway_entrypoint(self):
         for suffix, valid in (("", True), (":1", True), (":65535", True), (":80", True),
@@ -556,7 +578,9 @@ sys.exit(19)
         for mode, issuer in (("public", "internal"), ("local", "acme"), ("local", "none"), ("public", "self-signed")):
             with self.subTest(mode=mode, issuer=issuer), self.assertRaises(bootstrap.Refused) as raised:
                 bootstrap.access_settings({**base, "LG_ACCESS_MODE": mode, "LG_TLS_ISSUER": issuer})
-            self.assertEqual(raised.exception.code, "invalid_settings")
+            # The gateway entrypoint refuses the pair, so direct Compose starts are refused too.
+            self.assertEqual(raised.exception.code, "invalid_access_settings")
+            self.assertIn("LG_TLS_ISSUER", raised.exception.detail)
 
     def tls_settings(self, **values):
         return {"LG_ACCESS_MODE": "public", "LG_PUBLIC_DOMAIN": "gateway.test", "LG_TLS_ISSUER": "files",
@@ -582,9 +606,6 @@ sys.exit(19)
                 argv, 0, "X509v3 Subject Alternative Name: \n    " + ", ".join("DNS:" + n for n in names) + "\n", "")
         with patch.object(bootstrap.shutil, "which", return_value="/usr/bin/openssl"):
             bootstrap.check_tls_inputs(openssl(["gateway.test", "*.GATEWAY.test"]), self.tls_settings(), self.root)
-            bootstrap.check_tls_inputs(openssl(["gateway.test", "litellm.gateway.test", "langfuse.gateway.test",
-                                                "s3.gateway.test"]),
-                                       self.tls_settings(LG_RUSTFS_CONSOLE="off"), self.root)
             for names, uncovered in ((["*.gateway.test"], "cover gateway.test;"),
                                      (["gateway.test", "*.litellm.gateway.test"], "litellm.gateway.test"),
                                      (["gateway.test", "litellm.gateway.test", "langfuse.gateway.test", "s3.gateway.test"],

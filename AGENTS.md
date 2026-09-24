@@ -43,7 +43,7 @@ Model choice and the brief templates every delegation carries: `docs/agents/mode
 - `tests/` - Python unittest with a fake runner; never calls Docker.
 - `docs/DESIGN.md` the map, `docs/adr/` decisions, `docs/operations/` runbooks, `docs/agents/` guidance, `docs/conventions.md` what the four repos share.
 
-Conventions: only Caddy publishes ports; only Caddy, LiteLLM and the two datastore exporters join the `platform` network; each service lists its environment explicitly, no `env_file`; stack-owned settings are `LG_*`, upstream apps keep their names. Service and volume names are interfaces: renaming one needs a documented migration.
+Conventions: only Caddy publishes ports; only Caddy and the two datastore exporters join the `platform` network; each service lists its environment explicitly, no `env_file`; stack-owned settings are `LG_*`, upstream apps keep their names. Service and volume names are interfaces: renaming one needs a documented migration.
 
 ## Taste
 

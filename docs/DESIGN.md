@@ -25,6 +25,9 @@ responses are the most sensitive data most teams have.
   RPO is the Checkpoint interval; the WAL archive supports manual point-in-time recovery
   by an expert. Daily successful off-host Checkpoints target twenty-four hours (ADR-0002).
 - The only network entry is Caddy. In Local Mode nothing leaves the loopback interface.
+  LiteLLM is reachable only through Caddy, on the Platform Network as well.
+- Applications authenticate themselves. The gateway has no address-based operator layer;
+  health probes return a status and an empty body to every client.
 - Response reuse never happens unless the caller asks for it (ADR-0011).
 - The certificate issuer is a setting independent of the access mode: `internal`, `acme`
   (public or private directory, optional trust file and external account binding) or
@@ -56,7 +59,7 @@ upgrades from the pre-2026 stack (ADR-0001, ADR-0014).
    └──────────┘  └────────┘ └────────────┘ └──────┘ └───────────┘
       host path     volume      volume        volume
 
-   platform network (external): caddy as lg-gateway, litellm as lg-litellm
+   platform network (external): caddy as lg-gateway; the exporters with the metrics profile
 ```
 
 LiteLLM keeps keys, teams, spend and model config in its Postgres database and uses Valkey

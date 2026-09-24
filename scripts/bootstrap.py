@@ -397,58 +397,23 @@ def compose_up(root: Path, env_file: Path, runner: Runner, langfuse_origin: str)
 
 
 def access_settings(settings: dict[str, str]) -> dict[str, str]:
+    """Resolve the mode's defaults, then let the gateway entrypoint validate them once."""
     values = dict(settings)
     mode = values.get("LG_ACCESS_MODE") or "local"
-    defaults = {
-        "local": ("http", "dual"),
-        "public": ("https", "https"),
-        "proxy": ("https", "http"),
-    }
-    if mode not in defaults:
-        raise Refused("invalid_access_mode", "LG_ACCESS_MODE must be local, public or proxy")
+    scheme, listener = {"local": ("http", "dual"), "public": ("https", "https"),
+                        "proxy": ("https", "http")}.get(mode, ("", ""))
     values["LG_ACCESS_MODE"] = mode
     # Compose renders the same default for an empty value.
     values["LG_TRUSTED_PROXIES"] = values.get("LG_TRUSTED_PROXIES") or EDGE_PROXY
-    values["LG_SCHEME"] = values.get("LG_SCHEME") or defaults[mode][0]
-    values["LG_LISTEN_SCHEME"] = defaults[mode][1]
+    values["LG_SCHEME"] = values.get("LG_SCHEME") or scheme
+    values["LG_LISTEN_SCHEME"] = listener
     values["LG_TLS_ISSUER"] = tls_issuer(mode, values.get("LG_TLS_ISSUER", ""))
-    # Compose interpolates the raw .env value, so only names with a Caddy snippet may pass.
-    if values["LG_TLS_ISSUER"] not in {"local": ("internal", "files"), "public": ("acme", "files"), "proxy": ("",)}[mode]:
-        raise Refused("invalid_settings", "LG_TLS_ISSUER must be internal or files in local mode and acme or files in public mode")
     values.setdefault("LG_PUBLIC_DOMAIN", "localhost")
-    if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9.-]*", values["LG_PUBLIC_DOMAIN"]):
-        raise Refused("invalid_access_settings", "LG_PUBLIC_DOMAIN must be a DNS hostname")
-    if re.fullmatch(r"[0-9.]+", values["LG_PUBLIC_DOMAIN"]):
-        raise Refused("invalid_access_settings", "use a DNS application domain; 127.0.0.1 is a Local Mode root alias")
-    suffix = values.get("LG_PUBLIC_PORT_SUFFIX", "")
-    if not re.fullmatch(r"(?::[0-9]+)?", suffix):
-        raise Refused("invalid_access_settings", "LG_PUBLIC_PORT_SUFFIX must be empty or :port")
-    port = suffix[1:].lstrip("0")
-    if suffix and (not port or len(port) > 5 or int(port) > 65535):
-        raise Refused("invalid_access_settings", "LG_PUBLIC_PORT_SUFFIX must use a port from 1 to 65535")
-    bind = values.get("LG_BIND_HOST") or "127.0.0.1"
-    # Docker also unmaps IPv4-mapped unspecified addresses to the IPv4 wildcard.
-    mapped_wildcard = re.fullmatch(
-        r"\[?(?:[0:]*::[0:]*ffff:(?:0+:0+|0\.0\.0\.0)|"
-        r"(?:0+:){5}ffff:(?:0+:0+|0\.0\.0\.0|:|:0+|0+::))\]?", bind, re.IGNORECASE)
-    if mode == "proxy" and (bind == "0.0.0.0" or re.fullmatch(r"\[?[0:.]*:[0:.]*\]?", bind)
-                            or mapped_wildcard):
-        raise Refused("invalid_access_settings", "proxy requires a loopback or specific-interface LG_BIND_HOST; "
-                      "see docs/operations/ingress.md")
-    if (values["LG_SCHEME"] not in ("http", "https")
-            or (mode == "public" and values["LG_SCHEME"] != "https")
-            or (mode == "proxy" and not values.get("LG_TRUSTED_PROXIES", "").strip())
-            or (mode == "public" and (values["LG_PUBLIC_DOMAIN"] == "localhost"
-                                      or values["LG_PUBLIC_DOMAIN"].endswith(".localhost")))):
-        raise Refused("invalid_access_settings", "invalid public origin or missing proxy trust; "
-                      "see docs/operations/ingress.md")
-    files = values.get("COMPOSE_FILE", COMPOSE_FILE)
-    files = files.replace(MODE_TOKEN, mode).split(os.pathsep)
-    if mode != "local" and not any(Path(name).name == f"compose.{mode}.yaml" for name in files):
-        raise Refused("invalid_access_settings", f"COMPOSE_FILE must include compose.{mode}.yaml")
+    # docker/caddy/access-mode.sh is the one validator of access settings, the issuer the
+    # mode accepts and application origins; it refuses here what it refuses at container start.
     access_keys = {"LG_ACCESS_MODE", "LG_BIND_HOST", "LG_SCHEME", "LG_PUBLIC_DOMAIN", "LG_PUBLIC_PORT_SUFFIX",
                    "LG_TRUSTED_PROXIES", "LG_LISTEN_SCHEME", "LG_TLS_ISSUER"}
-    access_keys.update("LG_" + app + "_URL" for app in ("CONSOLE", "LITELLM", "LANGFUSE", "S3", "RUSTFS", "GRAFANA", "BACKPLANE"))
+    access_keys.update("LG_" + app + "_URL" for app in ("CONSOLE", "LITELLM", "LANGFUSE", "S3", "RUSTFS"))
     environment = {key: value for key, value in values.items() if key in access_keys}
     environment["LG_HTTPS_PUBLISHED"] = str(mode != "proxy").lower()
     origins = subprocess.run(
@@ -458,6 +423,9 @@ def access_settings(settings: dict[str, str]) -> dict[str, str]:
     if origins.returncode:
         raise Refused("invalid_access_settings", origins.stderr.strip())
     values.update(json.loads(origins.stdout))
+    files = values.get("COMPOSE_FILE", COMPOSE_FILE).replace(MODE_TOKEN, mode).split(os.pathsep)
+    if mode != "local" and not any(Path(name).name == f"compose.{mode}.yaml" for name in files):
+        raise Refused("invalid_access_settings", f"COMPOSE_FILE must include compose.{mode}.yaml")
     return values
 
 
@@ -471,8 +439,7 @@ def tls_issuer(mode: str, configured: str) -> str:
 def tls_hostnames(settings: dict[str, str]) -> list[str]:
     """Names of the HTTPS sites; configured origins add no certificate names."""
     domain = settings["LG_PUBLIC_DOMAIN"]
-    apps = ["litellm", "langfuse", "s3"] + (["rustfs"] if settings.get("LG_RUSTFS_CONSOLE") != "off" else [])
-    return [domain] + [f"{app}.{domain}" for app in apps]
+    return [domain] + [f"{app}.{domain}" for app in ("litellm", "langfuse", "s3", "rustfs")]
 
 
 def certificate_covers(names: set[str], host: str) -> bool:

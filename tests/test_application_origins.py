@@ -14,7 +14,7 @@ sys.path.insert(0, str(ROOT / 'scripts'))
 import bootstrap
 
 ORIGINS = {f'LG_{app}_URL': f'https://darkforge.tail694fe2.ts.net:{port}'
-           for app, port in (('LITELLM', 8443), ('LANGFUSE', 8444), ('S3', 8445), ('CONSOLE', 8446), ('GRAFANA', 8447), ('BACKPLANE', 8448), ('RUSTFS', 8449))}
+           for app, port in (('LITELLM', 8443), ('LANGFUSE', 8444), ('S3', 8445), ('CONSOLE', 8446), ('RUSTFS', 8449))}
 
 
 class ApplicationOriginsTests(unittest.TestCase):
@@ -35,8 +35,6 @@ class ApplicationOriginsTests(unittest.TestCase):
                                 capture_output=True, text=True, check=True)
         derived = dict(line.split('=', 1) for line in result.stdout.splitlines() if '=' in line)
         for key, origin in ORIGINS.items():
-            if key in ('LG_GRAFANA_URL', 'LG_BACKPLANE_URL'):
-                continue
             self.assertEqual(derived[key.replace('_URL', '_AUTHORITY')], origin.split('://')[1])
         for invalid in ('ftp://gateway.test', 'https://user:password@gateway.test',
                         'https://gateway.test/', 'https://gateway.test/path',
@@ -100,51 +98,39 @@ const vm = require('node:vm');
 const fs = require('node:fs');
 (async () => {
   for (const explicit of [false, true]) {
-    const origins = {scheme: 'http', domain: 'localhost', port: ':8080', rustfsConsole:'on'};
+    const origins = {scheme: 'http', domain: 'localhost', port: ':8080'};
     if (explicit) Object.assign(origins, JSON.parse(process.env.TEST_ORIGINS));
-    const links = ['litellm', 'langfuse', 's3', 'grafana', 'backplane', 'rustfs'].map(link => ({
-      dataset: {link, path: '/ui/'}, disabled: true,
-      closest: () => ['grafana', 'backplane'].includes(link) ? {dataset: {ready: 'true'}} : null,
-      removeAttribute(name) { if (name === 'aria-disabled') this.disabled = false; if (name === 'href') delete this.href; },
-      setAttribute(name) { if (name === 'aria-disabled') this.disabled = true; }
-    }));
+    const links = ['litellm', 'langfuse', 's3', 'rustfs'].map(link => ({dataset: {link, path: '/ui/'}}));
     const element = () => ({children: [], classList: {add() {}},
       setAttribute(name, value) { this[name] = value; },
       addEventListener(name, handler) { this[name] = handler; },
       append(...children) { this.children.push(...children); },
       querySelector(selector) { return this.children.find(c => selector === '.copy' && c.className === 'copy'); }});
-    const codes = ['litellm', 'langfuse', 's3', 'grafana', 'backplane', 'rustfs'].map(url => ({
+    const codes = ['litellm', 'langfuse', 's3', 'rustfs'].map(url => ({
       dataset: {url}, parentElement: element(), closest: () => ({querySelector: () => ({textContent: url})})
     }));
-    let copied, clearFeedback;
+    let copied, clearFeedback, poll;
 
-    const consoleLink = links.find(l => l.dataset.link === 'rustfs'); const disabled = {}; let poll;
     const context = {AbortSignal, navigator: {clipboard: {writeText: async value => {copied = value;}}},
       setTimeout: fn => {clearFeedback = fn; return 1;}, clearTimeout() {}, location: {protocol: 'https:', host: 'unrelated.test'},
       fetch: async path => ({ok: true, json: async () => path === '/origins.json' ? origins : {}}),
       document: {createElement: element, querySelectorAll: s => s === '[data-link]' ? links : s === '[data-url]' ? codes : [],
-                 querySelector: s => s === '[data-rustfs-console]' ? consoleLink : s === '[data-rustfs-disabled]' ? disabled : ({})}, setInterval: fn => {poll = fn;}};
+                 querySelector: () => ({})}, setInterval: fn => {poll = fn;}};
     vm.runInNewContext(fs.readFileSync(process.argv[1], 'utf8'), context);
     await new Promise(setImmediate);
     for (const el of links) assert.equal(el.href,
       (explicit ? origins[el.dataset.link] : `http://${el.dataset.link}.localhost:8080`) + '/ui/');
-    for (const el of links) assert.equal(el.disabled, false, 'ready links must be accessible after origins load');
     for (const el of codes) assert.equal(el.textContent,
       explicit ? origins[el.dataset.url] : `http://${el.dataset.url}.localhost:8080`);
-    assert.equal(consoleLink.disabled, false);
-    origins.rustfsConsole = 'off'; origins.backplane = 'https://new.test:8448';
+    origins.rustfs = 'https://new.test:8449';
     await poll();
-    assert.equal(consoleLink.href, undefined); assert.equal(consoleLink.disabled, true); assert.equal(disabled.hidden, false);
-    assert.equal(links.find(l => l.dataset.link === 'backplane').href, 'https://new.test:8448/ui/');
-    origins.rustfsConsole = 'on'; await poll();
-    assert.equal(consoleLink.disabled, false); assert.equal(disabled.hidden, true);
-    assert.ok(consoleLink.href.endsWith('/ui/'));
-    const endpoint = codes.find(c => c.dataset.url === 'backplane');
+    assert.equal(links.find(l => l.dataset.link === 'rustfs').href, 'https://new.test:8449/ui/');
+    const endpoint = codes.find(c => c.dataset.url === 'rustfs');
     const copy = endpoint.parentElement.querySelector('.copy');
     const feedback = endpoint.parentElement.children.find(c => c.className === 'copy-status');
     assert.equal(copy.disabled, false);
     await copy.click();
-    assert.equal(copied, 'https://new.test:8448', 'copy must use refreshed endpoint');
+    assert.equal(copied, 'https://new.test:8449', 'copy must use refreshed endpoint');
     assert.equal(feedback.textContent, 'Copied'); clearFeedback(); assert.equal(feedback.textContent, '');
     context.navigator.clipboard.writeText = async () => { throw new Error('denied'); };
     await copy.click(); assert.equal(feedback.textContent, 'Select the address to copy');

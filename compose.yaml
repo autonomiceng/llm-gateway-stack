@@ -2,8 +2,8 @@
 # and bootstrap records it in COMPOSE_PROFILES when LG_METRICS=true.
 # Default images are pinned as tag plus digest; Renovate raises bumps, humans merge them.
 # Every published port belongs to Caddy. Everything else is private to this project
-# or, for ingress and metrics targets, reachable on the shared `platform`
-# network under an lg- prefixed alias.
+# or, for the ingress and metrics targets, reachable on the shared `platform`
+# network under an lg- prefixed alias. LiteLLM is reachable only through Caddy.
 name: llm-gateway-stack
 
 x-logging: &logging
@@ -77,6 +77,12 @@ services:
     pids_limit: 512
     mem_limit: 128m
     mem_reservation: 32m
+    # Same hardening as Platform Edge: root without capabilities except binding 80 and 443.
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    read_only: true
+    tmpfs: [/tmp]
     entrypoint: ["/bin/sh", "/etc/caddy/access-mode.sh"]
     command: ["caddy", "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]
     ports:
@@ -88,8 +94,6 @@ services:
       LG_HTTPS_PUBLISHED: "true"
       LG_TRUSTED_PROXIES: ${LG_TRUSTED_PROXIES:-172.30.0.2/32}
       LG_CHECKPOINT_ALLOW: ${LG_CHECKPOINT_ALLOW:-127.0.0.0/8 ::1}
-      LG_OPERATOR_ALLOW: ${LG_OPERATOR_ALLOW:-127.0.0.0/8 ::1}
-      LG_RUSTFS_CONSOLE: ${LG_RUSTFS_CONSOLE:-on}
       LG_SCHEME: ${LG_SCHEME:-http}
       LG_PUBLIC_DOMAIN: ${LG_PUBLIC_DOMAIN:-localhost}
       # Local Mode issues with the internal CA; compose.public.yaml defaults to acme.
@@ -105,8 +109,6 @@ services:
       LG_LANGFUSE_URL: ${LG_LANGFUSE_URL:-}
       LG_S3_URL: ${LG_S3_URL:-}
       LG_RUSTFS_URL: ${LG_RUSTFS_URL:-}
-      LG_GRAFANA_URL: ${LG_GRAFANA_URL:-}
-      LG_BACKPLANE_URL: ${LG_BACKPLANE_URL:-}
     volumes:
       - ./docker/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
       - ./docker/caddy/access-mode.sh:/etc/caddy/access-mode.sh:ro
@@ -180,10 +182,6 @@ services:
       timeout: 10s
       retries: 3
       start_period: 60s
-    networks:
-      default:
-      platform:
-        aliases: [lg-litellm]
 
   langfuse-web:
     image: ${LG_LANGFUSE_WEB_IMAGE:-langfuse/langfuse:4.37.0@sha256:06c0eaaef81035e06a9f6ed5fe343e187c1dde970b722c9a20269612742e4f68}
@@ -267,25 +265,13 @@ services:
     pids_limit: 512
     mem_limit: 1g
     mem_reservation: 256m
-    # Translate the stack's on/off switch to RustFS's boolean, preserving its entrypoint.
-    entrypoint:
-      - /bin/sh
-      - -ec
-      - |
-        case "$$LG_RUSTFS_CONSOLE" in
-          on) export RUSTFS_CONSOLE_ENABLE=true ;;
-          off) export RUSTFS_CONSOLE_ENABLE=false ;;
-          *) echo 'LG_RUSTFS_CONSOLE must be on or off' >&2; exit 1 ;;
-        esac
-        exec /entrypoint.sh "$$@"
-      - sh
     command: ["/data"]
     environment:
       RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY}
       RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY}
       RUSTFS_ADDRESS: ":9000"
-      LG_RUSTFS_CONSOLE: ${LG_RUSTFS_CONSOLE:-on}
-      RUSTFS_CONSOLE_ENABLE: "false"
+      # The admin console is always on; Caddy serves it at rustfs.<domain> behind RustFS's login.
+      RUSTFS_CONSOLE_ENABLE: "true"
       RUSTFS_CONSOLE_ADDRESS: ":9001"
       RUSTFS_OBS_LOG_DIRECTORY: ""
       RUSTFS_OBS_LOG_STDOUT_ENABLED: "true"

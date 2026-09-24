@@ -22,22 +22,9 @@
     const response = await fetch("/origins.json", { cache: "no-store", signal: AbortSignal.timeout(4000) });
     if (!response.ok) throw new Error(String(response.status));
     const origin = await response.json();
-    const consoleLink = document.querySelector('[data-rustfs-console]');
-    const consoleEnabled = origin.rustfsConsole === 'on';
-    document.querySelector('[data-rustfs-disabled]').hidden = consoleEnabled;
     const hostFor = (sub) => origin[sub] || `${origin.scheme}://${sub}.${origin.domain}${origin.port}`;
     for (const link of document.querySelectorAll("[data-link]")) {
-      link.dataset.targetUrl = hostFor(link.dataset.link) + (link.dataset.path || "/");
-      if (link === consoleLink && !consoleEnabled) {
-        link.removeAttribute("href");
-        link.setAttribute("aria-disabled", "true");
-        continue;
-      }
-      const optional = link.closest?.("[data-optional]");
-      if (!optional || optional.dataset.ready === "true") {
-        link.href = link.dataset.targetUrl;
-        link.removeAttribute("aria-disabled");
-      }
+      link.href = hostFor(link.dataset.link) + (link.dataset.path || "/");
     }
     for (const code of document.querySelectorAll("[data-url]")) {
       code.textContent = hostFor(code.dataset.url) + (code.dataset.path || "");
@@ -49,32 +36,6 @@
     const b = li.querySelector("[data-badge]");
     b.dataset.state = state;
     b.textContent = label;
-    if (li.hasAttribute("data-optional")) {
-      li.dataset.ready = String(state === "ok");
-      for (const link of li.querySelectorAll("[data-link]")) {
-        if (state === "ok" && link.dataset.targetUrl) {
-          link.href = link.dataset.targetUrl;
-          link.removeAttribute("aria-disabled");
-        } else {
-          link.removeAttribute("href");
-          link.setAttribute("aria-disabled", "true");
-        }
-      }
-    }
-  };
-  // A service this browser has seen healthy is "down" when it stops answering;
-  // one it has never seen is "not installed". Optional cards only.
-  const seenKey = (s) => `console.seen.${s}`;
-  const seenThisPage = new Set();
-  const seen = (s) => {
-    if (seenThisPage.has(s)) return true;
-    try { return localStorage.getItem(seenKey(s)) !== null; }
-    catch { return false; }
-  };
-  const remember = (s) => {
-    seenThisPage.add(s);
-    try { localStorage.setItem(seenKey(s), new Date().toISOString()); }
-    catch { /* Browser policy can disable persistent storage. */ }
   };
 
   const check = async (li) => {
@@ -83,11 +44,8 @@
     const timer = setTimeout(() => ctl.abort(), 4000);
     try {
       const res = await fetch(`${base}/health/${service}`, { signal: ctl.signal, cache: "no-store" });
-      if (res.ok) { remember(service); return badge(li, "ok", "healthy"); }
-      if (res.status === 502 || res.status === 503) {
-        const absent = li.hasAttribute("data-optional") && !seen(service);
-        return badge(li, absent ? "absent" : "down", absent ? "not installed" : "unreachable");
-      }
+      if (res.ok) return badge(li, "ok", "healthy");
+      if (res.status === 502 || res.status === 503) return badge(li, "down", "unreachable");
       badge(li, "degraded", `http ${res.status}`);
     } catch (err) {
       badge(li, err.name === "AbortError" ? "stale" : "down",

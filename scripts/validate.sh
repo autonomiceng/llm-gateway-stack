@@ -45,10 +45,16 @@ for name, svc in config["services"].items():
     if svc.get("logging") != {"driver": "journald", "options": {"cache-disabled": "true"}}:
         sys.exit(f"{name}: journald with no Docker file cache is required")
 shared = {name for name, svc in config["services"].items() if "platform" in (svc.get("networks") or {})}
-if shared != {"caddy", "litellm", "valkey-exporter", "postgres-exporter"}:
-    sys.exit(f"only caddy, litellm and datastore exporters join the platform network, found {sorted(shared)}")
+if shared != {"caddy", "valkey-exporter", "postgres-exporter"}:
+    sys.exit(f"only caddy and the datastore exporters join the platform network, found {sorted(shared)}")
+caddy = config["services"]["caddy"]
+hardened = (caddy.get("read_only") is True and caddy.get("cap_drop") == ["ALL"] and caddy.get("cap_add") == ["NET_BIND_SERVICE"]
+            and caddy.get("security_opt") == ["no-new-privileges:true"] and caddy.get("tmpfs") == ["/tmp"]
+            and caddy.get("pids_limit") and caddy.get("mem_limit"))
+if not hardened:
+    sys.exit("caddy must run read-only with no capabilities beyond NET_BIND_SERVICE, no-new-privileges, a /tmp tmpfs, and PID and memory limits")
 PY
-echo "compose config: PASS (exporters only with the metrics profile)"
+echo "compose config: PASS (exporters only with the metrics profile; LiteLLM off the platform network; caddy hardened)"
 
 python3 - "$work" <<'PYIMAGES'
 import json, os, pathlib, subprocess, sys
@@ -166,27 +172,25 @@ for mode in "local http dual localhost internal true" "local http dual localhost
       -e LG_ACME_EAB_KEY_ID=key-id -e LG_ACME_EAB_HMAC=bWFj) ;;
     *) tls=(-e LG_TLS_ISSUER=) ;;
   esac
-  for console in off on; do
-    for proxies in "" "172.30.0.0/24"; do
-      if [[ "$access" == proxy && -z "$proxies" ]]; then continue; fi
-      origins=()
-      if [[ "$domain" == gateway.test ]]; then
-        origins=(-e LG_CONSOLE_URL=https://darkforge.tail694fe2.ts.net:8446
-          -e LG_LITELLM_URL=https://darkforge.tail694fe2.ts.net:8443
-          -e LG_LANGFUSE_URL=https://darkforge.tail694fe2.ts.net:8444
-          -e LG_S3_URL=https://darkforge.tail694fe2.ts.net:8445 -e LG_RUSTFS_URL=https://darkforge.tail694fe2.ts.net:8449)
-      fi
-      docker run --rm "${origins[@]}" -e "LG_RUSTFS_CONSOLE=$console" -e "LG_TRUSTED_PROXIES=$proxies" \
-        -e "LG_ACCESS_MODE=$access" -e "LG_SCHEME=$scheme" -e "LG_HTTPS_PUBLISHED=$published" \
-        -e "LG_OPERATOR_ALLOW=127.0.0.0/8 ::1" -e "LG_LISTEN_SCHEME=$listen" -e "LG_PUBLIC_DOMAIN=$domain" "${tls[@]}" \
-        -v "$root/docker/caddy/Caddyfile:/etc/caddy/Caddyfile:ro" \
-        -v "$root/docker/caddy/access-mode.sh:/etc/caddy/access-mode.sh:ro" --entrypoint /bin/sh \
-        "$(docker compose --env-file "$work/.env" config --images | grep '^caddy')" \
-        /etc/caddy/access-mode.sh caddy validate --config /etc/caddy/Caddyfile >/dev/null || { echo "Caddy validation failed for $mode (console=$console, proxies=$proxies)" >&2; exit 1; }
-    done
+  for proxies in "" "172.30.0.0/24"; do
+    if [[ "$access" == proxy && -z "$proxies" ]]; then continue; fi
+    origins=()
+    if [[ "$domain" == gateway.test ]]; then
+      origins=(-e LG_CONSOLE_URL=https://darkforge.tail694fe2.ts.net:8446
+        -e LG_LITELLM_URL=https://darkforge.tail694fe2.ts.net:8443
+        -e LG_LANGFUSE_URL=https://darkforge.tail694fe2.ts.net:8444
+        -e LG_S3_URL=https://darkforge.tail694fe2.ts.net:8445 -e LG_RUSTFS_URL=https://darkforge.tail694fe2.ts.net:8449)
+    fi
+    docker run --rm "${origins[@]}" -e "LG_TRUSTED_PROXIES=$proxies" \
+      -e "LG_ACCESS_MODE=$access" -e "LG_SCHEME=$scheme" -e "LG_HTTPS_PUBLISHED=$published" \
+      -e "LG_LISTEN_SCHEME=$listen" -e "LG_PUBLIC_DOMAIN=$domain" "${tls[@]}" \
+      -v "$root/docker/caddy/Caddyfile:/etc/caddy/Caddyfile:ro" \
+      -v "$root/docker/caddy/access-mode.sh:/etc/caddy/access-mode.sh:ro" --entrypoint /bin/sh \
+      "$(docker compose --env-file "$work/.env" config --images | grep '^caddy')" \
+      /etc/caddy/access-mode.sh caddy validate --config /etc/caddy/Caddyfile >/dev/null || { echo "Caddy validation failed for $mode (proxies=$proxies)" >&2; exit 1; }
   done
 done
-echo "Caddyfile: PASS (32 configurations: local-internal, local-files, public-acme, public-acme-ca, public-acme-eab, public-files, proxy)"
+echo "Caddyfile: PASS (16 configurations: local-internal, local-files, public-acme, public-acme-ca, public-acme-eab, public-files, proxy)"
 
 # The canonical contract lives in platform-edge; CI has no sibling checkout to compare with.
 sync="${PLATFORM_EDGE_DIR:-$root/../platform-edge}/scripts/sync-conventions.sh"

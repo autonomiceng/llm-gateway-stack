@@ -22,36 +22,28 @@
 	}
 }
 
-(log-format) {
-	format filter {
-		wrap json
-		fields {
-			request>headers delete
-			request>uri regexp \?.* ?REDACTED
-			resp_headers delete
+(access-log) {
+	log {
+		output stdout
+		format filter {
+			wrap json
+			fields {
+				request>headers delete
+				request>uri regexp \?.* ?REDACTED
+				resp_headers delete
+			}
 		}
 	}
 }
 
-(access-log) {
-	log {
-		output stdout
-		import log-format
-	}
-}
-
-(headers-local) {
-	header -Strict-Transport-Security
-}
-
-(headers-public) {
-}
-
-(headers-proxy) {
-}
-
+# Health answers carry a status and nothing else, for every client: the upstream's own
+# status, or 503 for any upstream failure (Status v2).
 (status-only) {
 	reverse_proxy {args[0]} {
+		@failed status 5xx
+		handle_response @failed {
+			respond "" 503
+		}
 		handle_response {
 			respond "" {rp.status_code}
 		}
@@ -60,25 +52,16 @@
 
 (health) {
 	rewrite * {args[1]}
-	@operator remote_ip {$LG_OPERATOR_ALLOW:127.0.0.0/8 ::1}
-	handle @operator {
-		reverse_proxy {args[0]}
-	}
-	handle {
-		import status-only {args[0]}
-	}
+	import status-only {args[0]}
 }
 
 (app) {
 	encode zstd gzip
 	route {
-		# Operator surfaces stay on the Docker network; never through the gateway.
-		@operator path_regexp (?i)^/+metrics(/|$)
-		respond @operator 404
-		@public_health {
-			path /health /health/* /api/public/health /api/public/ready
-			not remote_ip {$LG_OPERATOR_ALLOW:127.0.0.0/8 ::1}
-		}
+		# Scrapers read metrics on the unpublished listener; never through the application listener.
+		@metrics path_regexp (?i)^/+metrics(/|$)
+		respond @metrics 404
+		@public_health path /health /health/* /api/public/health /api/public/ready
 		handle @public_health {
 			import status-only {args[0]}
 		}
@@ -89,12 +72,6 @@
 }
 
 # Stack Console and the health paths it polls. Health answers carry no secrets.
-(console-health-on) {
-	import health rustfs:9001 /rustfs/console/
-}
-(console-health-off) {
-	respond 404
-}
 (console) {
 	handle /status.json {
 		route {
@@ -120,7 +97,7 @@
 		}
 	}
 	handle /health/rustfs-console {
-		import console-health-{$LG_RUSTFS_CONSOLE:on}
+		import health rustfs:9001 /rustfs/console/
 	}
 	# Status v2 health paths are /health/<component>; /health/langfuse predates them.
 	handle /health/caddy {
@@ -156,11 +133,9 @@
 	handle /health/valkey {
 		respond 404
 	}
-	handle /health/backplane {
-		import health bp-server:3000 /health/ready
-	}
-	handle /health/grafana {
-		import health ob-grafana:3000 /api/health
+	# Unknown components, including other stacks, are 404 (Status v2), never a console file.
+	handle /health/* {
+		respond 404
 	}
 	@metrics path_regexp (?i)^/+metrics(/|$)
 	handle @metrics {
@@ -169,7 +144,7 @@
 	handle /origins.json {
 		header Cache-Control "no-store"
 		header Content-Type application/json
-		respond `{"scheme":"{$LG_SCHEME}","domain":"{$LG_PUBLIC_DOMAIN}","port":"{$LG_PUBLIC_PORT_SUFFIX}","console":"{$LG_CONSOLE_URL}","litellm":"{$LG_LITELLM_URL}","langfuse":"{$LG_LANGFUSE_URL}","s3":"{$LG_S3_URL}","rustfs":"{$LG_RUSTFS_URL}","rustfsConsole":"{$LG_RUSTFS_CONSOLE:on}","grafana":"{$LG_GRAFANA_URL}","backplane":"{$LG_BACKPLANE_URL}"}`
+		respond `{"scheme":"{$LG_SCHEME}","domain":"{$LG_PUBLIC_DOMAIN}","port":"{$LG_PUBLIC_PORT_SUFFIX}","console":"{$LG_CONSOLE_URL}","litellm":"{$LG_LITELLM_URL}","langfuse":"{$LG_LANGFUSE_URL}","s3":"{$LG_S3_URL}","rustfs":"{$LG_RUSTFS_URL}"}`
 	}
 	handle {
 		header Cache-Control "no-cache"
@@ -178,27 +153,18 @@
 	}
 }
 
+# LiteLLM's admin UI and OpenAPI document sit behind its own login.
 (litellm) {
 	route {
-		@ui {
-			path_regexp (?i)^/+(ui.*|openapi\.json)$
-			not remote_ip {$LG_OPERATOR_ALLOW:127.0.0.0/8 ::1}
-		}
-		respond @ui 404
 		# Normalize the UI path at its configured browser origin before the app redirects.
 		redir /ui {$LG_LITELLM_URL}/ui/?{query} 308
 		import app litellm:4000
 	}
 }
 
-(rustfs-off) {
-	respond 404
-}
-
-(rustfs-on) {
+# RustFS admin console, behind its own login.
+(rustfs) {
 	route {
-		@denied not remote_ip {$LG_OPERATOR_ALLOW:127.0.0.0/8 ::1}
-		respond @denied 404
 		@console_landing {
 			path /
 			method GET HEAD
@@ -214,7 +180,7 @@
 (proxy-origins) {
 	@rustfs_origin expression `{http.request.hostport}.lowerAscii() == "{$LG_RUSTFS_AUTHORITY}"`
 	handle @rustfs_origin {
-		import rustfs-{$LG_RUSTFS_CONSOLE:on}
+		import rustfs
 	}
 	@console_origin expression `{http.request.hostport}.lowerAscii() == "{$LG_CONSOLE_AUTHORITY}"`
 	handle @console_origin {
@@ -243,6 +209,11 @@
 			header Cache-Control "no-store"
 			respond "" {err.status_code}
 		}
+		# A probe whose upstream cannot answer is a failed probe: 503, status only (Status v2).
+		@health_error path /health /health/* /api/public/health /api/public/ready
+		handle @health_error {
+			respond "" 503
+		}
 		handle {
 			respond "" {err.status_code}
 		}
@@ -252,7 +223,9 @@
 (gateway) {
 	import status-errors
 	import access-log
-	import headers-{$LG_ACCESS_MODE:local}
+	# Local Mode serves HTTP beside HTTPS, so an upstream HSTS header must not reach browsers.
+	@local expression `"{$LG_ACCESS_MODE:local}" == "local"`
+	header @local -Strict-Transport-Security
 	import host-routes
 }
 
@@ -271,7 +244,7 @@
 	}
 	@rustfs host rustfs.{$LG_PUBLIC_DOMAIN}
 	handle @rustfs {
-		import rustfs-{$LG_RUSTFS_CONSOLE:on}
+		import rustfs
 	}
 	handle {
 		import console
@@ -310,18 +283,7 @@
 }
 
 (https-sites) {
-	https://{$LG_PUBLIC_DOMAIN}, https://litellm.{$LG_PUBLIC_DOMAIN}, https://langfuse.{$LG_PUBLIC_DOMAIN}, https://s3.{$LG_PUBLIC_DOMAIN} {
-		import tls-{$LG_TLS_ISSUER}
-		import gateway
-	}
-	import https-rustfs-{$LG_RUSTFS_CONSOLE:on}
-}
-
-(https-rustfs-off) {
-}
-
-(https-rustfs-on) {
-	https://rustfs.{$LG_PUBLIC_DOMAIN} {
+	https://{$LG_PUBLIC_DOMAIN}, https://litellm.{$LG_PUBLIC_DOMAIN}, https://langfuse.{$LG_PUBLIC_DOMAIN}, https://s3.{$LG_PUBLIC_DOMAIN}, https://rustfs.{$LG_PUBLIC_DOMAIN} {
 		import tls-{$LG_TLS_ISSUER}
 		import gateway
 	}
@@ -338,22 +300,9 @@
 	import https-sites
 }
 
-(public-rustfs-off) {
-	@rustfs host rustfs.{$LG_PUBLIC_DOMAIN}
-	handle @rustfs {
-		respond 404
-	}
-}
-
-(public-rustfs-on) {
-	@rustfs host rustfs.{$LG_PUBLIC_DOMAIN}
-	handle @rustfs {
-		redir https://{host}{$LG_PUBLIC_PORT_SUFFIX}{uri} 308
-	}
-}
-
 (mode-public) {
 	http://:80 {
+		import status-errors
 		import access-log
 		@health {
 			host {$LG_PUBLIC_DOMAIN}
@@ -362,8 +311,7 @@
 		handle @health {
 			import console
 		}
-		import public-rustfs-{$LG_RUSTFS_CONSOLE:on}
-		@apps host litellm.{$LG_PUBLIC_DOMAIN} langfuse.{$LG_PUBLIC_DOMAIN} s3.{$LG_PUBLIC_DOMAIN}
+		@apps host litellm.{$LG_PUBLIC_DOMAIN} langfuse.{$LG_PUBLIC_DOMAIN} s3.{$LG_PUBLIC_DOMAIN} rustfs.{$LG_PUBLIC_DOMAIN}
 		handle @apps {
 			redir https://{host}{$LG_PUBLIC_PORT_SUFFIX}{uri} 308
 		}

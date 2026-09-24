@@ -69,7 +69,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0
 .badge[data-state="ok"] { background: var(--ok-bg); color: var(--ok); }
 .badge[data-state="degraded"] { background: var(--warn-bg); color: var(--warn); }
 .badge[data-state="down"] { background: var(--bad-bg); color: var(--bad); }
-.badge[data-state="absent"], .badge[data-state="stale"] { background: var(--off-bg); color: var(--off); }
+.badge[data-state="stale"] { background: var(--off-bg); color: var(--off); }
 table { width: auto; max-width: 100%; border-collapse: collapse; background: var(--card); border: 1px solid var(--line); border-radius: 0.4rem; overflow: hidden; }
 th, td { text-align: left; padding: 0.5rem 1rem; border-top: 1px solid var(--line); font-size: 0.875rem; }
 tr:first-child th, tr:first-child td { border-top: 0; }

@@ -167,6 +167,32 @@ assert get("/versions.json")[0] == 404
 PYSTATUS
 ok "status.json is Status v2, its health paths answer, /versions.json is gone"
 
+# One access policy: the applications' own logins gate their admin surfaces, health bodies
+# stay empty for everyone, and the sibling probes are gone. Docker presents the bridge
+# address as the peer, never loopback.
+code=$(curl -s -o "$work/ui.html" -w '%{http_code}' "http://litellm.$origin/ui/")
+[[ "$code" == 200 ]] || fail "/ui/ answered $code"
+grep -qi 'litellm' "$work/ui.html" || fail "/ui/ did not return the LiteLLM login page"
+code=$(curl -s -o /dev/null -w '%{http_code}' "http://rustfs.$origin/rustfs/console/")
+[[ "$code" == 200 ]] || fail "RustFS console answered $code"
+for probe in "$origin/health/litellm" "litellm.$origin/health/readiness"; do
+  # The body precedes the status code, so an empty 200 answer prints exactly "200".
+  answer=$(curl -sS -w '%{http_code}' "http://$probe")
+  [[ "$answer" == 200 ]] || fail "$probe answered '$answer'; expected status 200 with an empty body"
+done
+for sibling in backplane grafana; do
+  code=$(curl -s -o /dev/null -w '%{http_code}' "http://$origin/health/$sibling")
+  [[ "$code" == 404 ]] || fail "/health/$sibling answered $code"
+done
+ok "LiteLLM UI and RustFS console answer behind their own logins; health bodies empty; sibling probes 404"
+
+# LiteLLM is reachable only through the gateway: no lg-litellm alias on the Platform Network.
+if resolved=$(docker run --rm --network "$network" --entrypoint wget "$caddy_image" -qO- -T 5 http://lg-litellm:4000/health/readiness 2>&1); then
+  fail "lg-litellm answered on the Platform Network: $resolved"
+fi
+[[ "$resolved" == *"bad address"* ]] || fail "lg-litellm failed for another reason than name resolution: $resolved"
+ok "lg-litellm does not resolve on the Platform Network"
+
 # Completion, streaming, and a failure that must not 500.
 body='{"model":"gateway-mock","messages":[{"role":"user","content":"smoke"}]}'
 curl -fsS "http://litellm.$origin/v1/chat/completions" "${auth[@]}" -d "$body" | grep -q '"finish_reason":"stop"' || fail "completion"
@@ -253,8 +279,10 @@ openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-256 -noenc -keyout "$work/ce
 openssl x509 -req -in "$work/leaf.csr" -CA "$work/ca.crt" -CAkey "$work/ca.key" -CAcreateserial -out "$work/certs/tls.crt" \
   -days 2 -extfile "$work/leaf.cnf" 2>/dev/null
 docker compose --env-file "$env_file" exec -T caddy cat /data/caddy/pki/authorities/local/root.crt > "$work/root.crt"
-# The key keeps openssl's 0600 inside the private work directory. Without a shell
-# COMPOSE_FILE, bootstrap records the overlay in the env file after the mode file.
+# Caddy reads the key as uid 0 without CAP_DAC_OVERRIDE; this throwaway key stays inside the
+# private work directory. Without a shell COMPOSE_FILE, bootstrap records the overlay in the
+# env file after the mode file.
+chmod 0644 "$work/certs/tls.key"
 unset COMPOSE_FILE
 export LG_TLS_ISSUER=files LG_TLS_DIR="$work/certs" LG_TLS_CA="$work/ca.crt"
 python3 scripts/bootstrap.py --env-file "$env_file" >/dev/null || fail "bootstrap with the files issuer"
