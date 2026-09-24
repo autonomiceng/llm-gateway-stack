@@ -65,14 +65,13 @@ It prints each removal and is safe to rerun. Bootstrap then replaces the version
 ```sh
 git pull
 docker compose pull
-docker compose up -d --wait
-scripts/validate.sh
-curl -fsS http://localhost/health/litellm http://localhost/health/langfuse
+python3 scripts/bootstrap.py
 ```
 
-When a release adds a setting bootstrap records, such as `LG_METRICS` for the `metrics`
-profile, run `python3 scripts/bootstrap.py` in place of `docker compose up`; for the exporter
-profile, read [metrics](ingress.md#metrics) before the next Checkpoint.
+Bootstrap records any setting a release adds (the literal `COMPOSE_FILE`, `COMPOSE_PROFILES`
+for `LG_METRICS`), recreates what changed, waits for the gateway health probes and refreshes
+the Status Document. For the exporter profile, read [metrics](ingress.md#metrics) before the
+next Checkpoint.
 
 Compose recreates only the containers whose image or configuration changed. Datastores keep their volumes. Expect a few minutes of gateway downtime while LiteLLM and Langfuse restart; callers see connection errors, not wrong answers.
 
@@ -180,8 +179,8 @@ The `lg_monitor` login has `pg_monitor` and read-only transactions by default, w
 application write grants. Preserve `LG_POSTGRES_EXPORTER_PASSWORD` with the other secrets.
 
 Before applying the Fable ingress changes to an existing installation, set a real
-`LANGFUSE_INIT_USER_EMAIL`, mount `LG_BACKUP_DIR` on a filesystem separate from Postgres,
-and append `UI_USERNAME=admin` and a generated `UI_PASSWORD` to the protected `.env`.
+`LANGFUSE_INIT_USER_EMAIL`, set `LG_BACKUP_DIR` (in public and proxy mode, a mount separate
+from Postgres), and append `UI_USERNAME=admin` and a generated `UI_PASSWORD` to the protected `.env`.
 Bootstrap refuses to invent missing credentials when data already exists. Use the same
 append-only secret-generation procedure above for `UI_PASSWORD` (24 random bytes).
 Behind the edge, set `LG_TRUSTED_PROXIES=172.30.0.2/32` (Edge's reserved address) or delete the line to
@@ -211,3 +210,12 @@ on the next Compose apply, causing a database restart. To restore a timed archiv
 bound, set `ALTER SYSTEM SET archive_timeout='60s'; SELECT pg_reload_conf();` after
 budgeting archive storage; `ALTER SYSTEM RESET archive_timeout; SELECT pg_reload_conf();`
 returns to the upstream default.
+
+Installations from before the literal `COMPOSE_FILE`: after `git pull`, run
+`python3 scripts/bootstrap.py` once before any direct `docker compose` command. It
+replaces a recorded `compose.${LG_ACCESS_MODE:-local}.yaml` token with the literal list
+(`compose.local.yaml` no longer exists) and recreates Valkey, which now reads its password
+from a Compose config file instead of its command line. Delete any Langfuse v3-to-v4
+migration write-mode line from `.env`; Compose no longer passes it. Backups no longer have
+an unfenced option: every new Checkpoint is fenced, and restore still accepts an older
+unfenced one with `--allow-unfenced`.

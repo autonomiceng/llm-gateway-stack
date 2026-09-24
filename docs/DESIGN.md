@@ -24,6 +24,8 @@ responses are the most sensitive data most teams have.
 - A Checkpoint restores the whole stack to a consistent point: traces, media, keys, spend.
   RPO is the Checkpoint interval; the WAL archive supports manual point-in-time recovery
   by an expert. Daily successful off-host Checkpoints target twenty-four hours (ADR-0002).
+- No service takes a secret as a process argument; Valkey reads its password from a
+  Compose config file, and `scripts/validate.sh` checks every rendered command.
 - The only network entry is Caddy. In Local Mode nothing leaves the loopback interface.
   LiteLLM is reachable only through Caddy, on the Platform Network as well.
 - Applications authenticate themselves. The gateway has no address-based operator layer;
@@ -73,8 +75,9 @@ ingestion queue in the same Valkey instance. LiteLLM sends spans to Langfuse ove
 private-CA HTTPS on loopback, without redirects or HSTS. Public Mode uses ACME and
 redirects HTTP except root health probes. `LG_TLS_ISSUER` can replace the mode's issuer
 with a private ACME directory or operator certificate files. Proxy Mode listens on HTTP behind Platform
-Edge with no published HTTPS port. The template selects the matching small Compose
-override; the application and datastore topology stays in `compose.yaml` (ADR-0015).
+Edge with no published HTTPS port. Bootstrap records the matching small Compose override
+in a literal `COMPOSE_FILE`; the application and datastore topology stays in `compose.yaml`
+(ADR-0015).
 Application origins are configured independently of the listener scheme and request Host.
 See [ingress](operations/ingress.md) for ports, explicit application hostnames and trust.
 
@@ -86,13 +89,16 @@ See [ingress](operations/ingress.md) for ports, explicit application hostnames a
   [maintenance](operations/maintenance.md#status-document).
 
 - Bootstrap: `scripts/bootstrap.py`. Generates secrets once, refuses to invent secrets over
-  existing data, creates or validates the platform network allocation, starts the stack,
-  waits for readiness.
+  existing data, records the Compose files and defaults direct Compose needs, creates or
+  validates the platform network allocation, starts the stack, waits for readiness. A clean
+  clone starts in Local Mode without edits.
   Newly created external volumes carry the Compose project label so interrupted installs
   can identify them. Existing volumes retain their names, labels and contents.
 - Validate: `scripts/validate.sh` for static checks; `scripts/smoke.sh` boots the pinned
   images and proves the Smoke Contract.
 - Backup and restore: `scripts/backup.sh`, `scripts/restore.sh`, `docs/operations/backup.md`.
+  Every Checkpoint is fenced. Backups default to `./backups`; Local Mode warns when they share
+  the Postgres filesystem, Public and Proxy Mode refuse that without an explicit opt-in.
 - Upgrades: Renovate proposes, the smoke contract gates, `docs/operations/maintenance.md`
   tells the operator what a major changes and where the rollback boundary is.
 - Observability: runtime logs go to the host journal with no Docker file cache.

@@ -125,6 +125,14 @@ for line in sys.stdin:
 if seen != expected: sys.exit("services/health differ: " + json.dumps(seen))' || fail "service set or health"
 ok "all services healthy, only caddy published"
 
+# Valkey reads its password from a file only its own user can read; no process argument or
+# container metadata carries it. Bash compares in-process, so the check adds no argv either.
+[[ "$(docker compose --env-file "$env_file" exec -T valkey stat -c %a:%U /etc/valkey/valkey.conf)" == 400:valkey ]] \
+  || fail "valkey.conf is not mode 0400 owned by valkey"
+valkey_view="$(docker compose --env-file "$env_file" top valkey)$(docker inspect "$(docker compose --env-file "$env_file" ps -q valkey)")"
+[[ "$valkey_view" == *valkey-server* && "$valkey_view" != *"$VALKEY_PASSWORD"* ]] || fail "the Valkey password appears in its argv or container metadata"
+ok "Valkey password only in its 0400 config file"
+
 for service in clickhouse rustfs; do
   directory=/var/log/clickhouse-server
   [[ "$service" != rustfs ]] || directory=/logs
@@ -280,15 +288,14 @@ openssl x509 -req -in "$work/leaf.csr" -CA "$work/ca.crt" -CAkey "$work/ca.key" 
   -days 2 -extfile "$work/leaf.cnf" 2>/dev/null
 docker compose --env-file "$env_file" exec -T caddy cat /data/caddy/pki/authorities/local/root.crt > "$work/root.crt"
 # Caddy reads the key as uid 0 without CAP_DAC_OVERRIDE; this throwaway key stays inside the
-# private work directory. Without a shell COMPOSE_FILE, bootstrap records the overlay in the
-# env file after the mode file.
+# private work directory. Without a shell COMPOSE_FILE, bootstrap records the literal file list
+# in the env file.
 chmod 0644 "$work/certs/tls.key"
 unset COMPOSE_FILE
 export LG_TLS_ISSUER=files LG_TLS_DIR="$work/certs" LG_TLS_CA="$work/ca.crt"
 python3 scripts/bootstrap.py --env-file "$env_file" >/dev/null || fail "bootstrap with the files issuer"
-# shellcheck disable=SC2016 # the recorded value keeps Compose's literal mode token
-[[ "$(grep '^COMPOSE_FILE=' "$env_file" | tail -n 1)" == 'COMPOSE_FILE=compose.yaml:compose.${LG_ACCESS_MODE:-local}.yaml:compose.files.yaml' ]] \
-  || fail "files issuer: env file does not record compose.files.yaml after the mode file"
+[[ "$(grep '^COMPOSE_FILE=' "$env_file" | tail -n 1)" == 'COMPOSE_FILE=compose.yaml:compose.files.yaml' ]] \
+  || fail "files issuer: env file does not record the literal compose.yaml:compose.files.yaml"
 ok "files issuer: bootstrap recorded the overlay and verified HTTPS readiness against LG_TLS_CA"
 for target in localhost/health/litellm litellm.localhost/health/readiness; do
   host=${target%%/*}

@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / 'scripts'))
 import bootstrap
 
-ORIGINS = {f'LG_{app}_URL': f'https://darkforge.tail694fe2.ts.net:{port}'
+ORIGINS = {f'LG_{app}_URL': f'https://gateway.tail-example.ts.net:{port}'
            for app, port in (('LITELLM', 8443), ('LANGFUSE', 8444), ('S3', 8445), ('CONSOLE', 8446), ('RUSTFS', 8449))}
 
 

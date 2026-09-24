@@ -43,5 +43,8 @@ registry identities; images without one are refused before capture or fencing. R
 requires the recorded immutable references. Default pins alone carry the Smoke Contract.
 
 Consequence: existing installations cannot upgrade in place. Every rename and one-way step
-is listed in `docs/operations/migrating-pre-2026-installs.md`. The stack promises fresh
-install, backup, restore and forward upgrades between validated pins, and nothing else.
+was listed in a migration handoff document. The stack promises fresh install, backup,
+restore and forward upgrades between validated pins, and nothing else.
+
+Amended 2026-09-24: the handoff document and the Langfuse v4 migration write-mode setting
+are removed; no predecessor installation remains to migrate.

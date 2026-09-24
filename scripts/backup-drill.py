@@ -116,8 +116,6 @@ try:
         'LG_VOLUME_PREFIX': project, 'LG_PLATFORM_NETWORK': network, 'LG_PUBLIC_PORT_SUFFIX': ':' + port,
         'LG_PLATFORM_SUBNET': subnet, 'LG_PLATFORM_IP_RANGE': subnet,
     }
-    # Restore validates the network from the shell allocation; the env file carries the same values.
-    os.environ.update(LG_PLATFORM_SUBNET=subnet, LG_PLATFORM_IP_RANGE=subnet)
     text = (root / '.env.example').read_text()
     for key, value in settings.items():
         text = re.sub(rf'^{key}=.*$', f'{key}={value}', text, flags=re.M)

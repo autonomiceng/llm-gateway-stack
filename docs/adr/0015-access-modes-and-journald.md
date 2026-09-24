@@ -13,9 +13,11 @@ Amended 2026-09-23: `LG_TLS_ISSUER` selects `internal`, `acme` or `files` indepe
 the mode, mirroring Platform Edge's ADR-0003; the mode limits which issuers are accepted. Each Caddy
 owns its existing certificate volumes; Proxy Mode needs no shared CA or private key.
 
-Compose cannot conditionally omit one published port. The environment template selects
-one small mode override so Proxy Mode publishes only HTTP; service topology and all image
-pins remain in the base file. This requires Compose 2.24.4 or newer for `!override`.
+Compose cannot conditionally omit one published port. One small mode override makes Proxy
+Mode publish only HTTP; service topology and all image pins remain in the base file. This
+requires Compose 2.24.4 or newer for `!override`. Amended 2026-09-24: bootstrap records the
+override in a literal `COMPOSE_FILE` instead of the template interpolating the mode, and
+Local Mode needs no override file.
 There is no legacy access mode or migration layer.
 
 Linux journald is the explicit deployment default, with Docker's file cache disabled.

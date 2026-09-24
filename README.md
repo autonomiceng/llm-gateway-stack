@@ -21,15 +21,13 @@ It runs on one machine and is built to stay up: pinned images, backups with a re
 You need a Linux Docker host with journald, Compose 2.24.4 or newer, Python 3.11 or newer, and about 6 GB of disk for images. [mise](https://mise.jdx.dev) installs the pinned tools if you use it. See [logging](docs/operations/logging.md) for hosts without journald.
 
 ```sh
-git clone https://github.com/autonomiceng/llm-gateway-stack.git
-cd llm-gateway-stack
-cp .env.example .env
-# Set LANGFUSE_INIT_USER_EMAIL and LG_BACKUP_DIR in .env first.
-# The backup directory must exist on a filesystem separate from Postgres data.
+git clone https://github.com/autonomiceng/llm-gateway-stack.git && cd llm-gateway-stack
 python3 scripts/bootstrap.py
 ```
 
-Bootstrap writes `.env` with generated secrets, creates the shared `platform` network, starts everything, waits for it to be healthy and prints the links. About a minute.
+Bootstrap writes `.env` from `.env.example` with generated secrets, creates the shared `platform` network, starts everything, waits for it to be healthy and prints the links and the Langfuse login. About a minute after the images are pulled.
+
+On a laptop that is all: Local Mode logs in to Langfuse as `admin@localhost.test` and keeps backups in `./backups`, warning that they share the disk with the data. For a server, copy `.env.example` to `.env` first and set `LANGFUSE_INIT_USER_EMAIL`, the access mode and an `LG_BACKUP_DIR` on a separate mounted filesystem; Public and Proxy Mode refuse backups on the Postgres filesystem unless `LG_ALLOW_SAME_FILESYSTEM_BACKUP=true`.
 
 | URL | What |
 | --- | --- |
@@ -67,6 +65,17 @@ Default images are pinned as `tag@sha256` in `compose.yaml`.
 Override any service with its complete `LG_*_IMAGE` reference in `.env`; see
 [image overrides](docs/operations/maintenance.md#image-overrides). Renovate opens the bump; a human merges it after the smoke test passes.
 
+## Upgrade
+
+```sh
+scripts/backup.sh          # the rollback boundary
+git pull
+docker compose pull
+python3 scripts/bootstrap.py
+```
+
+`git pull` brings new pins and configuration; `docker compose pull` fetches the pinned images; bootstrap records any new setting, recreates what changed and waits for health. The pins in `compose.yaml` are the versions the smoke test passed. An `LG_*_IMAGE` value in `.env` is your own experiment: it replaces the pin until you remove it, and upgrades do not touch it. Read [maintenance](docs/operations/maintenance.md) before a major version of Postgres, ClickHouse or Langfuse; those are one-way for data.
+
 ## Built on
 
 | Project | Stars | What we use it for |
@@ -96,7 +105,6 @@ Each runs alone. Shared conventions are in [docs/conventions.md](docs/convention
 - [Backup, restore and the monthly drill](docs/operations/backup.md)
 - [Maintenance and version bumps](docs/operations/maintenance.md)
 - [Host sizing](docs/operations/capacity.md)
-- [Migrating a pre-2026 install](docs/operations/migrating-pre-2026-installs.md)
 - [Design](docs/DESIGN.md), [vocabulary](CONTEXT.md), [decisions](docs/adr/)
 
 ## Development

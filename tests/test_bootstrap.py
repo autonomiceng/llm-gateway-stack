@@ -89,8 +89,7 @@ class BootstrapTests(unittest.TestCase):
         self.assertTrue(any("postgres data" in f for f in found))
         self.assertTrue(any("valkey-data" in f for f in found))
 
-    def test_versions_json_uses_effective_compose_metadata_without_secrets(self):
-        compose = Path(__file__).resolve().parent.parent / "compose.yaml"
+    def test_images_use_effective_compose_metadata_without_secrets(self):
         refs = {"langfuse-web": "mirror.test/langfuse:4.37.1@sha256:" + "a" * 64,
                 "litellm": "local/gateway:vtrial", "postgres": "registry:5000/store@sha256:" + "b" * 64}
         command = ["docker", "compose", "--env-file", str(self.env)]
@@ -104,12 +103,7 @@ class BootstrapTests(unittest.TestCase):
             resolved = bootstrap.images(command, runner)
         self.assertEqual(resolved, refs)
         self.assertEqual(calls, [command + ["config", "--format", "json"]])
-        bootstrap.write_versions(self.root, compose, resolved)
-        doc = json.loads((self.root / "data" / "console" / "versions.json").read_text())
-        self.assertEqual(doc["images"]["langfuse"], "4.37.1")
-        self.assertEqual(doc["images"]["litellm"], "vtrial")
-        self.assertEqual(doc["images"]["postgres"], "sha256:" + "b" * 64)
-        self.assertNotIn("private-secret", json.dumps(doc))
+        self.assertNotIn("private-secret", json.dumps(resolved))
         with self.assertRaises(bootstrap.Refused) as raised:
             bootstrap.images(command, lambda argv: subprocess.CompletedProcess(argv, 1, "private-secret", "private-secret"))
         self.assertNotIn("private-secret", raised.exception.detail)
@@ -141,8 +135,27 @@ sys.exit(19)
         actual = json.loads(capture.read_text())
         for key in dirty:
             self.assertNotEqual(actual.get(key), dirty[key], key)
-        self.assertEqual(actual['COMPOSE_FILE'], f"{self.template.parent}/compose.yaml:{self.template.parent}/compose.local.yaml")
+        self.assertEqual(actual['COMPOSE_FILE'], f"{self.template.parent}/compose.yaml")
         self.assertNotIn("private-secret", result.stdout + result.stderr)
+
+    def test_external_volumes_use_prefix_and_only_missing_volumes_are_created(self):
+        names = bootstrap.volume_names('isolated')
+        calls = []
+
+        def runner(argv):
+            calls.append(argv)
+            return subprocess.CompletedProcess(argv, 0, '\n'.join(names[:2]), '')
+
+        bootstrap.ensure_volumes(runner, 'isolated', 'selected-project')
+        self.assertEqual(calls[1:], [['docker', 'volume', 'create', '--label',
+                                          'com.docker.compose.project=selected-project', name] for name in names[2:]])
+        compose = (self.template.parent / 'compose.yaml').read_text()
+        for suffix in bootstrap.VOLUMES:
+            self.assertIn(f'  {suffix}:\n    external: true\n    name: ${{LG_VOLUME_PREFIX:-llm-gateway-stack}}-{suffix}', compose)
+        with tempfile.TemporaryDirectory() as directory:
+            found = bootstrap.installation_state(Path(directory), Path(directory) / 'absent', runner,
+                                                  project='different', prefix='isolated')
+        self.assertEqual(found, [f'volume {name}' for name in names[:2]])
 
     def test_installation_state_follows_compose_project_name(self):
         found = bootstrap.installation_state(
@@ -181,28 +194,50 @@ sys.exit(19)
         finally:
             del os.environ["VALKEY_PASSWORD"]
 
-    def test_backup_directory_on_postgres_filesystem_is_refused(self):
+    def test_same_filesystem_backups_warn_in_local_mode_and_are_refused_in_public_and_proxy_mode(self):
         self.render()
-        backup_dir = self.root / "backups"
-        backup_dir.mkdir()
-        with self.env.open("a") as handle:
-            handle.write(f"\nLG_BACKUP_DIR={backup_dir}\nLG_POSTGRES_DATA_DIR={self.root / 'pg'}\n"
-                         "LANGFUSE_INIT_USER_EMAIL=operator@gateway.test\n")
-        runner = runner_with()
-        with patch.object(bootstrap.shutil, "which", return_value="docker"):
-            with self.assertRaises(bootstrap.Refused) as raised:
-                bootstrap.bootstrap(["--env-file", str(self.env)], runner=runner)
-        self.assertEqual(raised.exception.code, "backup_dir_same_filesystem")
-        self.assertEqual(runner.calls, [])
-        self.assertFalse((self.root / "pg").exists())
+        backups = self.root / "backups"
+        base = self.env.read_text() + (f"\nLG_BACKUP_DIR={backups}\nLG_POSTGRES_DATA_DIR={self.root / 'pg'}\n"
+                                      "LANGFUSE_INIT_USER_EMAIL=operator@gateway.test\nLG_PUBLIC_DOMAIN=gateway.test\n")
+        for mode, allow, refused in (("public", "false", True), ("proxy", "false", True),
+                                     ("proxy", "true", False), ("local", "false", False)):
+            with self.subTest(mode=mode, allow=allow):
+                self.env.write_text(base + f"LG_ACCESS_MODE={mode}\nLG_ALLOW_SAME_FILESYSTEM_BACKUP={allow}\n")
+                if backups.exists():
+                    backups.rmdir()
+                runner = runner_with()
+                warning = io.StringIO()
+                with patch.dict(os.environ, {}, clear=True), redirect_stderr(warning), \
+                     patch.object(bootstrap.shutil, "which", return_value="docker"), \
+                     patch.object(bootstrap, "write_status"), patch.object(bootstrap, "images", return_value={}), \
+                     patch.object(bootstrap, "console_dir"), patch.object(bootstrap, "probe_gateway"):
+                    if mode != "local":
+                        # Only Local Mode creates a missing repository; the others name a mount.
+                        with self.assertRaises(bootstrap.Refused) as raised:
+                            bootstrap.bootstrap(["--env-file", str(self.env)], runner=runner)
+                        self.assertEqual(raised.exception.code, "backup_dir_missing")
+                        backups.mkdir()
+                    if refused:
+                        with self.assertRaises(bootstrap.Refused) as raised:
+                            bootstrap.bootstrap(["--env-file", str(self.env)], runner=runner)
+                        self.assertEqual(raised.exception.code, "backup_dir_same_filesystem")
+                        self.assertIn("LG_ALLOW_SAME_FILESYSTEM_BACKUP=true", raised.exception.detail)
+                        self.assertEqual(runner.calls, [])
+                        self.assertFalse((self.root / "pg").exists())
+                    else:
+                        self.assertEqual(bootstrap.bootstrap(["--env-file", str(self.env)], runner=runner), 0)
+                        self.assertIn("disk loss affects both", warning.getvalue())
+                        if mode == "local":
+                            # ClickHouse lists the repository root at startup.
+                            self.assertEqual(backups.stat().st_mode & 0o777, 0o755)
 
-    def test_development_policy_opt_in_precedence_and_overlap(self):
+    def test_same_filesystem_opt_in_precedence_and_overlap(self):
         self.render()
         backups = self.root / "backups"
         backups.mkdir()
         data = self.root / "pg"
         base = self.env.read_text() + (f"\nLG_BACKUP_DIR={backups}\nLG_POSTGRES_DATA_DIR={data}\n"
-                                      "LANGFUSE_INIT_USER_EMAIL=operator@gateway.test\n")
+                                      "LANGFUSE_INIT_USER_EMAIL=operator@gateway.test\nLG_ACCESS_MODE=proxy\n")
         key = "LG_ALLOW_SAME_FILESYSTEM_BACKUP"
         for saved, shell, target, error in (
             ("true", {}, data, None),
@@ -363,12 +398,15 @@ sys.exit(19)
             bootstrap.write_status(self.root, {"contract": 2, "partial": True})
         self.assertEqual(json.loads(public.read_text()), document)
 
-    def test_langfuse_login_is_required_before_startup(self):
+    def test_langfuse_login_is_required_outside_local_mode(self):
         self.render()
+        # Local Mode records a default login so a clean clone starts without edits.
+        self.assertEqual(re.findall(r"^LANGFUSE_INIT_USER_EMAIL=.*$", self.env.read_text(), re.M)[-1],
+                         "LANGFUSE_INIT_USER_EMAIL=" + bootstrap.LOCAL_LOGIN)
         original = self.env.read_text()
-        for email in ("", "admin@example.com", "admin@EXAMPLE.COM"):
-            with self.subTest(email=email):
-                self.env.write_text(original + f"\nLANGFUSE_INIT_USER_EMAIL={email}\n")
+        for mode, email in (("proxy", ""), ("proxy", "admin@example.com"), ("local", "admin@EXAMPLE.COM")):
+            with self.subTest(mode=mode, email=email):
+                self.env.write_text(original + f"\nLG_ACCESS_MODE={mode}\nLANGFUSE_INIT_USER_EMAIL={email}\n")
                 runner = runner_with()
                 with patch.object(bootstrap.shutil, "which", return_value="docker"):
                     with self.assertRaises(bootstrap.Refused) as raised:
@@ -400,7 +438,7 @@ sys.exit(19)
                                ("null", "no IPAM configuration"),
                                (CONTRACT_IPAM[:-1] + "," + second + "]", "subnet 10.9.0.0/24 ip-range none")):
             with self.subTest(ipam=ipam), self.assertRaises(bootstrap.Refused) as raised:
-                bootstrap.ensure_network(runner_with(ipam=ipam))
+                bootstrap.ensure_network(runner_with(ipam=ipam), "platform", *bootstrap.platform_allocation({}))
             self.assertEqual(raised.exception.code, "platform_network_mismatch")
             self.assertIn(observed, raised.exception.detail)
             self.assertIn("expected subnet 172.30.0.0/24 ip-range 172.30.0.128/25", raised.exception.detail)
@@ -408,12 +446,13 @@ sys.exit(19)
 
     def test_concurrent_creation_validates_the_winning_network(self):
         run = runner_with(network_exists=False, create_fails=True)
-        bootstrap.ensure_network(run)
+        bootstrap.ensure_network(run, "platform", *bootstrap.platform_allocation({}))
         self.assertEqual([call[:3] for call in run.calls], [["docker", "network", "inspect"],
                                                           ["docker", "network", "create"],
                                                           ["docker", "network", "inspect"]])
         with self.assertRaises(bootstrap.Refused) as raised:
-            bootstrap.ensure_network(runner_with(network_exists=False, create_fails=True, ipam="[]"))
+            bootstrap.ensure_network(runner_with(network_exists=False, create_fails=True, ipam="[]"),
+                                     "platform", *bootstrap.platform_allocation({}))
         self.assertEqual(raised.exception.code, "platform_network_mismatch")
 
     def resolve(self, settings):
@@ -466,10 +505,6 @@ sys.exit(19)
             self.assertEqual(raised.exception.code, "invalid_access_settings")
             self.assertTrue(raised.exception.detail.startswith("Conflicting access settings:"), raised.exception.detail)
             self.assertIn(named, raised.exception.detail)
-        # The Compose overlay check is bootstrap's own: the entrypoint never sees COMPOSE_FILE.
-        with self.assertRaises(bootstrap.Refused) as raised:
-            bootstrap.access_settings({"LG_ACCESS_MODE": "proxy", "LG_TRUSTED_PROXIES": "172.30.0.0/24", "COMPOSE_FILE": "compose.yaml"})
-        self.assertIn("compose.proxy.yaml", raised.exception.detail)
 
     def test_public_port_suffix_range_matches_gateway_entrypoint(self):
         for suffix, valid in (("", True), (":1", True), (":65535", True), (":80", True),
@@ -635,25 +670,26 @@ sys.exit(19)
             self.assertNotIn("secret-mac", raised.exception.detail)
         self.assertEqual(runner.calls, [])
 
-    def test_compose_file_selection_strips_and_appends_managed_overlays(self):
+    def test_bootstrap_records_the_literal_compose_file_list_for_the_mode_and_issuer(self):
+        token = "compose.${LG_ACCESS_MODE:-local}.yaml"
         for values, expected in (
-            ({"LG_ACCESS_MODE": "local", "LG_TLS_ISSUER": "files"},
-             "compose.yaml:compose.${LG_ACCESS_MODE:-local}.yaml:compose.files.yaml"),
+            ({"LG_ACCESS_MODE": "local", "LG_TLS_ISSUER": "internal"}, "compose.yaml"),
+            ({"LG_ACCESS_MODE": "local", "LG_TLS_ISSUER": "files"}, "compose.yaml:compose.files.yaml"),
             ({"LG_ACCESS_MODE": "public", "LG_TLS_ISSUER": "acme", "LG_ACME_CA_ROOT": "ca.pem", "LG_ACME_EAB_KEY_ID": "kid",
-              "COMPOSE_FILE": "compose.yaml:compose.public.yaml:compose.files.yaml:no-logs.yaml"},
+              "COMPOSE_FILE": "compose.yaml:compose.files.yaml:no-logs.yaml"},
              "compose.yaml:compose.public.yaml:compose.acme-ca-root.yaml:compose.acme-eab.yaml:no-logs.yaml"),
-            ({"LG_ACCESS_MODE": "local", "LG_TLS_ISSUER": "files", "COMPOSE_FILE": "/srv/gw/compose.yaml"},
-             "/srv/gw/compose.yaml:/srv/gw/compose.files.yaml"),
-            ({"LG_ACCESS_MODE": "local", "LG_TLS_ISSUER": "files",
-              "COMPOSE_FILE": "compose.yaml:compose.${LG_ACCESS_MODE:-local}.yaml:operator/no-logs.yaml"},
-             "compose.yaml:compose.${LG_ACCESS_MODE:-local}.yaml:compose.files.yaml:operator/no-logs.yaml"),
-            ({"LG_ACCESS_MODE": "proxy", "LG_TLS_ISSUER": "", "LG_ACME_CA_ROOT": "ca.pem",
-              "COMPOSE_FILE": "compose.yaml:compose.proxy.yaml:compose.acme-eab.yaml"},
+            ({"LG_ACCESS_MODE": "public", "LG_TLS_ISSUER": "files", "COMPOSE_FILE": "/srv/gw/compose.yaml"},
+             "/srv/gw/compose.yaml:/srv/gw/compose.public.yaml:/srv/gw/compose.files.yaml"),
+            # Earlier releases recorded the mode token and an empty compose.local.yaml.
+            ({"LG_ACCESS_MODE": "local", "LG_TLS_ISSUER": "files", "COMPOSE_FILE": f"compose.yaml:{token}:operator/no-logs.yaml"},
+             "compose.yaml:compose.files.yaml:operator/no-logs.yaml"),
+            ({"LG_ACCESS_MODE": "proxy", "LG_TLS_ISSUER": "", "COMPOSE_FILE": "compose.yaml:compose.local.yaml"},
              "compose.yaml:compose.proxy.yaml"),
+            ({"LG_ACCESS_MODE": "local", "LG_TLS_ISSUER": "internal",
+              "COMPOSE_FILE": "compose.yaml:compose.proxy.yaml:compose.acme-eab.yaml"}, "compose.yaml"),
         ):
             with self.subTest(values=values):
                 self.assertEqual(bootstrap.compose_files(values), expected)
-        # The pre-start readability check expands the recorded mode token before splitting.
         runner = runner_with()
         bootstrap.check_tls_files_readable(runner, {"LG_ACCESS_MODE": "public", "LG_TLS_ISSUER": "files"},
                                            self.root, ["docker", "compose"])
@@ -662,16 +698,21 @@ sys.exit(19)
                                         ("compose.yaml", "compose.public.yaml", "compose.files.yaml")])
         self.assertEqual(len(selected), 4)
         self.assertEqual(runner.calls[0][-3:], ["caddy", "-ec", "cat /certs/tls.crt /certs/tls.key >/dev/null"])
-        # A recorded overlay from an earlier issuer is dropped by appending the selection.
-        stale = "COMPOSE_FILE=compose.yaml:compose.${LG_ACCESS_MODE:-local}.yaml:compose.files.yaml"
-        self.env.write_text(self.template.read_text().replace(
-            "COMPOSE_FILE=compose.yaml:compose.${LG_ACCESS_MODE:-local}.yaml", stale))
-        with patch.dict(os.environ, {"LG_TLS_ISSUER": ""}):
-            self.render()
-        lines = [line for line in self.env.read_text().splitlines() if line.startswith("COMPOSE_FILE=")]
-        self.assertEqual(lines, [stale, "COMPOSE_FILE=compose.yaml:compose.${LG_ACCESS_MODE:-local}.yaml"])
+        # The env file records the literal list, appended after the legacy value; the next run changes nothing.
+        legacy = f"COMPOSE_FILE=compose.yaml:{token}"
+        self.env.write_text(self.template.read_text().replace("COMPOSE_FILE=compose.yaml", legacy)
+                            .replace("LG_ACCESS_MODE=local", "LG_ACCESS_MODE=proxy"))
         self.render()
-        self.assertEqual(self.env.read_text().count("\nCOMPOSE_FILE="), 2)
+        recorded = lambda: [line for line in self.env.read_text().splitlines() if line.startswith("COMPOSE_FILE=")]
+        self.assertEqual(recorded(), [legacy, "COMPOSE_FILE=compose.yaml:compose.proxy.yaml"])
+        self.render()
+        self.assertEqual(len(recorded()), 2)
+        # A shell COMPOSE_FILE applies to this run only, with the same selection.
+        with patch.dict(os.environ, {"COMPOSE_FILE": "compose.yaml:trial.yaml"}):
+            self.render()
+            self.assertEqual(os.environ["COMPOSE_FILE"], "compose.yaml:compose.proxy.yaml:trial.yaml")
+        self.assertEqual(len(recorded()), 2)
+        self.assertNotIn("${", self.env.read_text().rsplit(legacy, 1)[1])
 
     def test_metrics_setting_records_the_compose_profile(self):
         def profiles():

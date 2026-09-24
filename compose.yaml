@@ -55,9 +55,6 @@ x-langfuse-env: &langfuse-env
   LANGFUSE_S3_BATCH_EXPORT_PREFIX: exports/
   TELEMETRY_ENABLED: "false"
   LANGFUSE_ENABLE_EXPERIMENTAL_FEATURES: "false"
-  # events_only is the v4 default for fresh installs. A migration from v3 sets `dual`
-  # in .env for the backfill window (docs/operations/migrating-pre-2026-installs.md).
-  LANGFUSE_MIGRATION_V4_WRITE_MODE: ${LANGFUSE_MIGRATION_V4_WRITE_MODE:-events_only}
 
 x-langfuse-depends: &langfuse-depends
   postgres:
@@ -247,7 +244,7 @@ services:
       - ./docker/clickhouse/backups.xml:/etc/clickhouse-server/config.d/backups.xml:ro
       - ./docker/clickhouse/logging.xml:/etc/clickhouse-server/config.d/logging.xml:ro
       - type: bind
-        source: ${LG_BACKUP_DIR:?set LG_BACKUP_DIR to a separate mounted filesystem}
+        source: ${LG_BACKUP_DIR:?run scripts/bootstrap.py to record LG_BACKUP_DIR}
         target: /backup
         bind:
           create_host_path: false
@@ -325,11 +322,11 @@ services:
     pids_limit: 512
     mem_limit: ${LG_VALKEY_MEM_LIMIT:-2g}
     mem_reservation: 128m
-    # Langfuse uses this as a durable queue: noeviction, AOF, bounded memory.
+    # Langfuse uses this as a durable queue: noeviction, AOF, bounded memory. The password
+    # lives in the config file, so it never appears on a command line.
     command:
       - valkey-server
-      - --requirepass
-      - ${VALKEY_PASSWORD}
+      - /etc/valkey/valkey.conf
       - --maxmemory
       - ${LG_VALKEY_MAXMEMORY:-1gb}
       - --maxmemory-policy
@@ -340,13 +337,20 @@ services:
       - everysec
     volumes:
       - valkey-data:/data
+    # Compose copies the file in as the image's valkey user (uid 999). It does not recreate
+    # the container when only the content changes; that takes `up --force-recreate valkey`.
+    configs:
+      - source: valkey
+        target: /etc/valkey/valkey.conf
+        uid: "999"
+        gid: "999"
+        mode: 0400
     healthcheck:
-      test: ["CMD-SHELL", "valkey-cli -a \"$$VALKEY_PASSWORD\" --no-auth-warning ping | grep -q PONG"]
+      # The password reaches valkey-cli through its environment, never its arguments.
+      test: ["CMD-SHELL", "VALKEYCLI_AUTH=\"$$(sed -n 's/^requirepass //p' /etc/valkey/valkey.conf)\" valkey-cli ping | grep -q PONG"]
       interval: 3s
       timeout: 5s
       retries: 10
-    environment:
-      VALKEY_PASSWORD: ${VALKEY_PASSWORD}
 
   postgres:
     image: ${LG_POSTGRES_IMAGE:-postgres:18.6@sha256:4ef4dbc939d61acea57712655ddb4b4ab27419c913f94cca0cd57cb3ea3c2280}
@@ -383,7 +387,7 @@ services:
       - ./docker/postgres/archive.sh:/opt/backup/archive.sh:ro
       - ./docker/postgres/backup-entrypoint.sh:/opt/backup/backup-entrypoint.sh:ro
       - type: bind
-        source: ${LG_BACKUP_DIR:?set LG_BACKUP_DIR to a separate mounted filesystem}
+        source: ${LG_BACKUP_DIR:?run scripts/bootstrap.py to record LG_BACKUP_DIR}
         target: /backup
         bind:
           create_host_path: false
@@ -437,6 +441,11 @@ services:
       default:
       platform:
         aliases: [lg-postgres-exporter]
+
+configs:
+  valkey:
+    content: |
+      requirepass ${VALKEY_PASSWORD:?run scripts/bootstrap.py to generate secrets}
 
 volumes:
   caddy-data:

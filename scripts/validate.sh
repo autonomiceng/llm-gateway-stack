@@ -16,7 +16,7 @@ trap 'rm -rf "$work"' EXIT
 for key in $(compgen -e); do
   case "$key" in LG_*|LANGFUSE_*|RUSTFS_*|CLICKHOUSE_*|VALKEY_*|POSTGRES_*|LITELLM_*|UI_USERNAME|UI_PASSWORD|NEXTAUTH_SECRET|SALT|COMPOSE_*) unset "$key";; esac
 done
-export COMPOSE_FILE="$root/compose.yaml:$root/compose.local.yaml"
+export COMPOSE_FILE="$root/compose.yaml"
 export LG_BACKUP_DIR="$work/backups" LANGFUSE_INIT_USER_EMAIL=validate@gateway.test
 python3 scripts/bootstrap.py --env-file "$work/.env" --render-only >/dev/null
 echo "env render: PASS"
@@ -26,9 +26,23 @@ docker compose --env-file "$work/.env" config --format json > "$work/default.jso
 # The profile bootstrap records for LG_METRICS=true; the checks below cover every service it adds.
 LG_METRICS=true python3 scripts/bootstrap.py --env-file "$work/metrics.env" --render-only >/dev/null
 docker compose --env-file "$work/metrics.env" config --format json > "$work/config.json"
-python3 - "$work/default.json" "$work/config.json" <<'PY'
-import json, sys
-default, config = (json.load(open(path)) for path in sys.argv[1:])
+python3 - "$work/default.json" "$work/config.json" "$work/metrics.env" <<'PY'
+import json, re, sys
+sys.path.insert(0, "scripts")
+from bootstrap import MANAGED
+default, config = (json.load(open(path)) for path in sys.argv[1:3])
+secrets = {value for key, value in re.findall(r"^([A-Z0-9_]+)=(.+)$", open(sys.argv[3]).read(), re.M)
+           if key in MANAGED - {"UI_USERNAME"}}
+for name, svc in config["services"].items():
+    argv = json.dumps([svc.get("entrypoint"), svc.get("command"), (svc.get("healthcheck") or {}).get("test")])
+    if any(secret in argv for secret in secrets):
+        sys.exit(f"{name}: a generated secret appears on a process command line")
+valkey = config["services"]["valkey"]
+assert valkey["command"][:2] == ["valkey-server", "/etc/valkey/valkey.conf"], valkey["command"]
+# Compose renders the mode as an octal string or an integer depending on its version.
+assert [(c["target"], c["uid"], c["gid"], int(str(c["mode"]), 8 if isinstance(c["mode"], str) else 10))
+        for c in valkey["configs"]] == [("/etc/valkey/valkey.conf", "999", "999", 0o400)], valkey["configs"]
+assert config["configs"]["valkey"]["content"].startswith("requirepass "), "Valkey reads its password from the config file"
 exporters = {"valkey-exporter", "postgres-exporter"}
 if exporters & set(default["services"]) or not exporters <= set(config["services"]):
     sys.exit("the datastore exporters must start only with the metrics profile")
@@ -54,7 +68,7 @@ hardened = (caddy.get("read_only") is True and caddy.get("cap_drop") == ["ALL"] 
 if not hardened:
     sys.exit("caddy must run read-only with no capabilities beyond NET_BIND_SERVICE, no-new-privileges, a /tmp tmpfs, and PID and memory limits")
 PY
-echo "compose config: PASS (exporters only with the metrics profile; LiteLLM off the platform network; caddy hardened)"
+echo "compose config: PASS (exporters only with the metrics profile; LiteLLM off the platform network; caddy hardened; no secret in argv)"
 
 python3 - "$work" <<'PYIMAGES'
 import json, os, pathlib, subprocess, sys
@@ -80,11 +94,12 @@ print("image overrides: PASS (app/store/helper, complete refs and empty shell fa
 PYIMAGES
 
 for mode in local public proxy; do
-  export COMPOSE_FILE="$root/compose.yaml:$root/compose.$mode.yaml"
+  export COMPOSE_FILE="$root/compose.yaml"
+  [[ "$mode" == local ]] || COMPOSE_FILE="$COMPOSE_FILE:$root/compose.$mode.yaml"
   LG_ACCESS_MODE=$mode docker compose --env-file "$work/.env" config --format json > "$work/$mode.json"
-  LG_ACCESS_MODE=$mode LG_CONSOLE_URL=https://darkforge.tail694fe2.ts.net:8446 \
-    LG_LITELLM_URL=https://darkforge.tail694fe2.ts.net:8443 \
-    LG_LANGFUSE_URL=https://darkforge.tail694fe2.ts.net:8444 LG_S3_URL=https://darkforge.tail694fe2.ts.net:8445 LG_RUSTFS_URL=https://darkforge.tail694fe2.ts.net:8449 \
+  LG_ACCESS_MODE=$mode LG_CONSOLE_URL=https://gateway.tail-example.ts.net:8446 \
+    LG_LITELLM_URL=https://gateway.tail-example.ts.net:8443 \
+    LG_LANGFUSE_URL=https://gateway.tail-example.ts.net:8444 LG_S3_URL=https://gateway.tail-example.ts.net:8445 LG_RUSTFS_URL=https://gateway.tail-example.ts.net:8449 \
     docker compose --env-file "$work/.env" config --format json > "$work/$mode-origins.json"
 done
 python3 - "$work" <<'PY'
@@ -101,8 +116,8 @@ for mode in ("local", "public", "proxy"):
     configured = json.loads((pathlib.Path(sys.argv[1]) / f"{mode}-origins.json").read_text())["services"]
     for current, langfuse, s3, litellm in (
         (services, f"{scheme}://langfuse.localhost", f"{scheme}://s3.localhost", f"{scheme}://litellm.localhost"),
-        (configured, "https://darkforge.tail694fe2.ts.net:8444", "https://darkforge.tail694fe2.ts.net:8445",
-         "https://darkforge.tail694fe2.ts.net:8443"),
+        (configured, "https://gateway.tail-example.ts.net:8444", "https://gateway.tail-example.ts.net:8445",
+         "https://gateway.tail-example.ts.net:8443"),
     ):
         assert current["litellm"]["environment"]["PROXY_BASE_URL"] == litellm
         assert current["litellm"]["environment"]["LANGFUSE_HOST"] == "http://langfuse-web:3000"
@@ -117,7 +132,7 @@ for mode in ("local", "public", "proxy"):
     for service in services:
         assert services[service].get("volumes") == configured[service].get("volumes")
     for app, port in (("CONSOLE", 8446), ("LITELLM", 8443), ("LANGFUSE", 8444), ("S3", 8445)):
-        assert configured["caddy"]["environment"][f"LG_{app}_URL"] == f"https://darkforge.tail694fe2.ts.net:{port}"
+        assert configured["caddy"]["environment"][f"LG_{app}_URL"] == f"https://gateway.tail-example.ts.net:{port}"
 PY
 echo "access mode Compose origins: PASS (6 configurations)"
 
@@ -129,7 +144,7 @@ cp "$work/certs/tls.crt" "$work/acme-ca-root.crt"
 export COMPOSE_FILE="$root/compose.yaml:$root/compose.public.yaml:$root/compose.acme-ca-root.yaml:$root/compose.acme-eab.yaml"
 LG_ACCESS_MODE=public LG_ACME_CA_ROOT="$work/acme-ca-root.crt" LG_ACME_EAB_KEY_ID=key-id LG_ACME_EAB_HMAC=bWFj \
   docker compose --env-file "$work/.env" config --format json > "$work/acme.json"
-export COMPOSE_FILE="$root/compose.yaml:$root/compose.local.yaml:$root/compose.files.yaml"
+export COMPOSE_FILE="$root/compose.yaml:$root/compose.files.yaml"
 LG_TLS_ISSUER=files LG_TLS_DIR="$work/certs" docker compose --env-file "$work/.env" config --format json > "$work/files.json"
 python3 - "$work" <<'PY'
 import json, pathlib, sys
@@ -154,7 +169,7 @@ for name in ("local", "public", "proxy", "files"):
     assert not leaked, f"{name}: ACME account and trust settings leak into the base: {sorted(leaked)}"
 PY
 echo "TLS overlays: default issuer per mode, read-only mounts without host path creation, ACME discriminators only from overlays: PASS"
-export COMPOSE_FILE="$root/compose.yaml:$root/compose.local.yaml"
+export COMPOSE_FILE="$root/compose.yaml"
 
 acme_ca=https://ca.example.com/acme/acme/directory
 # access scheme listen domain issuer published; the issuer column names a variant below, - means none.
@@ -176,10 +191,10 @@ for mode in "local http dual localhost internal true" "local http dual localhost
     if [[ "$access" == proxy && -z "$proxies" ]]; then continue; fi
     origins=()
     if [[ "$domain" == gateway.test ]]; then
-      origins=(-e LG_CONSOLE_URL=https://darkforge.tail694fe2.ts.net:8446
-        -e LG_LITELLM_URL=https://darkforge.tail694fe2.ts.net:8443
-        -e LG_LANGFUSE_URL=https://darkforge.tail694fe2.ts.net:8444
-        -e LG_S3_URL=https://darkforge.tail694fe2.ts.net:8445 -e LG_RUSTFS_URL=https://darkforge.tail694fe2.ts.net:8449)
+      origins=(-e LG_CONSOLE_URL=https://gateway.tail-example.ts.net:8446
+        -e LG_LITELLM_URL=https://gateway.tail-example.ts.net:8443
+        -e LG_LANGFUSE_URL=https://gateway.tail-example.ts.net:8444
+        -e LG_S3_URL=https://gateway.tail-example.ts.net:8445 -e LG_RUSTFS_URL=https://gateway.tail-example.ts.net:8449)
     fi
     docker run --rm "${origins[@]}" -e "LG_TRUSTED_PROXIES=$proxies" \
       -e "LG_ACCESS_MODE=$access" -e "LG_SCHEME=$scheme" -e "LG_HTTPS_PUBLISHED=$published" \

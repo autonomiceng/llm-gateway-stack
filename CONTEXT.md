@@ -32,7 +32,8 @@ _Avoid_: Status observation, versions file
 **Local Mode**:
 The default access mode: HTTP and HTTPS on loopback, without redirects or HSTS. HTTPS uses
 the internal CA unless another Issuer is selected.
-Application origins use HTTP by default and keep explicit hostnames.
+Application origins use HTTP by default and keep explicit hostnames. A clean clone starts in
+it without edits; backups may share the Postgres filesystem, with a warning.
 _Avoid_: Development mode, insecure mode
 
 **Public Mode**:
@@ -66,8 +67,8 @@ _Avoid_: Validation ladder, rehearsal, CI
 
 **Checkpoint**:
 One consistent backup set across Postgres, ClickHouse, object storage and configuration,
-taken with ingestion paused. The unit of restore and the rollback boundary before a
-persistent change.
+taken with ingestion fenced; there is no unfenced capture. The unit of restore and the
+rollback boundary before a persistent change.
 _Avoid_: Recovery point, snapshot, dump
 
 **Platform Network**:

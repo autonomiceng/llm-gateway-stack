@@ -54,7 +54,7 @@ state and retention policy.
 ## Hosts without journald
 
 For a deliberate no-runtime-logs deployment, add an untracked Compose override and append
-its path to `COMPOSE_FILE` after the mode file. Docker's `none` driver is portable and
+its path to the end of the `COMPOSE_FILE` bootstrap recorded; bootstrap keeps it there. Docker's `none` driver is portable and
 creates no container log files, but loses `docker logs` and all runtime diagnostics:
 
 ```yaml

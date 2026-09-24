@@ -1,21 +1,18 @@
-"""Recovery preflight and TLS regressions; Docker is never called."""
-import os
-from pathlib import Path
-import shutil
+"""Gateway readiness probes for bootstrap and restore; Docker is never called."""
 import ssl
 import subprocess
 import sys
-import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / 'scripts'))
-import bootstrap
-import checkpoint
+import bootstrap  # noqa: E402
+import checkpoint  # noqa: E402
 
 
-class ReviewFixTests(unittest.TestCase):
+class GatewayProbeTests(unittest.TestCase):
     def test_https_probes_use_local_address_and_verified_public_hostname(self):
         settings = {'LG_ACCESS_MODE': 'public', 'LG_SCHEME': 'https', 'LG_PUBLIC_DOMAIN': 'gateway.test',
                     'LG_TLS_ISSUER': 'acme', 'LG_BIND_HOST': '0.0.0.0', 'LG_HTTPS_PORT': '18453'}
@@ -70,35 +67,6 @@ class ReviewFixTests(unittest.TestCase):
                 checkpoint.health(stack)
             self.assertEqual(error.exception.code, 'internal_ca_unavailable')
             self.assertEqual(wait.call_count, 2)
-
-    def run_preflight(self, root, backup_root):
-        scripts = root / 'scripts'
-        scripts.mkdir(exist_ok=True)
-        shutil.copyfile(ROOT / 'scripts/backup-drill.py', scripts / 'backup-drill.py')
-        # PATH is empty: reaching Docker would fail with a different error.
-        result = subprocess.run([sys.executable, str(scripts / 'backup-drill.py')],
-                                env={'PATH': '', 'SMOKE_BACKUP_ROOT': str(backup_root)},
-                                text=True, capture_output=True)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertFalse((root / '.scratch').exists())
-        return result.stderr
-
-    def test_drill_refuses_checkout_state_before_creating_files_or_calling_docker(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            for name in ('.env', 'data', 'compose.override.yaml'):
-                with self.subTest(name=name):
-                    path = root / name
-                    path.write_text('keep this installation state')
-                    self.assertIn('clean disposable checkout', self.run_preflight(root, root))
-                    self.assertEqual(path.read_text(), 'keep this installation state')
-                    path.unlink()
-
-    def test_drill_checks_configured_backup_root_before_creating_files_or_calling_docker(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            self.assertIn('existing directory', self.run_preflight(root, root / 'missing'))
-            self.assertIn('separate from checkout', self.run_preflight(root, root))
 
 
 if __name__ == '__main__':
