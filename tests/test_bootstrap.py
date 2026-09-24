@@ -652,6 +652,42 @@ sys.exit(19)
         self.render()
         self.assertEqual(self.env.read_text().count("\nCOMPOSE_FILE="), 2)
 
+    def test_metrics_setting_records_the_compose_profile(self):
+        def profiles():
+            return [line for line in self.env.read_text().splitlines() if line.startswith("COMPOSE_PROFILES=")]
+        self.env.write_text(self.template.read_text().replace("LG_METRICS=false", "LG_METRICS=true"))
+        self.render()
+        self.assertEqual(profiles(), ["COMPOSE_PROFILES=", "COMPOSE_PROFILES=metrics"])
+        self.render()
+        self.assertEqual(len(profiles()), 2)
+        # Operator profiles survive; metrics follows the setting in either direction.
+        self.env.write_text(self.env.read_text() + "COMPOSE_PROFILES=debug,metrics\nLG_METRICS=false\n")
+        self.render()
+        self.assertEqual(profiles()[-1], "COMPOSE_PROFILES=debug")
+        # A shell COMPOSE_PROFILES applies to this run only, as Compose would read it.
+        with patch.dict(os.environ, {"COMPOSE_PROFILES": "trial"}):
+            self.render()
+            self.assertEqual(os.environ["COMPOSE_PROFILES"], "trial")
+        self.assertEqual(profiles()[-1], "COMPOSE_PROFILES=debug")
+        # A shell LG_METRICS is saved with the recorded profiles, never the shell's; the next plain run keeps it.
+        for shell in ({"LG_METRICS": "TRUE"}, {"LG_METRICS": "TRUE", "COMPOSE_PROFILES": "trial"}):
+            self.env.write_text(self.env.read_text() + "LG_METRICS=false\nCOMPOSE_PROFILES=debug\n")
+            with patch.dict(os.environ, shell):
+                self.render()
+                if "COMPOSE_PROFILES" in shell:
+                    self.assertEqual(os.environ["COMPOSE_PROFILES"], "trial,metrics")
+            self.render()
+            self.assertEqual(profiles()[-1], "COMPOSE_PROFILES=debug,metrics")
+            self.assertEqual(re.findall(r"^LG_METRICS=.*$", self.env.read_text(), re.M)[-1], "LG_METRICS=true")
+        # An empty shell value selects the default and is saved as false, never as empty.
+        with patch.dict(os.environ, {"LG_METRICS": ""}):
+            self.render()
+        self.assertEqual(profiles()[-1], "COMPOSE_PROFILES=debug")
+        self.assertEqual(re.findall(r"^LG_METRICS=.*$", self.env.read_text(), re.M)[-1], "LG_METRICS=false")
+        with patch.dict(os.environ, {"LG_METRICS": "yes"}), self.assertRaises(bootstrap.Refused) as raised:
+            self.render()
+        self.assertEqual(raised.exception.code, "invalid_settings")
+
     def test_probe_trust_order_and_hint(self):
         tls_ca, acme_root = self.root / "tls-ca.pem", self.root / "acme-root.pem"
         tls_ca.write_text("tls ca")

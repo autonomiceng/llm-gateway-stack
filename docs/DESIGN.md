@@ -94,7 +94,10 @@ See [ingress](operations/ingress.md) for ports, explicit application hostnames a
   tells the operator what a major changes and where the rollback boundary is.
 - Observability: runtime logs go to the host journal with no Docker file cache.
   Alloy collection and metrics scraping are optional; startup has no observability-stack
-  dependency. LLM traces live in Langfuse. See [logging](operations/logging.md).
+  dependency. Scrapers read LiteLLM and Checkpoint metrics from the gateway's unpublished
+  port 8081; the datastore exporters start only with the `metrics` Compose profile, which
+  bootstrap records when `LG_METRICS=true`. LLM traces live in Langfuse. See
+  [logging](operations/logging.md) and [metrics](operations/ingress.md#metrics).
 
 ## Stack
 

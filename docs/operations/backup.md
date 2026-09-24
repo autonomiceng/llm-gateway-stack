@@ -209,7 +209,10 @@ run after an uncatchable kill.
 
 Fence the old installation and all its writers first. Keep its data and archive intact.
 Use the exact immutable image references recorded in the manifest, setting the matching
-`LG_*_IMAGE` variables in the target `.env` when needed. Tag overrides are captured as
+`LG_*_IMAGE` variables in the target `.env` when needed. The recorded images include the
+datastore exporters when the source ran them, which is every Checkpoint taken before the
+`metrics` profile existed; set `LG_METRICS=true` and `COMPOSE_PROFILES=metrics` in the target
+`.env` to restore those. Tag overrides are captured as
 registry digest references; restore refuses mutable tags even when they currently resolve
 to the right content. Existing v1 Checkpoints with digest pins remain supported.
 Restore refuses a running project,
@@ -373,8 +376,8 @@ absent and the scrape fails. Caddy serves `/metrics` at `lg-gateway:8081`, restr
 to socket peers in `LG_CHECKPOINT_ALLOW`; include the scraper address or its dedicated
 network CIDR. This does not grant access to operator routes. Port 8081 is never
 published, and port 80 returns 404 for checkpoint metrics. A stopped gateway during fencing causes a temporary scrape failure.
-The PostgreSQL exporter supplies `pg_up`, `pg_stat_archiver_failed_count` and
-`pg_stat_archiver_last_archive_age`. Verify in the observability query UI:
+The PostgreSQL exporter, which runs with `LG_METRICS=true`, supplies `pg_up`,
+`pg_stat_archiver_failed_count` and `pg_stat_archiver_last_archive_age`. Verify in the observability query UI:
 
 ```promql
 pg_up{job="llm-gateway-postgres"} == 1

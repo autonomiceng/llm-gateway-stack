@@ -85,7 +85,7 @@ Override any service with its complete `LG_*_IMAGE` reference in `.env`; see
 This is one of four repos that deploy the same way and work together on one host:
 
 - [agent-backplane](https://github.com/autonomiceng/agent-backplane): shared state, queues and approvals for agents.
-- [observability-stack](https://github.com/autonomiceng/observability-stack): Grafana, Loki, Tempo and Mimir. Collects this stack's logs and metrics over the `platform` network.
+- [observability-stack](https://github.com/autonomiceng/observability-stack): Grafana, Loki, Tempo and Mimir. Collects this stack's logs and metrics over the `platform` network; set `LG_METRICS=true` to start the datastore exporters it scrapes.
 - [platform-edge](https://github.com/autonomiceng/platform-edge): one Caddy for ports 80 and 443 when more than one stack shares a host.
 
 Each runs alone. Shared conventions are in [docs/conventions.md](docs/conventions.md).

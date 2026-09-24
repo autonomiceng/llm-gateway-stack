@@ -70,6 +70,10 @@ scripts/validate.sh
 curl -fsS http://localhost/health/litellm http://localhost/health/langfuse
 ```
 
+When a release adds a setting bootstrap records, such as `LG_METRICS` for the `metrics`
+profile, run `python3 scripts/bootstrap.py` in place of `docker compose up`; for the exporter
+profile, read [metrics](ingress.md#metrics) before the next Checkpoint.
+
 Compose recreates only the containers whose image or configuration changed. Datastores keep their volumes. Expect a few minutes of gateway downtime while LiteLLM and Langfuse restart; callers see connection errors, not wrong answers.
 
 ## Rollback boundary per store

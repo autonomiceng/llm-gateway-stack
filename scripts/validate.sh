@@ -22,10 +22,16 @@ python3 scripts/bootstrap.py --env-file "$work/.env" --render-only >/dev/null
 echo "env render: PASS"
 
 docker compose --env-file "$work/.env" config -q
-docker compose --env-file "$work/.env" config --format json > "$work/config.json"
-python3 - "$work/config.json" <<'PY'
+docker compose --env-file "$work/.env" config --format json > "$work/default.json"
+# The profile bootstrap records for LG_METRICS=true; the checks below cover every service it adds.
+LG_METRICS=true python3 scripts/bootstrap.py --env-file "$work/metrics.env" --render-only >/dev/null
+docker compose --env-file "$work/metrics.env" config --format json > "$work/config.json"
+python3 - "$work/default.json" "$work/config.json" <<'PY'
 import json, sys
-config = json.load(open(sys.argv[1]))
+default, config = (json.load(open(path)) for path in sys.argv[1:])
+exporters = {"valkey-exporter", "postgres-exporter"}
+if exporters & set(default["services"]) or not exporters <= set(config["services"]):
+    sys.exit("the datastore exporters must start only with the metrics profile")
 assert config["services"]["litellm"].get("stop_signal") == "SIGINT", "LiteLLM requires graceful interpreter exit"
 published = {name for name, svc in config["services"].items() if svc.get("ports")}
 if published != {"caddy"}:
@@ -42,7 +48,7 @@ shared = {name for name, svc in config["services"].items() if "platform" in (svc
 if shared != {"caddy", "litellm", "valkey-exporter", "postgres-exporter"}:
     sys.exit(f"only caddy, litellm and datastore exporters join the platform network, found {sorted(shared)}")
 PY
-echo "compose config: PASS"
+echo "compose config: PASS (exporters only with the metrics profile)"
 
 python3 - "$work" <<'PYIMAGES'
 import json, os, pathlib, subprocess, sys

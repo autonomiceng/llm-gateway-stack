@@ -393,7 +393,7 @@
 
 import mode-{$LG_ACCESS_MODE:local}
 
-# Unpublished listener: healthcheck via loopback, checkpoint scrape via lg-gateway:8081.
+# Unpublished listener: healthcheck via loopback, checkpoint and LiteLLM scrapes via lg-gateway:8081.
 http://:8081 {
 	import access-log
 	handle /health/status {
@@ -406,6 +406,14 @@ http://:8081 {
 		rewrite * /metrics.txt
 		root * /srv/state
 		file_server
+	}
+	# The scraper allowed checkpoint metrics also reads LiteLLM's, so one allowlist covers both.
+	handle /metrics/litellm {
+		@denied not remote_ip {$LG_CHECKPOINT_ALLOW:127.0.0.0/8 ::1}
+		respond @denied 404
+		# LiteLLM mounts its exporter at /metrics/ and redirects the bare path to a URL this listener does not serve.
+		rewrite * /metrics/
+		reverse_proxy litellm:4000
 	}
 	respond 404
 }

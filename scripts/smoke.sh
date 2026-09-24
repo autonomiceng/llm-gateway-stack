@@ -30,6 +30,8 @@ https_port=${SMOKE_HTTPS_PORT:-18443}
 network="$COMPOSE_PROJECT_NAME-platform"
 # Disjoint from the installed Platform Network (172.30.0.0/24); Docker refuses overlapping subnets.
 subnet=${SMOKE_PLATFORM_SUBNET:-172.31.$(( $(cksum <<< "$COMPOSE_PROJECT_NAME" | cut -d' ' -f1) % 256 )).0/24}
+# The one Platform Network peer allowed metrics: the subnet's last host, clear of dynamic allocation.
+scraper_ip=$(python3 -c 'import ipaddress, sys; print(ipaddress.ip_network(sys.argv[1]).broadcast_address - 1)' "$subnet")
 mkdir -p "$root/.scratch"
 work=$(mktemp -d "$root/.scratch/smoke-XXXXXX")
 # Python is already required and reports device IDs on both GNU and BSD hosts.
@@ -54,6 +56,8 @@ fi
 backup_work=$(mktemp -d "$backup_root/llm-gateway-smoke-XXXXXX")
 pg_image=$(sed -n 's/^    image: [$]{LG_POSTGRES_IMAGE:-\(.*\)}/\1/p' compose.yaml)
 [[ -n "$pg_image" ]] || { echo 'could not read the PostgreSQL image default' >&2; exit 2; }
+caddy_image=$(sed -n 's/^    image: [$]{LG_CADDY_IMAGE:-\(.*\)}/\1/p' compose.yaml)
+[[ -n "$caddy_image" ]] || { echo 'could not read the Caddy image default' >&2; exit 2; }
 env_file="$work/.env"
 origin="localhost:$http_port"
 pass=0
@@ -85,6 +89,8 @@ sed -e "s#^LG_POSTGRES_DATA_DIR=.*#LG_POSTGRES_DATA_DIR=$work/pg#" \
     -e "s#^LG_PLATFORM_NETWORK=.*#LG_PLATFORM_NETWORK=$network#" \
     -e "s#^LG_PLATFORM_SUBNET=.*#LG_PLATFORM_SUBNET=$subnet#" \
     -e "s#^LG_PLATFORM_IP_RANGE=.*#LG_PLATFORM_IP_RANGE=$subnet#" \
+    -e "s#^LG_CHECKPOINT_ALLOW=.*#LG_CHECKPOINT_ALLOW=\"127.0.0.0/8 ::1 $scraper_ip\"#" \
+    -e "s#^LG_METRICS=.*#LG_METRICS=true#" \
     -e "s#^LANGFUSE_INIT_USER_EMAIL=.*#LANGFUSE_INIT_USER_EMAIL=smoke@gateway.test#" \
     .env.example > "$env_file"
 mkdir -p "$backup_work/backups"
@@ -180,10 +186,14 @@ done
 [[ -n "$found" ]] || fail "no litellm_request observation in Langfuse within 60s"
 ok "trace visible in Langfuse observations v2"
 
-# Metrics move after a request.
-metrics() { docker compose --env-file "$env_file" exec -T litellm python3 -c "import urllib.request; print(urllib.request.urlopen('http://localhost:4000/metrics').read().decode())"; }
-metrics | grep -q '^litellm_' || fail "no litellm_ metrics"
-ok "litellm /metrics exposed"
+# LiteLLM metrics reach an allowed Platform Network peer through the gateway, after a request.
+scrape() { docker run --rm --network "$network" "$@" --entrypoint wget "$caddy_image" -qO- http://lg-gateway:8081/metrics/litellm; }
+scrape --ip "$scraper_ip" > "$work/litellm.prom" || fail "allowed peer could not read lg-gateway:8081/metrics/litellm"
+grep -q '^# TYPE litellm_' "$work/litellm.prom" || fail "no litellm_ Prometheus text"
+grep -q '^litellm_' "$work/litellm.prom" || fail "no litellm_ samples after a request"
+denied=$(scrape 2>&1 >/dev/null || true)
+[[ "$denied" == *" 404 "* ]] || fail "a peer outside LG_CHECKPOINT_ALLOW was not refused with 404: $denied"
+ok "lg-gateway:8081/metrics/litellm serves Prometheus text to the allowed peer only"
 
 docker compose --env-file "$env_file" exec -T litellm python3 - <<'PYCODE'
 import urllib.request
