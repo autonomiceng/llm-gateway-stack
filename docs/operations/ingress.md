@@ -348,8 +348,8 @@ Network, both restricted to socket peers in `LG_CHECKPOINT_ALLOW`:
 | `http://lg-gateway:8081/metrics` | Checkpoint metrics | `llm-gateway-checkpoints` |
 | `http://lg-gateway:8081/metrics/litellm` | LiteLLM's Prometheus metrics | `llm-gateway` |
 
-Add the scraper's address to `LG_CHECKPOINT_ALLOW`, or its dedicated scraper network CIDR;
-other peers receive 404. This setting grants only metrics access. Edge routes to port 80
+Add each scraper's own address to `LG_CHECKPOINT_ALLOW` as an exact IP (`/32` or `/128`);
+a wider range would admit every peer in it. Other peers receive 404. This setting grants only metrics access. Edge routes to port 80
 and receives no metrics there. The same listener answers `/health/status` over loopback
 for Caddy's container healthcheck in every access mode. LiteLLM is not on the Platform
 Network; `/metrics/litellm` through the gateway is the only scrape path.

@@ -180,7 +180,7 @@ checkout first and keep it, with its `.env`, for rollback.
                handle.write('\n' + key + '=' + secrets.token_hex(24) + '\n')
    path.chmod(0o600)
    PYCODE
-   grep -q '^UI_USERNAME=' .env || printf 'UI_USERNAME=admin\n' >> .env
+   grep -q '^UI_USERNAME=' .env || printf '\nUI_USERNAME=admin\n' >> .env
    ```
 
 3. **Volume names.** Installations with `<project>_<volume>` volume names need an offline
