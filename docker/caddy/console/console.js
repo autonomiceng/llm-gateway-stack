@@ -26,23 +26,60 @@ const componentState = (component) => (!component ? "unknown" : component.enable
 const versionText = (component) =>
   !component ? "Version unknown" : component.version ? `Configured ${component.version}` : "Configured";
 const originFor = (origins, name) => origins[name] || `${origins.scheme}://${name}.${origins.domain}${origins.port}`;
+function summaryText(status, states) {
+  if (!status) return "Status unavailable";
+  const up = states.filter((state) => state === "healthy" || state === "degraded").length;
+  const down = states.filter((state) => state === "unreachable").length;
+  const unknown = states.filter((state) => state === "unknown").length;
+  return [up + down && `${up} of ${up + down} reachable`, unknown && `${unknown} unknown`]
+    .filter(Boolean).join(" · ") || "Nothing enabled";
+}
+// Status v2 closes the field set at every level; an unknown field rejects the document.
+const ENVELOPE = ["contract", "stack", "configuredAt", "components", "features"];
+const FIELDS = ["id", "name", "kind", "enabled", "image", "version", "health", "url"];
+const FEATURES = { backups: ["configured", "lastCheckpointAt"], alerts: ["configured"] };
+const object = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+const only = (value, keys) => !object(value) || Object.keys(value).every((key) => keys.includes(key));
 function parseStatus(doc) {
-  if (doc?.contract !== 2 || doc.stack !== "gateway" || !Array.isArray(doc.components))
+  if (
+    !object(doc) ||
+    doc.contract !== 2 ||
+    doc.stack !== "gateway" ||
+    !ENVELOPE.every((key) => Object.hasOwn(doc, key)) ||
+    !only(doc, ENVELOPE) ||
+    !Array.isArray(doc.components) ||
+    doc.components.length > 32 ||
+    !object(doc.features) ||
+    !only(doc.features, Object.keys(FEATURES)) ||
+    Object.entries(doc.features).some(([key, feature]) => !object(feature) || !only(feature, FEATURES[key])) ||
+    doc.components.some((component) => !only(component, FIELDS))
+  )
     throw new Error("Unsupported status");
+  const ids = doc.components.map((component) => component?.id).filter((id) => typeof id === "string");
+  if (new Set(ids).size !== ids.length) throw new Error("Duplicate component");
   const valid = (c) => typeof c?.id === "string" && typeof c.enabled === "boolean";
   return { ...doc, components: new Map(doc.components.filter(valid).map((c) => [c.id, c])) };
 }
+// Each refresh starts empty. A missing or malformed document schedules no Health Path probes.
+async function load(getStatus, probe, cards) {
+  let status = null;
+  try {
+    status = parseStatus(await getStatus());
+  } catch {}
+  const ids = [...new Set(cards.filter((card) => status?.components.get(card.id)?.enabled)
+    .flatMap((card) => card.health))];
+  return { status, health: Object.fromEntries(await Promise.all(ids.map(async (id) => [id, await probe(id)]))) };
+}
 
-if (typeof module !== "undefined") module.exports = { probeState, appState, componentState, versionText, originFor, parseStatus };
+if (typeof module !== "undefined")
+  module.exports = { probeState, appState, componentState, versionText, originFor, summaryText, parseStatus, load };
 
 if (typeof document !== "undefined") {
   const $ = (s) => document.querySelector(s);
   const $$ = (s) => [...document.querySelectorAll(s)];
   const COPY_ICON =
     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="8" y="8" width="12" height="13" rx="2"/><path d="M15 8V3H3v13h5"/></svg>';
-  const health = {}; // Health Path id -> probe state
-  let status = null,
-    checking = false;
+  let checking = false;
 
   // Live regions announce every write, so text changes only when it differs.
   const text = (element, value) => {
@@ -65,9 +102,9 @@ if (typeof document !== "undefined") {
   }
   async function probe(id) {
     try {
-      health[id] = probeState((await request(`/health/${id}`)).status);
+      return probeState((await request(`/health/${id}`)).status);
     } catch {
-      health[id] = "unreachable";
+      return "unreachable";
     }
   }
   async function origins() {
@@ -89,25 +126,22 @@ if (typeof document !== "undefined") {
     } else platform?.remove();
   }
 
-  function render() {
+  function render(status, health) {
     const components = status?.components;
-    let up = 0,
-      total = 0;
+    const states = [];
     for (const card of $$("[data-app]")) {
       const component = components?.get(card.dataset.app);
       const state = appState(component, card.dataset.health.split(" ").map((id) => health[id] ?? "unknown"));
       badge(card.querySelector(".pk-badge"), state);
       text(card.querySelector("[data-version]"), versionText(component));
-      if (component?.enabled) total++;
-      if (state === "healthy" || state === "degraded") up++;
+      if (component?.enabled) states.push(state);
     }
     for (const item of $$("[data-component]")) {
       const component = components?.get(item.dataset.component);
       badge(item.querySelector(".pk-badge"), componentState(component));
       text(item.querySelector("[data-version]"), component?.version ?? "");
     }
-    // Without a Status Document nothing is known, which is not the same as unreachable.
-    text($("[data-summary]"), status ? `${up} of ${total} reachable` : "Status unavailable");
+    text($("[data-summary]"), summaryText(status, states));
     text($("[data-configured-at]"), status ? utc(status.configuredAt) : "Status unavailable");
     const backups = status?.features?.backups;
     text(
@@ -128,20 +162,12 @@ if (typeof document !== "undefined") {
     $("[data-refresh]").disabled = true;
     text($("[data-refresh]"), "Checking…");
     try {
-      await Promise.all([
-        json("/status.json")
-          .then(parseStatus)
-          .then(
-            (value) => void (status = value),
-            // An absent or invalid document is unknown, never a previous answer.
-            () => void (status = null),
-          ),
+      const [{ status, health }] = await Promise.all([
+        load(() => json("/status.json"), probe,
+          $$("[data-app]").map((card) => ({ id: card.dataset.app, health: card.dataset.health.split(" ") }))),
         origins().catch(() => {}),
       ]);
-      // Only applications the Status Document lists as enabled are probed.
-      const enabled = $$("[data-app]").filter((card) => status?.components.get(card.dataset.app)?.enabled);
-      await Promise.all([...new Set(enabled.flatMap((card) => card.dataset.health.split(" ")))].map(probe));
-      render();
+      render(status, health);
       text($("[data-checked]"), `Checked ${new Date().toLocaleTimeString()}`);
     } finally {
       $("[data-refresh]").disabled = false;
