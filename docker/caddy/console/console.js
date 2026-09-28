@@ -126,17 +126,20 @@ if (typeof document !== "undefined") {
     checking = true;
     $("[data-refresh]").disabled = true;
     text($("[data-refresh]"), "Checking…");
-    const ids = new Set($$("[data-health]").flatMap((card) => card.dataset.health.split(" ")));
     try {
       await Promise.all([
-        json("/status.json").then(
-          (doc) => void (status = parseStatus(doc)),
-          // An absent or invalid document is unknown, never a previous answer.
-          () => void (status = null),
-        ),
+        json("/status.json")
+          .then(parseStatus)
+          .then(
+            (value) => void (status = value),
+            // An absent or invalid document is unknown, never a previous answer.
+            () => void (status = null),
+          ),
         origins().catch(() => {}),
-        ...[...ids].map(probe),
       ]);
+      // Only applications the Status Document lists as enabled are probed.
+      const enabled = $$("[data-app]").filter((card) => status?.components.get(card.dataset.app)?.enabled);
+      await Promise.all([...new Set(enabled.flatMap((card) => card.dataset.health.split(" ")))].map(probe));
       render();
       text($("[data-checked]"), `Checked ${new Date().toLocaleTimeString()}`);
     } finally {
