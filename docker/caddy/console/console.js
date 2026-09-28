@@ -40,6 +40,25 @@ const FIELDS = ["id", "name", "kind", "enabled", "image", "version", "health", "
 const FEATURES = { backups: ["configured", "lastCheckpointAt"], alerts: ["configured"] };
 const object = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
 const only = (value, keys) => !object(value) || Object.keys(value).every((key) => keys.includes(key));
+const text = (value, max) => typeof value === "string" && value.length > 0 && value.length <= max;
+function origin(value) {
+  try {
+    const url = new URL(value);
+    return ["http:", "https:"].includes(url.protocol) && !url.username && !url.password &&
+      !url.search && !url.hash && !value.includes("?") && !value.includes("#");
+  } catch {
+    return false;
+  }
+}
+const validComponent = (c) => object(c) &&
+  typeof c.id === "string" && /^[a-z][a-z0-9-]{0,31}$/.test(c.id) &&
+  text(c.name, 64) &&
+  ["app", "datastore", "gateway", "collector", "runtime"].includes(c.kind) &&
+  typeof c.enabled === "boolean" &&
+  text(c.image, 256) && !c.image.includes("@") &&
+  (c.version === null || (typeof c.version === "string" && /^[A-Za-z0-9._+-]{1,128}$/.test(c.version))) &&
+  c.health === `/health/${c.id}` &&
+  (!Object.hasOwn(c, "url") || (text(c.url, 2048) && origin(c.url)));
 function parseStatus(doc) {
   if (
     !object(doc) ||
@@ -57,8 +76,7 @@ function parseStatus(doc) {
     throw new Error("Unsupported status");
   const ids = doc.components.map((component) => component?.id).filter((id) => typeof id === "string");
   if (new Set(ids).size !== ids.length) throw new Error("Duplicate component");
-  const valid = (c) => typeof c?.id === "string" && typeof c.enabled === "boolean";
-  return { ...doc, components: new Map(doc.components.filter(valid).map((c) => [c.id, c])) };
+  return { ...doc, components: new Map(doc.components.filter(validComponent).map((c) => [c.id, c])) };
 }
 // Each refresh starts empty. A missing or malformed document schedules no Health Path probes.
 async function load(getStatus, probe, cards) {

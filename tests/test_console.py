@@ -67,6 +67,30 @@ assert.deepEqual([
   assert.equal(c.appState(result.status.components.get('langfuse-web'), ['healthy']), 'disabled');
   assert.equal(c.appState(result.status.components.get('rustfs'),
     [result.health.rustfs, result.health['rustfs-console']]), 'degraded');
+  const omit = (record, key) => Object.fromEntries(Object.entries(record).filter(([field]) => field !== key));
+  for (const bad of [
+    omit(component('litellm'), 'name'),
+    {...component('litellm'), name: ''},
+    omit(component('litellm'), 'kind'),
+    {...component('litellm'), kind: 'unknown'},
+    omit(component('litellm'), 'image'),
+    {...component('litellm'), image: 'example/litellm@sha256:digest'},
+    omit(component('litellm'), 'version'),
+    {...component('litellm'), version: 'invalid version'},
+    omit(component('litellm'), 'health'),
+    {...component('litellm'), health: '/health/postgres'},
+    {...component('litellm'), url: 'javascript:alert(1)'},
+  ]) {
+    result = await c.load(async () => valid, probe, cards);
+    assert.equal(c.appState(result.status.components.get('litellm'), [result.health.litellm]), 'healthy');
+    probed = [];
+    result = await c.load(async () => ({...valid, components: valid.components.map((item) =>
+      item.id === 'litellm' ? bad : item)}), probe, cards);
+    assert.equal(result.status.components.has('litellm'), false, JSON.stringify(bad));
+    assert.equal(result.health.litellm, undefined, JSON.stringify(bad));
+    assert.deepEqual(probed, ['rustfs', 'rustfs-console'], JSON.stringify(bad));
+    assert.equal(c.appState(result.status.components.get('litellm'), ['healthy']), 'unknown');
+  }
   // Invalid or absent metadata after a healthy refresh clears status and health and probes nothing.
   for (const next of [
     async () => ({...valid, extra: true}),
@@ -84,5 +108,6 @@ assert.deepEqual([
   }
 })().catch((error) => { console.error(error); process.exit(1); });
 '''
-        subprocess.run(["node", "-e", script, str(ROOT / "docker/caddy/console/console.js")],
-                       input=json.dumps(document), text=True, check=True, capture_output=True)
+        result = subprocess.run(["node", "-e", script, str(ROOT / "docker/caddy/console/console.js")],
+                                input=json.dumps(document), text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
