@@ -50,6 +50,7 @@ function summaryText(status, states) {
 const ENVELOPE = ["contract", "stack", "configuredAt", "components", "features"];
 const FIELDS = ["id", "name", "kind", "enabled", "image", "version", "health", "url"];
 const FEATURES = { backups: ["configured", "lastCheckpointAt"], alerts: ["configured"] };
+const MAX_STATUS_BYTES = 65536;
 const object = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
 const only = (value, keys) => !object(value) || Object.keys(value).every((key) => keys.includes(key));
 const text = (value, max) => typeof value === "string" && value.length > 0 && value.length <= max;
@@ -65,7 +66,8 @@ const feature = (value, fields, valid) =>
 function origin(value) {
   try {
     const url = new URL(value);
-    return ["http:", "https:"].includes(url.protocol) && !url.username && !url.password &&
+    return ["http:", "https:"].includes(url.protocol) && url.pathname === "/" &&
+      !url.username && !url.password &&
       !url.search && !url.hash && !value.includes("?") && !value.includes("#");
   } catch {
     return false;
@@ -108,6 +110,33 @@ function parseStatus(doc) {
     features: { ...(backups && { backups }), ...(alerts && { alerts }) },
   };
 }
+async function readStatus(response) {
+  if (response.status !== 200 ||
+    !/^application\/json(?:\s*;|\s*$)/i.test(response.headers.get("Content-Type") || "") ||
+    Number(response.headers.get("Content-Length")) > MAX_STATUS_BYTES)
+    throw new Error("Status unavailable");
+  const reader = response.body.getReader();
+  const chunks = [];
+  let size = 0;
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > MAX_STATUS_BYTES) throw new Error("Status too large");
+      chunks.push(value);
+    }
+    const bytes = new Uint8Array(size);
+    let offset = 0;
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+  } finally {
+    void reader.cancel().catch(() => {});
+  }
+}
 // Each refresh starts empty. A missing or malformed document schedules no Health Path probes.
 async function load(getStatus, probe, cards) {
   let status = null;
@@ -120,7 +149,7 @@ async function load(getStatus, probe, cards) {
 }
 
 if (typeof module !== "undefined")
-  module.exports = { probeState, appState, componentState, versionText, originFor, backupsText, summaryText, parseStatus, load };
+  module.exports = { probeState, appState, componentState, versionText, originFor, backupsText, summaryText, parseStatus, readStatus, load };
 
 if (typeof document !== "undefined") {
   const $ = (s) => document.querySelector(s);
@@ -197,7 +226,7 @@ if (typeof document !== "undefined") {
     text($("[data-refresh]"), "Checking…");
     try {
       const [{ status, health }] = await Promise.all([
-        load(() => json("/status.json"), probe,
+        load(() => request("/status.json").then(readStatus), probe,
           $$("[data-app]").map((card) => ({ id: card.dataset.app, health: card.dataset.health.split(" ") }))),
         origins().catch(() => {}),
       ]);
