@@ -142,10 +142,17 @@ assert.deepEqual([
   assert.equal(encoder.encode(exact).length, 65536);
   result = await c.load(fromResponse(exact, {length: 65536}), probe, cards);
   assert.ok(result.status, 'exact 65536-byte document');
-  probed = [];
-  result = await c.load(fromResponse(exact + 'é', {length: 65536}), probe, cards);
-  assert.deepEqual([result.status, result.health, probed], [null, {}, []], 'UTF-8 bytes exceed boundary');
-  assert.ok(cancelled > 0, 'oversized streams are cancelled');
+  const overLimit = exact + ' ';
+  assert.equal(encoder.encode(overLimit).length, 65537);
+  assert.equal(overLimit.length, 65536);
+  assert.deepEqual(JSON.parse(overLimit), JSON.parse(multibyte));
+  for (const [name, options] of [['no length', {}], ['understated length', {length: 1}]]) {
+    const cancelledBefore = cancelled;
+    probed = [];
+    result = await c.load(fromResponse(overLimit, options), probe, cards);
+    assert.deepEqual([result.status, result.health, probed], [null, {}, []], name);
+    assert.equal(cancelled, cancelledBefore + 1, name + ' cancels oversized stream');
+  }
   const originalTimeout = AbortSignal.timeout;
   const deadline = new AbortController();
   AbortSignal.timeout = (ms) => { assert.equal(ms, 4000); return deadline.signal; };
@@ -239,8 +246,10 @@ assert.deepEqual([
       'unknown');
     assert.equal(c.summaryText(result.status, []), 'Status unavailable');
   }
+  console.log('GATEWAY_CONSOLE_NODE_ASSERTIONS_COMPLETE');
 })().catch((error) => { console.error(error); process.exit(1); });
 '''
         result = subprocess.run(["node", "-e", script, str(ROOT / "docker/caddy/console/console.js")],
-                                input=json.dumps(document), text=True, capture_output=True)
+                                input=json.dumps(document), text=True, capture_output=True, timeout=10)
         self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("GATEWAY_CONSOLE_NODE_ASSERTIONS_COMPLETE", result.stdout)
