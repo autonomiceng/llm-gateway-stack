@@ -1,0 +1,337 @@
+/* vendored from platform-edge@84f38a2 sha256:78f7e6868fedae32f7884dde50960b8689ab7b889a40ed7adbab20a019d5287f ; do not edit here */
+/* platform-ui v1: shared tokens and components for the platform consoles.
+   Canonical in platform-edge docker/console/platform.css, documented in docs/ui-kit.md.
+   Stacks copy this file verbatim with scripts/sync-ui.sh; page layout stays local. */
+
+:root {
+  color-scheme: dark;
+  --pk-bg: #0d1525;
+  --pk-panel: #162235;
+  --pk-card: #101b2c;
+  --pk-input: #1d2c42;
+  --pk-line: #2a3a50;
+  --pk-text: #e4edf7;
+  --pk-muted: #96a9c1;
+  --pk-code: #bdd5ed;
+  --pk-accent: #8ccaff;
+  --pk-accent-hover: #b4e2ff;
+  --pk-ok: #61dfb1;
+  --pk-warn: #ffb67b;
+  --pk-danger: #ff8a8a;
+  --pk-info: #9faad7;
+  --pk-shade: #060e1cb3;
+  --pk-shadow: 0 20px 80px #0009;
+
+  --pk-radius-lg: 14px; --pk-radius: 10px; --pk-radius-sm: 8px; --pk-radius-pill: 20px;
+
+  --pk-space-1: 4px; --pk-space-2: 8px; --pk-space-3: 12px; --pk-space-4: 16px;
+  --pk-space-5: 20px; --pk-space-6: 24px; --pk-space-7: 32px;
+  --pk-gutter: 32px;
+  --pk-page-max: 1440px;
+
+  --pk-font: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --pk-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  --pk-size-base: 15px; --pk-size-brand: 18px; --pk-size-h2: 19px; --pk-size-small: 13px;
+  --pk-size-meta: 12px; --pk-size-badge: 11px; --pk-size-label: 10px;
+}
+
+/* Same roles, AA contrast on the light surfaces. */
+@media (prefers-color-scheme: light) {
+  :root {
+    color-scheme: light;
+    --pk-bg: #f3f6fa;
+    --pk-panel: #ffffff;
+    --pk-card: #f7f9fc;
+    --pk-input: #e9eef5;
+    --pk-line: #d3dbe6;
+    --pk-text: #142033;
+    --pk-muted: #4f5f75;
+    --pk-code: #1d3a5c;
+    --pk-accent: #0b5bb0;
+    --pk-accent-hover: #07458a;
+    --pk-ok: #06673f;
+    --pk-warn: #9a4a05;
+    --pk-danger: #b3242b;
+    --pk-info: #46519c;
+    --pk-shade: #0f172a59;
+    --pk-shadow: 0 20px 60px #0f172a2e;
+  }
+}
+
+/* Base, only for pages that opt in with <body class="pk-page">; :where() keeps it overridable. */
+.pk-page {
+  margin: 0;
+  min-height: 100vh;
+  background: var(--pk-bg);
+  color: var(--pk-text);
+  font: var(--pk-size-base) / 1.5 var(--pk-font);
+}
+.pk-page *, .pk-page *::before, .pk-page *::after { box-sizing: border-box; }
+.pk-page :where(a) { color: var(--pk-accent); text-decoration: none; text-underline-offset: 3px; }
+.pk-page :where(a:hover) { color: var(--pk-accent-hover); text-decoration: underline; }
+.pk-page :where(code) { font: var(--pk-size-meta) / 1.5 var(--pk-mono); color: var(--pk-code); overflow-wrap: anywhere; }
+.pk-page :where(a, button, input) { transition: color 0.12s, background-color 0.12s, border-color 0.12s; }
+.pk-page :focus-visible { outline: 2px solid var(--pk-accent); outline-offset: 2px; }
+.pk-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* Header: brand mark and product name, optional pill, links on the right. */
+.pk-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--pk-space-3) var(--pk-space-4);
+  padding: var(--pk-space-4) max(var(--pk-gutter), (100% - var(--pk-page-max)) / 2 + var(--pk-gutter));
+  border-bottom: 1px solid var(--pk-line);
+}
+.pk-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--pk-space-3);
+  color: var(--pk-text);
+  font-size: var(--pk-size-brand);
+  font-weight: 650;
+  text-decoration: none;
+}
+.pk-brand :is(img, svg) { width: 28px; height: 28px; flex: none; }
+.pk-header-links {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--pk-space-2) var(--pk-space-5);
+  margin-left: auto;
+  color: var(--pk-muted);
+  font-size: var(--pk-size-small);
+}
+.pk-header-links a { display: inline-flex; align-items: center; gap: 6px; color: var(--pk-muted); }
+.pk-header-links a:hover { color: var(--pk-text); }
+.pk-header-links svg { width: 16px; height: 16px; }
+
+.pk-pill:empty { display: none; }
+.pk-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 10px;
+  border: 1px solid var(--pk-line);
+  border-radius: var(--pk-radius-pill);
+  color: var(--pk-muted);
+  font-size: var(--pk-size-badge);
+  font-weight: 550;
+  line-height: 18px;
+  white-space: nowrap;
+}
+.pk-section-label {
+  margin: 0 0 var(--pk-space-2);
+  color: var(--pk-muted);
+  font-size: var(--pk-size-label);
+  font-weight: 650;
+  letter-spacing: 1.4px;
+  line-height: 1.4;
+  text-transform: uppercase;
+}
+
+/* Surfaces: .pk-card groups a project or a form; .pk-app is one application inside it. */
+.pk-card {
+  min-width: 0;
+  padding: var(--pk-space-5);
+  border: 1px solid var(--pk-line);
+  border-radius: var(--pk-radius-lg);
+  background: var(--pk-panel);
+}
+.pk-app {
+  display: flex;
+  flex-direction: column;
+  gap: var(--pk-space-3);
+  min-width: 0;
+  padding: var(--pk-space-4);
+  border: 1px solid var(--pk-line);
+  border-radius: var(--pk-radius);
+  background: var(--pk-card);
+}
+.pk-app-head { display: flex; align-items: center; gap: var(--pk-space-3); min-width: 0; }
+.pk-app-head > :is(img, svg) { width: 28px; height: 28px; flex: none; object-fit: contain; }
+.pk-app-head h3 {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  font-size: var(--pk-size-base);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.pk-app-desc { margin: 0; color: var(--pk-muted); font-size: var(--pk-size-small); }
+.pk-app-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--pk-space-3);
+  margin-top: auto;
+  padding-top: var(--pk-space-3);
+  border-top: 1px solid var(--pk-line);
+  color: var(--pk-muted);
+  font-size: var(--pk-size-meta);
+}
+
+/* Badge: set data-state; the text, dot and tint follow the state colour. */
+.pk-badge {
+  --pk-state: var(--pk-muted);
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  padding: 1px 9px;
+  border: 1px solid color-mix(in srgb, var(--pk-state) 40%, transparent);
+  border-radius: var(--pk-radius-pill);
+  background: color-mix(in srgb, var(--pk-state) 12%, transparent);
+  color: var(--pk-state);
+  font-size: var(--pk-size-badge);
+  font-weight: 600;
+  line-height: 18px;
+  white-space: nowrap;
+}
+.pk-badge::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.pk-badge:is([data-state="healthy"], [data-state="ok"]) { --pk-state: var(--pk-ok); }
+.pk-badge:is([data-state="degraded"], [data-state="warn"]) { --pk-state: var(--pk-warn); }
+.pk-badge:is([data-state="unreachable"], [data-state="danger"]) { --pk-state: var(--pk-danger); }
+.pk-badge:is([data-state="configured"], [data-state="starting"], [data-state="info"]) { --pk-state: var(--pk-info); }
+.pk-badge[data-state="disabled"] { border-color: var(--pk-line); background: transparent; }
+.pk-badge[data-state="disabled"]::before { background: transparent; box-shadow: inset 0 0 0 1px currentColor; }
+
+/* Endpoint rows: label | value | optional copy button, aligned across one .pk-endpoints list. */
+.pk-endpoints {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 2px var(--pk-space-3);
+  margin: 0;
+}
+.pk-endpoint { display: contents; }
+.pk-endpoint > :first-child { color: var(--pk-muted); font-size: var(--pk-size-meta); }
+.pk-endpoint > :nth-child(2) { min-width: 0; margin: 0; overflow-wrap: anywhere; }
+.pk-endpoint > :nth-child(2):last-child { grid-column: span 2; min-height: 28px; align-content: center; }
+.pk-copy {
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--pk-radius-sm);
+  background: transparent;
+  color: var(--pk-muted);
+  cursor: pointer;
+}
+.pk-copy:hover { border-color: var(--pk-line); background: var(--pk-input); color: var(--pk-text); }
+.pk-copy[data-copied] { color: var(--pk-ok); }
+.pk-copy svg { width: 15px; height: 15px; }
+
+.pk-notice {
+  margin: 0;
+  padding: 10px 14px;
+  border: 1px solid var(--pk-line);
+  border-left: 3px solid var(--pk-info);
+  border-radius: var(--pk-radius-sm);
+  background: var(--pk-card);
+  font-size: var(--pk-size-small);
+}
+.pk-notice[data-state="warn"] { border-left-color: var(--pk-warn); }
+.pk-notice[data-state="danger"] { border-left-color: var(--pk-danger); }
+
+.pk-button, .pk-input {
+  min-height: 34px;
+  border: 1px solid var(--pk-line);
+  border-radius: var(--pk-radius-sm);
+  background: var(--pk-input);
+  color: var(--pk-text);
+  font: var(--pk-size-small) / 1.4 var(--pk-font);
+}
+.pk-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 6px 14px;
+  font-weight: 550;
+  cursor: pointer;
+}
+.pk-button:hover:not(:disabled) { border-color: var(--pk-muted); }
+.pk-button:disabled { opacity: 0.6; cursor: default; }
+.pk-button.pk-plain { min-height: 0; padding: 2px 0; border: 0; background: none; color: var(--pk-accent); }
+.pk-button.pk-plain:hover { color: var(--pk-accent-hover); }
+.pk-button.pk-danger { color: var(--pk-danger); }
+/* Inputs need a 3:1 boundary against their surface (WCAG 1.4.11). */
+.pk-input { width: 100%; padding: 6px 12px; border-color: var(--pk-muted); }
+.pk-input::placeholder { color: var(--pk-muted); }
+
+/* Compact rows, for supporting components or datastores. */
+.pk-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--pk-line);
+  border-radius: var(--pk-radius);
+  background: var(--pk-card);
+}
+.pk-list > li {
+  display: flex;
+  align-items: center;
+  gap: var(--pk-space-3);
+  min-height: 44px;
+  padding: var(--pk-space-2) var(--pk-space-3);
+  font-size: var(--pk-size-small);
+}
+.pk-list > li + li { border-top: 1px solid var(--pk-line); }
+.pk-list > li > :is(img, svg) { width: 20px; height: 20px; flex: none; }
+
+/* Drawer: a <dialog> opened with showModal(), pinned to the right edge. */
+.pk-drawer {
+  inset: 0 0 0 auto;
+  width: min(440px, 100vw);
+  max-width: none;
+  height: 100%;
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-left: 1px solid var(--pk-line);
+  background: var(--pk-panel);
+  color: var(--pk-text);
+  box-shadow: var(--pk-shadow);
+}
+.pk-drawer::backdrop { background: var(--pk-shade); }
+.pk-drawer-head {
+  position: sticky;
+  top: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--pk-space-3);
+  padding: var(--pk-space-5) var(--pk-space-6);
+  border-bottom: 1px solid var(--pk-line);
+  background: var(--pk-panel);
+}
+.pk-drawer-head > :is(img, svg) { width: 28px; height: 28px; flex: none; }
+.pk-drawer-head h2 { flex: 1; margin: 0; font-size: var(--pk-size-h2); font-weight: 600; line-height: 1.3; }
+.pk-drawer-body { display: grid; gap: var(--pk-space-6); padding: var(--pk-space-5) var(--pk-space-6) var(--pk-space-7); }
+.pk-close { width: 34px; padding: 0; font-size: 20px; line-height: 1; }
+
+@media (max-width: 1100px) {
+  :root { --pk-gutter: 24px; }
+}
+@media (max-width: 700px) {
+  :root { --pk-gutter: 16px; }
+  .pk-header { padding-block: var(--pk-space-3); }
+  .pk-card { padding: var(--pk-space-4); }
+  .pk-drawer-head, .pk-drawer-body { padding-inline: var(--pk-space-4); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .pk-page *, .pk-page *::before, .pk-page *::after {
+    transition: none !important;
+    animation: none !important;
+    scroll-behavior: auto !important;
+  }
+}

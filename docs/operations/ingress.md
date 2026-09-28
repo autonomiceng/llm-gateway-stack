@@ -281,6 +281,10 @@ LG_HTTP_PORT=18080
 and issues no certificates. The application scheme defaults to HTTPS; `LG_SCHEME=http`
 remains useful when the gateway in front serves HTTP.
 
+`LG_PLATFORM_URL` is the Edge console origin, for example `https://platform.example.com`.
+When set, the Stack Console header links "Platform" to it. It follows the
+[application URL](#application-urls) rules and routes nothing; empty shows no link.
+
 `LG_TRUSTED_PROXIES` defaults to Edge's reserved address, `172.30.0.2/32`, so no address
 discovery is needed. An empty value uses the same default. Change it only for another
 gateway or a different Platform Network subnet, and keep it to exact addresses (`/32` for

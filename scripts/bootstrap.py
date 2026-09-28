@@ -390,7 +390,7 @@ def access_settings(settings: dict[str, str]) -> dict[str, str]:
     # mode accepts and application origins; it refuses here what it refuses at container start.
     access_keys = {"LG_ACCESS_MODE", "LG_BIND_HOST", "LG_SCHEME", "LG_PUBLIC_DOMAIN", "LG_PUBLIC_PORT_SUFFIX",
                    "LG_TRUSTED_PROXIES", "LG_LISTEN_SCHEME", "LG_TLS_ISSUER"}
-    access_keys.update("LG_" + app + "_URL" for app in ("CONSOLE", "LITELLM", "LANGFUSE", "S3", "RUSTFS"))
+    access_keys.update("LG_" + app + "_URL" for app in ("CONSOLE", "LITELLM", "LANGFUSE", "S3", "RUSTFS", "PLATFORM"))
     environment = {key: value for key, value in values.items() if key in access_keys}
     environment["LG_HTTPS_PUBLISHED"] = str(mode != "proxy").lower()
     origins = subprocess.run(

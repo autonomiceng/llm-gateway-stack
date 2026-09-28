@@ -142,10 +142,14 @@ done
 ok "ClickHouse and RustFS produce no application log files"
 
 # Console and its data.
-# Read the complete page before matching: bundled icons can exceed the pipe buffer.
+# Read the complete page, then every local asset it references.
 curl -fsS "http://$origin/" -o "$work/console.html" || fail "console request failed"
 grep -q 'LLM Gateway' "$work/console.html" || fail "console did not render"
-ok "console served"
+grep -q 'href="/platform.css"' "$work/console.html" || fail "console does not load the platform UI kit"
+while read -r asset; do
+  curl -fsS -o /dev/null "http://$origin$asset" || fail "console asset $asset did not load"
+done < <(grep -o '\(src\|href\)="/[^"]*"' "$work/console.html" | cut -d '"' -f 2 | sort -u)
+ok "console served with the platform UI kit and every asset it references"
 
 # Status v2: the bootstrap-written document, served publicly; the v1 route is gone.
 python3 - "http://$origin" <<'PYSTATUS' || fail "status document or health paths"

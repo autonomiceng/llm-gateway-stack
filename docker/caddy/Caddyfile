@@ -144,7 +144,7 @@
 	handle /origins.json {
 		header Cache-Control "no-store"
 		header Content-Type application/json
-		respond `{"scheme":"{$LG_SCHEME}","domain":"{$LG_PUBLIC_DOMAIN}","port":"{$LG_PUBLIC_PORT_SUFFIX}","console":"{$LG_CONSOLE_URL}","litellm":"{$LG_LITELLM_URL}","langfuse":"{$LG_LANGFUSE_URL}","s3":"{$LG_S3_URL}","rustfs":"{$LG_RUSTFS_URL}"}`
+		respond `{"scheme":"{$LG_SCHEME}","domain":"{$LG_PUBLIC_DOMAIN}","port":"{$LG_PUBLIC_PORT_SUFFIX}","console":"{$LG_CONSOLE_URL}","litellm":"{$LG_LITELLM_URL}","langfuse":"{$LG_LANGFUSE_URL}","s3":"{$LG_S3_URL}","rustfs":"{$LG_RUSTFS_URL}","platform":"{$LG_PLATFORM_URL}"}`
 	}
 	handle {
 		header Cache-Control "no-cache"

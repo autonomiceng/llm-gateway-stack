@@ -42,7 +42,7 @@ On a laptop that is all: Local Mode logs in to Langfuse as `admin@localhost.test
 
 | URL | What |
 | --- | --- |
-| `http://localhost/` | Console: links, live health, configured versions; `/status.json` is the same data for machines |
+| `http://localhost/` | Console: links, live health, configured versions, and a Platform link when `LG_PLATFORM_URL` names the Edge console; for machines, `/status.json` lists the configured components and `/health/<id>` answers their reachability |
 | `http://litellm.localhost/` | The gateway API; `/ui/` is the admin UI behind LiteLLM's login |
 | `http://langfuse.localhost/` | Traces, evals, prompts |
 | `http://rustfs.localhost/` | RustFS admin console, behind RustFS's login |
