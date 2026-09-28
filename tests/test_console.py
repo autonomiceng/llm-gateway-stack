@@ -29,6 +29,18 @@ assert.deepEqual([...c.parseStatus(valid).components.keys()], valid.components.m
 assert.equal(component('langfuse-web').enabled, false);
 assert.equal('url' in component('postgres'), false);
 assert.deepEqual(Object.keys(valid.features), ['backups']);
+assert.equal(valid.features.backups.lastCheckpointAt, null);
+const withFeatures = {...valid, features: {
+  backups: {configured: true, lastCheckpointAt: '2026-09-22T03:00:00Z'},
+  alerts: {configured: false},
+}};
+assert.deepEqual(c.parseStatus(withFeatures).features, withFeatures.features);
+assert.equal(c.backupsText(c.parseStatus(valid).features.backups), 'Configured · no checkpoint recorded');
+assert.equal(c.backupsText(c.parseStatus(withFeatures).features.backups),
+  'Configured · last checkpoint 2026-09-22 03:00 UTC');
+assert.equal(c.backupsText(c.parseStatus({...valid, features: {
+  backups: {configured: false, lastCheckpointAt: null}}}).features.backups), 'Not configured');
+assert.equal(c.parseStatus({...valid, features: {}}).features.backups, undefined);
 // A bad required component is discarded, while an unknown field anywhere rejects the whole document.
 assert.equal(c.parseStatus({...valid, components: [...valid.components, {id: 'partial'}]})
   .components.has('partial'), false);
@@ -38,8 +50,8 @@ const invalid = [
   {...valid, components: [{...component('litellm'), running: true}]},
   {...valid, components: [{id: 'partial', running: true}]},
   {...valid, features: {...valid.features, logs: {}}},
-  {...valid, features: {backups: null}},
   {...valid, features: {backups: {...valid.features.backups, secret: true}}},
+  {...valid, features: {alerts: {configured: true, destination: 'private'}}},
   {...valid, components: [...valid.components, {...component('litellm'), enabled: false}]},
   {...valid, components: Array.from({length: 33}, (_, i) => ({...component('litellm'), id: 'app-' + i}))},
 ];
@@ -67,6 +79,26 @@ assert.deepEqual([
   assert.equal(c.appState(result.status.components.get('langfuse-web'), ['healthy']), 'disabled');
   assert.equal(c.appState(result.status.components.get('rustfs'),
     [result.health.rustfs, result.health['rustfs-console']]), 'degraded');
+  for (const [features, key] of [
+    [{backups: {configured: 'false', lastCheckpointAt: null}}, 'backups'],
+    [{backups: {configured: true}}, 'backups'],
+    [{backups: {configured: true, lastCheckpointAt: '2026-02-30T03:00:00Z'}}, 'backups'],
+    [{backups: {configured: true, lastCheckpointAt: 'not a timestamp'}}, 'backups'],
+    [{backups: null}, 'backups'],
+    [{alerts: {configured: 'false'}}, 'alerts'],
+    [{alerts: {}}, 'alerts'],
+    [{alerts: null}, 'alerts'],
+  ]) {
+    result = await c.load(async () => valid, probe, cards);
+    probed = [];
+    result = await c.load(async () => ({...valid, features}), probe, cards);
+    assert.ok(result.status, JSON.stringify(features));
+    assert.equal(result.status.features[key], undefined, JSON.stringify(features));
+    if (key === 'backups') assert.equal(c.backupsText(result.status.features.backups), 'Unknown');
+    assert.equal(result.health.litellm, 'healthy', JSON.stringify(features));
+    assert.equal(c.appState(result.status.components.get('litellm'), [result.health.litellm]), 'healthy');
+    assert.deepEqual(probed, ['litellm', 'rustfs', 'rustfs-console'], JSON.stringify(features));
+  }
   const omit = (record, key) => Object.fromEntries(Object.entries(record).filter(([field]) => field !== key));
   for (const bad of [
     omit(component('litellm'), 'name'),
@@ -94,6 +126,8 @@ assert.deepEqual([
   // Invalid or absent metadata after a healthy refresh clears status and health and probes nothing.
   for (const next of [
     async () => ({...valid, extra: true}),
+    ...[null, '2026-02-30T00:00:00Z', '2026-09-28', '2026-09-28T00:00:00+02:00']
+      .map((configuredAt) => async () => ({...valid, configuredAt})),
     async () => ({...valid, components: [{...component('litellm'), running: true}]}),
     async () => ({...valid, features: {backups: {...valid.features.backups, secret: true}}}),
     async () => ({...valid, components: [...valid.components, component('litellm')]}),

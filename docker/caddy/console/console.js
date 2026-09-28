@@ -26,6 +26,18 @@ const componentState = (component) => (!component ? "unknown" : component.enable
 const versionText = (component) =>
   !component ? "Version unknown" : component.version ? `Configured ${component.version}` : "Configured";
 const originFor = (origins, name) => origins[name] || `${origins.scheme}://${name}.${origins.domain}${origins.port}`;
+const utc = (time) => {
+  const date = new Date(time);
+  return Number.isNaN(date.getTime()) ? "Unknown" : date.toISOString().slice(0, 16).replace("T", " ") + " UTC";
+};
+const backupsText = (backups) =>
+  !backups
+    ? "Unknown"
+    : !backups.configured
+      ? "Not configured"
+      : backups.lastCheckpointAt
+        ? `Configured · last checkpoint ${utc(backups.lastCheckpointAt)}`
+        : "Configured · no checkpoint recorded";
 function summaryText(status, states) {
   if (!status) return "Status unavailable";
   const up = states.filter((state) => state === "healthy" || state === "degraded").length;
@@ -41,6 +53,15 @@ const FEATURES = { backups: ["configured", "lastCheckpointAt"], alerts: ["config
 const object = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
 const only = (value, keys) => !object(value) || Object.keys(value).every((key) => keys.includes(key));
 const text = (value, max) => typeof value === "string" && value.length > 0 && value.length <= max;
+function timestamp(value) {
+  if (typeof value !== "string" || !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?(?:Z|\+00:00)$/.test(value))
+    return NaN;
+  const time = Date.parse(value);
+  // Date.parse silently normalizes nonexistent calendar dates.
+  return Number.isFinite(time) && new Date(time).toISOString().slice(0, 19) === value.slice(0, 19) ? time : NaN;
+}
+const feature = (value, fields, valid) =>
+  object(value) && fields.every((key) => Object.hasOwn(value, key)) && valid(value) ? value : undefined;
 function origin(value) {
   try {
     const url = new URL(value);
@@ -66,17 +87,26 @@ function parseStatus(doc) {
     doc.stack !== "gateway" ||
     !ENVELOPE.every((key) => Object.hasOwn(doc, key)) ||
     !only(doc, ENVELOPE) ||
+    !Number.isFinite(timestamp(doc.configuredAt)) ||
     !Array.isArray(doc.components) ||
     doc.components.length > 32 ||
     !object(doc.features) ||
     !only(doc.features, Object.keys(FEATURES)) ||
-    Object.entries(doc.features).some(([key, feature]) => !object(feature) || !only(feature, FEATURES[key])) ||
+    Object.entries(doc.features).some(([key, value]) => object(value) && !only(value, FEATURES[key])) ||
     doc.components.some((component) => !only(component, FIELDS))
   )
     throw new Error("Unsupported status");
   const ids = doc.components.map((component) => component?.id).filter((id) => typeof id === "string");
   if (new Set(ids).size !== ids.length) throw new Error("Duplicate component");
-  return { ...doc, components: new Map(doc.components.filter(validComponent).map((c) => [c.id, c])) };
+  const backups = feature(doc.features.backups, FEATURES.backups,
+    (value) => typeof value.configured === "boolean" &&
+      (value.lastCheckpointAt === null || Number.isFinite(timestamp(value.lastCheckpointAt))));
+  const alerts = feature(doc.features.alerts, FEATURES.alerts, (value) => typeof value.configured === "boolean");
+  return {
+    ...doc,
+    components: new Map(doc.components.filter(validComponent).map((c) => [c.id, c])),
+    features: { ...(backups && { backups }), ...(alerts && { alerts }) },
+  };
 }
 // Each refresh starts empty. A missing or malformed document schedules no Health Path probes.
 async function load(getStatus, probe, cards) {
@@ -90,7 +120,7 @@ async function load(getStatus, probe, cards) {
 }
 
 if (typeof module !== "undefined")
-  module.exports = { probeState, appState, componentState, versionText, originFor, summaryText, parseStatus, load };
+  module.exports = { probeState, appState, componentState, versionText, originFor, backupsText, summaryText, parseStatus, load };
 
 if (typeof document !== "undefined") {
   const $ = (s) => document.querySelector(s);
@@ -106,10 +136,6 @@ if (typeof document !== "undefined") {
   const badge = (element, state) => {
     element.dataset.state = state;
     text(element, LABELS[state]);
-  };
-  const utc = (time) => {
-    const date = new Date(time);
-    return Number.isNaN(date.getTime()) ? "Unknown" : date.toISOString().slice(0, 16).replace("T", " ") + " UTC";
   };
   const request = (path) =>
     fetch(path, { cache: "no-store", credentials: "omit", redirect: "error", signal: AbortSignal.timeout(4000) });
@@ -161,17 +187,7 @@ if (typeof document !== "undefined") {
     }
     text($("[data-summary]"), summaryText(status, states));
     text($("[data-configured-at]"), status ? utc(status.configuredAt) : "Status unavailable");
-    const backups = status?.features?.backups;
-    text(
-      $("[data-backups]"),
-      !backups
-        ? "Unknown"
-        : !backups.configured
-          ? "Not configured"
-          : backups.lastCheckpointAt
-            ? `Configured · last checkpoint ${utc(backups.lastCheckpointAt)}`
-            : "Configured · no checkpoint recorded",
-    );
+    text($("[data-backups]"), backupsText(status?.features?.backups));
   }
 
   async function check() {
