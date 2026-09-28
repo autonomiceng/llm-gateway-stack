@@ -98,7 +98,7 @@ if (typeof document !== "undefined") {
       const state = appState(component, card.dataset.health.split(" ").map((id) => health[id] ?? "unknown"));
       badge(card.querySelector(".pk-badge"), state);
       text(card.querySelector("[data-version]"), versionText(component));
-      if (state !== "disabled") total++;
+      if (component?.enabled) total++;
       if (state === "healthy" || state === "degraded") up++;
     }
     for (const item of $$("[data-component]")) {
@@ -106,7 +106,8 @@ if (typeof document !== "undefined") {
       badge(item.querySelector(".pk-badge"), componentState(component));
       text(item.querySelector("[data-version]"), component?.version ?? "");
     }
-    text($("[data-summary]"), `${up} of ${total} reachable`);
+    // Without a Status Document nothing is known, which is not the same as unreachable.
+    text($("[data-summary]"), status ? `${up} of ${total} reachable` : "Status unavailable");
     text($("[data-configured-at]"), status ? utc(status.configuredAt) : "Status unavailable");
     const backups = status?.features?.backups;
     text(
