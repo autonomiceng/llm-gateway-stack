@@ -112,9 +112,12 @@ function parseStatus(doc) {
 }
 async function readStatus(response) {
   if (response.status !== 200 ||
-    !/^application\/json(?:\s*;|\s*$)/i.test(response.headers.get("Content-Type") || "") ||
-    Number(response.headers.get("Content-Length")) > MAX_STATUS_BYTES)
+    !/^application\/json(?:\s*;|\s*$)/i.test(response.headers.get("Content-Type") || ""))
     throw new Error("Status unavailable");
+  if (Number(response.headers.get("Content-Length")) > MAX_STATUS_BYTES) {
+    void response.body?.cancel().catch(() => {});
+    throw new Error("Status too large");
+  }
   const reader = response.body.getReader();
   const chunks = [];
   let size = 0;
@@ -137,6 +140,12 @@ async function readStatus(response) {
     void reader.cancel().catch(() => {});
   }
 }
+async function getStatus(fetcher = fetch) {
+  const response = await fetcher("/status.json", {
+    cache: "no-store", credentials: "omit", redirect: "error", signal: AbortSignal.timeout(4000),
+  });
+  return readStatus(response);
+}
 // Each refresh starts empty. A missing or malformed document schedules no Health Path probes.
 async function load(getStatus, probe, cards) {
   let status = null;
@@ -149,7 +158,7 @@ async function load(getStatus, probe, cards) {
 }
 
 if (typeof module !== "undefined")
-  module.exports = { probeState, appState, componentState, versionText, originFor, backupsText, summaryText, parseStatus, readStatus, load };
+  module.exports = { probeState, appState, componentState, versionText, originFor, backupsText, summaryText, parseStatus, readStatus, getStatus, load };
 
 if (typeof document !== "undefined") {
   const $ = (s) => document.querySelector(s);
@@ -226,7 +235,7 @@ if (typeof document !== "undefined") {
     text($("[data-refresh]"), "Checking…");
     try {
       const [{ status, health }] = await Promise.all([
-        load(() => request("/status.json").then(readStatus), probe,
+        load(getStatus, probe,
           $$("[data-app]").map((card) => ({ id: card.dataset.app, health: card.dataset.health.split(" ") }))),
         origins().catch(() => {}),
       ]);

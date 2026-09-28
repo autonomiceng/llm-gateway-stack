@@ -97,7 +97,15 @@ assert.deepEqual([
       }, {highWaterMark: 0}),
     };
   };
-  const fromResponse = (body, options) => () => c.readStatus(response(body, options));
+  const fakeFetch = (reply) => (path, options) => {
+    assert.equal(path, '/status.json');
+    assert.equal(options.cache, 'no-store');
+    assert.equal(options.credentials, 'omit');
+    assert.equal(options.redirect, 'error');
+    assert.ok(options.signal instanceof AbortSignal);
+    return reply(options);
+  };
+  const fromResponse = (body, options) => () => c.getStatus(fakeFetch(() => response(body, options)));
   const validBody = JSON.stringify(valid);
   const transportCases = [
     ['wrong type', fromResponse(validBody, {type: 'text/html'})],
@@ -106,15 +114,21 @@ assert.deepEqual([
     ['streamed oversize', fromResponse(validBody + ' '.repeat(65537))],
     ['misleading length', fromResponse(validBody + ' '.repeat(65537), {length: 1})],
     ['invalid JSON', fromResponse('{')],
-    ['invalid UTF-8', () => c.readStatus({status: 200, headers: new Headers({'Content-Type': 'application/json'}),
-      body: new ReadableStream({start(controller) { controller.enqueue(Uint8Array.of(255)); controller.close(); }})})],
+    ['invalid UTF-8', () => c.getStatus(fakeFetch(() => ({
+      status: 200,
+      headers: new Headers({'Content-Type': 'application/json'}),
+      body: new ReadableStream({start(controller) { controller.enqueue(Uint8Array.of(255)); controller.close(); }}),
+    })))],
     ['read failure', fromResponse(validBody, {fail: new Error('read failed')})],
     ['timeout', fromResponse(validBody, {fail: new DOMException('deadline', 'TimeoutError')})],
   ];
   for (const [name, getStatus] of transportCases) {
+    const cancelledBefore = cancelled;
     probed = [];
     result = await c.load(getStatus, probe, cards);
     assert.deepEqual([result.status, result.health, probed], [null, {}, []], name);
+    if (name === 'declared oversize')
+      assert.equal(cancelled, cancelledBefore + 1, 'declared oversized body is cancelled');
     result = await c.load(fromResponse(validBody, {type: 'Application/JSON; charset=utf-8'}), probe, cards);
     assert.ok(result.status, name + ' then valid');
     assert.deepEqual(result.health, answers, name + ' then valid');
@@ -132,6 +146,26 @@ assert.deepEqual([
   result = await c.load(fromResponse(exact + 'é', {length: 65536}), probe, cards);
   assert.deepEqual([result.status, result.health, probed], [null, {}, []], 'UTF-8 bytes exceed boundary');
   assert.ok(cancelled > 0, 'oversized streams are cancelled');
+  const originalTimeout = AbortSignal.timeout;
+  const deadline = new AbortController();
+  AbortSignal.timeout = (ms) => { assert.equal(ms, 4000); return deadline.signal; };
+  try {
+    probed = [];
+    const waiting = c.load(() => c.getStatus(fakeFetch(({signal}) => ({
+      status: 200,
+      headers: new Headers({'Content-Type': 'application/json'}),
+      body: new ReadableStream({start(controller) {
+        controller.enqueue(encoder.encode(validBody.slice(0, 20)));
+        signal.addEventListener('abort', () => controller.error(new DOMException('deadline', 'TimeoutError')));
+      }}),
+    }))), probe, cards);
+    setTimeout(() => deadline.abort(), 0);
+    result = await waiting;
+    assert.equal(deadline.signal.aborted, true);
+    assert.deepEqual([result.status, result.health, probed], [null, {}, []], 'body deadline clears status');
+  } finally {
+    AbortSignal.timeout = originalTimeout;
+  }
   result = await c.load(async () => valid, probe, cards);
   assert.deepEqual(probed, ['litellm', 'rustfs', 'rustfs-console']);
   assert.deepEqual(result.health, answers);
