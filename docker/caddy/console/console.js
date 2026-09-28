@@ -26,23 +26,108 @@ const componentState = (component) => (!component ? "unknown" : component.enable
 const versionText = (component) =>
   !component ? "Version unknown" : component.version ? `Configured ${component.version}` : "Configured";
 const originFor = (origins, name) => origins[name] || `${origins.scheme}://${name}.${origins.domain}${origins.port}`;
+const utc = (time) => {
+  const date = new Date(time);
+  return Number.isNaN(date.getTime()) ? "Unknown" : date.toISOString().slice(0, 16).replace("T", " ") + " UTC";
+};
+const backupsText = (backups) =>
+  !backups
+    ? "Unknown"
+    : !backups.configured
+      ? "Not configured"
+      : backups.lastCheckpointAt
+        ? `Configured · last checkpoint ${utc(backups.lastCheckpointAt)}`
+        : "Configured · no checkpoint recorded";
+function summaryText(status, states) {
+  if (!status) return "Status unavailable";
+  const up = states.filter((state) => state === "healthy" || state === "degraded").length;
+  const down = states.filter((state) => state === "unreachable").length;
+  const unknown = states.filter((state) => state === "unknown").length;
+  return [up + down && `${up} of ${up + down} reachable`, unknown && `${unknown} unknown`]
+    .filter(Boolean).join(" · ") || "Nothing enabled";
+}
+// Status v2 closes the field set at every level; an unknown field rejects the document.
+const ENVELOPE = ["contract", "stack", "configuredAt", "components", "features"];
+const FIELDS = ["id", "name", "kind", "enabled", "image", "version", "health", "url"];
+const FEATURES = { backups: ["configured", "lastCheckpointAt"], alerts: ["configured"] };
+const object = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+const only = (value, keys) => !object(value) || Object.keys(value).every((key) => keys.includes(key));
+const text = (value, max) => typeof value === "string" && value.length > 0 && value.length <= max;
+function timestamp(value) {
+  if (typeof value !== "string" || !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?(?:Z|\+00:00)$/.test(value))
+    return NaN;
+  const time = Date.parse(value);
+  // Date.parse silently normalizes nonexistent calendar dates.
+  return Number.isFinite(time) && new Date(time).toISOString().slice(0, 19) === value.slice(0, 19) ? time : NaN;
+}
+const feature = (value, fields, valid) =>
+  object(value) && fields.every((key) => Object.hasOwn(value, key)) && valid(value) ? value : undefined;
+function origin(value) {
+  try {
+    const url = new URL(value);
+    return ["http:", "https:"].includes(url.protocol) && !url.username && !url.password &&
+      !url.search && !url.hash && !value.includes("?") && !value.includes("#");
+  } catch {
+    return false;
+  }
+}
+const validComponent = (c) => object(c) &&
+  typeof c.id === "string" && /^[a-z][a-z0-9-]{0,31}$/.test(c.id) &&
+  text(c.name, 64) &&
+  ["app", "datastore", "gateway", "collector", "runtime"].includes(c.kind) &&
+  typeof c.enabled === "boolean" &&
+  text(c.image, 256) && !c.image.includes("@") &&
+  (c.version === null || (typeof c.version === "string" && /^[A-Za-z0-9._+-]{1,128}$/.test(c.version))) &&
+  c.health === `/health/${c.id}` &&
+  (!Object.hasOwn(c, "url") || (text(c.url, 2048) && origin(c.url)));
 function parseStatus(doc) {
-  if (doc?.contract !== 2 || doc.stack !== "gateway" || !Array.isArray(doc.components))
+  if (
+    !object(doc) ||
+    doc.contract !== 2 ||
+    doc.stack !== "gateway" ||
+    !ENVELOPE.every((key) => Object.hasOwn(doc, key)) ||
+    !only(doc, ENVELOPE) ||
+    !Number.isFinite(timestamp(doc.configuredAt)) ||
+    !Array.isArray(doc.components) ||
+    doc.components.length > 32 ||
+    !object(doc.features) ||
+    !only(doc.features, Object.keys(FEATURES)) ||
+    Object.entries(doc.features).some(([key, value]) => object(value) && !only(value, FEATURES[key])) ||
+    doc.components.some((component) => !only(component, FIELDS))
+  )
     throw new Error("Unsupported status");
-  const valid = (c) => typeof c?.id === "string" && typeof c.enabled === "boolean";
-  return { ...doc, components: new Map(doc.components.filter(valid).map((c) => [c.id, c])) };
+  const ids = doc.components.map((component) => component?.id).filter((id) => typeof id === "string");
+  if (new Set(ids).size !== ids.length) throw new Error("Duplicate component");
+  const backups = feature(doc.features.backups, FEATURES.backups,
+    (value) => typeof value.configured === "boolean" &&
+      (value.lastCheckpointAt === null || Number.isFinite(timestamp(value.lastCheckpointAt))));
+  const alerts = feature(doc.features.alerts, FEATURES.alerts, (value) => typeof value.configured === "boolean");
+  return {
+    ...doc,
+    components: new Map(doc.components.filter(validComponent).map((c) => [c.id, c])),
+    features: { ...(backups && { backups }), ...(alerts && { alerts }) },
+  };
+}
+// Each refresh starts empty. A missing or malformed document schedules no Health Path probes.
+async function load(getStatus, probe, cards) {
+  let status = null;
+  try {
+    status = parseStatus(await getStatus());
+  } catch {}
+  const ids = [...new Set(cards.filter((card) => status?.components.get(card.id)?.enabled)
+    .flatMap((card) => card.health))];
+  return { status, health: Object.fromEntries(await Promise.all(ids.map(async (id) => [id, await probe(id)]))) };
 }
 
-if (typeof module !== "undefined") module.exports = { probeState, appState, componentState, versionText, originFor, parseStatus };
+if (typeof module !== "undefined")
+  module.exports = { probeState, appState, componentState, versionText, originFor, backupsText, summaryText, parseStatus, load };
 
 if (typeof document !== "undefined") {
   const $ = (s) => document.querySelector(s);
   const $$ = (s) => [...document.querySelectorAll(s)];
   const COPY_ICON =
     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="8" y="8" width="12" height="13" rx="2"/><path d="M15 8V3H3v13h5"/></svg>';
-  const health = {}; // Health Path id -> probe state
-  let status = null,
-    checking = false;
+  let checking = false;
 
   // Live regions announce every write, so text changes only when it differs.
   const text = (element, value) => {
@@ -51,10 +136,6 @@ if (typeof document !== "undefined") {
   const badge = (element, state) => {
     element.dataset.state = state;
     text(element, LABELS[state]);
-  };
-  const utc = (time) => {
-    const date = new Date(time);
-    return Number.isNaN(date.getTime()) ? "Unknown" : date.toISOString().slice(0, 16).replace("T", " ") + " UTC";
   };
   const request = (path) =>
     fetch(path, { cache: "no-store", credentials: "omit", redirect: "error", signal: AbortSignal.timeout(4000) });
@@ -65,9 +146,9 @@ if (typeof document !== "undefined") {
   }
   async function probe(id) {
     try {
-      health[id] = probeState((await request(`/health/${id}`)).status);
+      return probeState((await request(`/health/${id}`)).status);
     } catch {
-      health[id] = "unreachable";
+      return "unreachable";
     }
   }
   async function origins() {
@@ -89,37 +170,24 @@ if (typeof document !== "undefined") {
     } else platform?.remove();
   }
 
-  function render() {
+  function render(status, health) {
     const components = status?.components;
-    let up = 0,
-      total = 0;
+    const states = [];
     for (const card of $$("[data-app]")) {
       const component = components?.get(card.dataset.app);
       const state = appState(component, card.dataset.health.split(" ").map((id) => health[id] ?? "unknown"));
       badge(card.querySelector(".pk-badge"), state);
       text(card.querySelector("[data-version]"), versionText(component));
-      if (component?.enabled) total++;
-      if (state === "healthy" || state === "degraded") up++;
+      if (component?.enabled) states.push(state);
     }
     for (const item of $$("[data-component]")) {
       const component = components?.get(item.dataset.component);
       badge(item.querySelector(".pk-badge"), componentState(component));
       text(item.querySelector("[data-version]"), component?.version ?? "");
     }
-    // Without a Status Document nothing is known, which is not the same as unreachable.
-    text($("[data-summary]"), status ? `${up} of ${total} reachable` : "Status unavailable");
+    text($("[data-summary]"), summaryText(status, states));
     text($("[data-configured-at]"), status ? utc(status.configuredAt) : "Status unavailable");
-    const backups = status?.features?.backups;
-    text(
-      $("[data-backups]"),
-      !backups
-        ? "Unknown"
-        : !backups.configured
-          ? "Not configured"
-          : backups.lastCheckpointAt
-            ? `Configured · last checkpoint ${utc(backups.lastCheckpointAt)}`
-            : "Configured · no checkpoint recorded",
-    );
+    text($("[data-backups]"), backupsText(status?.features?.backups));
   }
 
   async function check() {
@@ -128,20 +196,12 @@ if (typeof document !== "undefined") {
     $("[data-refresh]").disabled = true;
     text($("[data-refresh]"), "Checking…");
     try {
-      await Promise.all([
-        json("/status.json")
-          .then(parseStatus)
-          .then(
-            (value) => void (status = value),
-            // An absent or invalid document is unknown, never a previous answer.
-            () => void (status = null),
-          ),
+      const [{ status, health }] = await Promise.all([
+        load(() => json("/status.json"), probe,
+          $$("[data-app]").map((card) => ({ id: card.dataset.app, health: card.dataset.health.split(" ") }))),
         origins().catch(() => {}),
       ]);
-      // Only applications the Status Document lists as enabled are probed.
-      const enabled = $$("[data-app]").filter((card) => status?.components.get(card.dataset.app)?.enabled);
-      await Promise.all([...new Set(enabled.flatMap((card) => card.dataset.health.split(" ")))].map(probe));
-      render();
+      render(status, health);
       text($("[data-checked]"), `Checked ${new Date().toLocaleTimeString()}`);
     } finally {
       $("[data-refresh]").disabled = false;

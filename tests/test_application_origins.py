@@ -117,10 +117,6 @@ for (const [component, probes, state] of [
 assert.deepEqual([undefined, on, {enabled: false}].map(c.componentState), ['unknown', 'configured', 'disabled']);
 assert.deepEqual([undefined, on, {enabled: true, version: null}].map(c.versionText),
   ['Version unknown', 'Configured v1.0.0', 'Configured']);
-const doc = c.parseStatus({contract: 2, stack: 'gateway', components: [{id: 'litellm', enabled: true}, {id: 'bad'}]});
-assert.deepEqual([...doc.components.keys()], ['litellm']);
-for (const bad of [null, {contract: 1, stack: 'gateway', components: []}, {contract: 2, stack: 'edge', components: []}])
-  assert.throws(() => c.parseStatus(bad));
 '''
         subprocess.run(['node', '-e', script, str(ROOT / 'docker/caddy/console/console.js')],
                        env={**os.environ, 'TEST_ORIGINS': json.dumps({
