@@ -58,6 +58,11 @@ class ApplicationOriginsTests(unittest.TestCase):
         with self.assertRaises(bootstrap.Refused):
             bootstrap.access_settings({'LG_ACCESS_MODE': 'public', 'LG_PUBLIC_DOMAIN': 'gateway.test',
                                        'LG_S3_URL': 'http://objects.test'})
+        self.assertEqual(bootstrap.access_settings(base)['LG_PLATFORM_URL'], '')
+        self.assertEqual(bootstrap.access_settings({**base, 'LG_PLATFORM_URL': 'https://Platform.Example.test:443'})
+                         ['LG_PLATFORM_URL'], 'https://platform.example.test')
+        with self.assertRaises(bootstrap.Refused):
+            bootstrap.access_settings({**base, 'LG_PLATFORM_URL': 'javascript:alert(1)'})
 
     def test_langfuse_canonical_origin_is_saved_and_used_before_compose(self):
         for raw, canonical in (("https://LANGFUSE.Example.test:443", "https://langfuse.example.test"),
@@ -91,52 +96,31 @@ class ApplicationOriginsTests(unittest.TestCase):
                         self.assertEqual(dict(os.environ), shell)
 
     @unittest.skipUnless(shutil.which('node'), 'Node.js required for the static console check')
-    def test_console_uses_configured_urls(self):
+    def test_console_badges_and_origins(self):
         script = r'''
 const assert = require('node:assert/strict');
-const vm = require('node:vm');
-const fs = require('node:fs');
-(async () => {
-  for (const explicit of [false, true]) {
-    const origins = {scheme: 'http', domain: 'localhost', port: ':8080'};
-    if (explicit) Object.assign(origins, JSON.parse(process.env.TEST_ORIGINS));
-    const links = ['litellm', 'langfuse', 's3', 'rustfs'].map(link => ({dataset: {link, path: '/ui/'}}));
-    const element = () => ({children: [], classList: {add() {}},
-      setAttribute(name, value) { this[name] = value; },
-      addEventListener(name, handler) { this[name] = handler; },
-      append(...children) { this.children.push(...children); },
-      querySelector(selector) { return this.children.find(c => selector === '.copy' && c.className === 'copy'); }});
-    const codes = ['litellm', 'langfuse', 's3', 'rustfs'].map(url => ({
-      dataset: {url}, parentElement: element(), closest: () => ({querySelector: () => ({textContent: url})})
-    }));
-    let copied, clearFeedback, poll;
-
-    const context = {AbortSignal, navigator: {clipboard: {writeText: async value => {copied = value;}}},
-      setTimeout: fn => {clearFeedback = fn; return 1;}, clearTimeout() {}, location: {protocol: 'https:', host: 'unrelated.test'},
-      fetch: async path => ({ok: true, json: async () => path === '/origins.json' ? origins : {}}),
-      document: {createElement: element, querySelectorAll: s => s === '[data-link]' ? links : s === '[data-url]' ? codes : [],
-                 querySelector: () => ({})}, setInterval: fn => {poll = fn;}};
-    vm.runInNewContext(fs.readFileSync(process.argv[1], 'utf8'), context);
-    await new Promise(setImmediate);
-    for (const el of links) assert.equal(el.href,
-      (explicit ? origins[el.dataset.link] : `http://${el.dataset.link}.localhost:8080`) + '/ui/');
-    for (const el of codes) assert.equal(el.textContent,
-      explicit ? origins[el.dataset.url] : `http://${el.dataset.url}.localhost:8080`);
-    origins.rustfs = 'https://new.test:8449';
-    await poll();
-    assert.equal(links.find(l => l.dataset.link === 'rustfs').href, 'https://new.test:8449/ui/');
-    const endpoint = codes.find(c => c.dataset.url === 'rustfs');
-    const copy = endpoint.parentElement.querySelector('.copy');
-    const feedback = endpoint.parentElement.children.find(c => c.className === 'copy-status');
-    assert.equal(copy.disabled, false);
-    await copy.click();
-    assert.equal(copied, 'https://new.test:8449', 'copy must use refreshed endpoint');
-    assert.equal(feedback.textContent, 'Copied'); clearFeedback(); assert.equal(feedback.textContent, '');
-    context.navigator.clipboard.writeText = async () => { throw new Error('denied'); };
-    await copy.click(); assert.equal(feedback.textContent, 'Select the address to copy');
-
-  }
-})();
+const c = require(process.argv[1]);
+const origins = JSON.parse(process.env.TEST_ORIGINS);
+assert.equal(c.originFor({scheme: 'http', domain: 'localhost', port: ':8080'}, 's3'), 'http://s3.localhost:8080');
+assert.equal(c.originFor({scheme: 'http', domain: 'localhost', port: '', ...origins}, 's3'), origins.s3);
+assert.deepEqual([200, 502, 503, 504, 404, 500].map(c.probeState),
+  ['healthy', 'unreachable', 'unreachable', 'unreachable', 'unknown', 'unknown']);
+const on = {enabled: true, version: 'v1.0.0'};
+for (const [component, probes, state] of [
+  [undefined, ['healthy'], 'unknown'],
+  [{enabled: false}, ['healthy'], 'disabled'],
+  [on, ['healthy', 'healthy'], 'healthy'],
+  [on, ['unreachable', 'unreachable'], 'unreachable'],
+  [on, ['healthy', 'unreachable'], 'degraded'],
+  [on, ['healthy', 'unknown'], 'unknown'],
+]) assert.equal(c.appState(component, probes), state, JSON.stringify([component, probes]));
+assert.deepEqual([undefined, on, {enabled: false}].map(c.componentState), ['unknown', 'configured', 'disabled']);
+assert.deepEqual([undefined, on, {enabled: true, version: null}].map(c.versionText),
+  ['Version unknown', 'Configured v1.0.0', 'Configured']);
+const doc = c.parseStatus({contract: 2, stack: 'gateway', components: [{id: 'litellm', enabled: true}, {id: 'bad'}]});
+assert.deepEqual([...doc.components.keys()], ['litellm']);
+for (const bad of [null, {contract: 1, stack: 'gateway', components: []}, {contract: 2, stack: 'edge', components: []}])
+  assert.throws(() => c.parseStatus(bad));
 '''
         subprocess.run(['node', '-e', script, str(ROOT / 'docker/caddy/console/console.js')],
                        env={**os.environ, 'TEST_ORIGINS': json.dumps({

@@ -106,6 +106,7 @@ services:
       LG_LANGFUSE_URL: ${LG_LANGFUSE_URL:-}
       LG_S3_URL: ${LG_S3_URL:-}
       LG_RUSTFS_URL: ${LG_RUSTFS_URL:-}
+      LG_PLATFORM_URL: ${LG_PLATFORM_URL:-}
     volumes:
       - ./docker/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
       - ./docker/caddy/access-mode.sh:/etc/caddy/access-mode.sh:ro

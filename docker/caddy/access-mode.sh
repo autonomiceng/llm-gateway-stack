@@ -106,11 +106,16 @@ for app in CONSOLE LITELLM LANGFUSE S3 RUSTFS; do
   done
   export "LG_${app}_URL=$origin_value" "LG_${app}_AUTHORITY=$origin_authority"
 done
+# The Edge console serves no application here, so it is only validated, never routed.
+if [ -n "${LG_PLATFORM_URL:-}" ]; then
+  origin LG_PLATFORM_URL "$LG_PLATFORM_URL"
+  export "LG_PLATFORM_URL=$origin_value"
+fi
 
 # Bootstrap runs this same validation once, without Caddy or Docker, and trusts its result.
 if [ "${1:-}" = --origins ]; then
-  printf '{"LG_CONSOLE_URL":"%s","LG_LITELLM_URL":"%s","LG_LANGFUSE_URL":"%s","LG_S3_URL":"%s","LG_RUSTFS_URL":"%s"}\n' \
-    "$LG_CONSOLE_URL" "$LG_LITELLM_URL" "$LG_LANGFUSE_URL" "$LG_S3_URL" "$LG_RUSTFS_URL"
+  printf '{"LG_CONSOLE_URL":"%s","LG_LITELLM_URL":"%s","LG_LANGFUSE_URL":"%s","LG_S3_URL":"%s","LG_RUSTFS_URL":"%s","LG_PLATFORM_URL":"%s"}\n' \
+    "$LG_CONSOLE_URL" "$LG_LITELLM_URL" "$LG_LANGFUSE_URL" "$LG_S3_URL" "$LG_RUSTFS_URL" "${LG_PLATFORM_URL:-}"
   exit 0
 fi
 exec "$@"

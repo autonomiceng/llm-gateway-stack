@@ -216,6 +216,22 @@ else
   echo "conventions: SKIP (no platform-edge checkout at ${sync%/scripts/*}; set PLATFORM_EDGE_DIR)"
 fi
 
+# The UI kit is vendored verbatim from platform-edge; its first line records the checksum of the rest.
+python3 - docker/caddy/console/platform.css <<'PY'
+import hashlib, re, sys
+header, _, body = open(sys.argv[1], "rb").read().partition(b"\n")
+match = re.fullmatch(rb"/\* vendored from platform-edge@[0-9a-f]{7,40} sha256:([0-9a-f]{64}) ; do not edit here \*/", header)
+if not match or hashlib.sha256(body).hexdigest().encode() != match[1]:
+    sys.exit(f"{sys.argv[1]} is edited or lacks its vendoring header; run platform-edge scripts/sync-ui.sh")
+PY
+sync_ui="${PLATFORM_EDGE_DIR:-$root/../platform-edge}/scripts/sync-ui.sh"
+if [[ -x "$sync_ui" || -n "${PLATFORM_EDGE_DIR:-}" ]]; then
+  "$sync_ui" --check . >/dev/null
+  echo "platform-ui: PASS (checksum; matches platform-edge)"
+else
+  echo "platform-ui: PASS (checksum); SKIP (no platform-edge checkout at ${sync_ui%/scripts/*}; set PLATFORM_EDGE_DIR)"
+fi
+
 mapfile -t scripts < <(git ls-files '*.sh')
 shellcheck "${scripts[@]}"
 echo "shellcheck: PASS"

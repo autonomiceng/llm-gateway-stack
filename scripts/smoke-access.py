@@ -271,7 +271,8 @@ http.server.HTTPServer(('', 4000), Handler).serve_forever()
         self.assertEqual(status, 200)
         self.assertEqual(json.loads(body), {
             "scheme": "http", "domain": "localhost", "port": "", "console": "http://localhost",
-            "litellm": "http://litellm.localhost", "langfuse": "http://langfuse.localhost", "s3": "http://s3.localhost", "rustfs": "http://rustfs.localhost"})
+            "litellm": "http://litellm.localhost", "langfuse": "http://langfuse.localhost", "s3": "http://s3.localhost", "rustfs": "http://rustfs.localhost",
+            "platform": ""})
 
     def test_access_logs_redact_credentials(self):
         self.start()
