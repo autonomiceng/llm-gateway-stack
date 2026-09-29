@@ -1,4 +1,4 @@
-/* vendored from platform-edge@84f38a2 sha256:78f7e6868fedae32f7884dde50960b8689ab7b889a40ed7adbab20a019d5287f ; do not edit here */
+/* vendored from platform-edge@df1df93 sha256:78f7e6868fedae32f7884dde50960b8689ab7b889a40ed7adbab20a019d5287f ; do not edit here */
 /* platform-ui v1: shared tokens and components for the platform consoles.
    Canonical in platform-edge docker/console/platform.css, documented in docs/ui-kit.md.
    Stacks copy this file verbatim with scripts/sync-ui.sh; page layout stays local. */

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Bring the LLM Gateway Stack up from a clean checkout, or refuse with a reason.
 
-Same contract as the backplane's infra/bootstrap/prepare.ts: lock the env file, fill in
+Lock the env file, fill in
 missing secrets, refuse to invent secrets over existing data, create the shared platform
 network, start the stack, wait for readiness, print the next step. Exit codes: 0 ready,
 1 refused (the JSON line on stderr names why), 2 bad usage, 3 the stack did not become

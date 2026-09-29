@@ -22,6 +22,34 @@ jobs:
         with:
           persist-credentials: false
       - uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db # v3.6.3
+      - name: Render a disposable installation
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+          import tempfile
+
+          with tempfile.TemporaryDirectory(prefix="gateway-ci-render-") as directory:
+              work = Path(directory)
+              env_file = work / ".env"
+              env_file.write_text(
+                  f"LG_POSTGRES_DATA_DIR={work / 'postgres'}\n"
+                  f"LG_BACKUP_DIR={work / 'backups'}\n"
+                  "LG_VOLUME_PREFIX=llm-gateway-ci-render\n"
+                  "COMPOSE_PROJECT_NAME=llm-gateway-ci-render\n"
+              )
+              env_file.chmod(0o600)
+              subprocess.run(
+                  ["python3", "scripts/bootstrap.py", "--env-file", str(env_file), "--render-only"],
+                  check=True, stdout=subprocess.DEVNULL,
+              )
+              rendered = env_file.read_text()
+              assert "COMPOSE_FILE=compose.yaml" in rendered
+              assert any(line.startswith("LITELLM_MASTER_KEY=") and line.split("=", 1)[1]
+                         for line in rendered.splitlines())
+              assert not (work / "postgres").exists()
+              assert not (work / "backups").exists()
+          PY
       - run: scripts/validate.sh
       - run: python3 -m unittest discover -s tests -v
 
