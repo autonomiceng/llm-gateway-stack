@@ -1,4 +1,4 @@
-<!-- vendored from platform-edge@36e2972 ; do not edit here -->
+<!-- vendored from platform-edge@6dec86f ; do not edit here -->
 # Stack conventions
 
 How the four repos (llm-gateway-stack, agent-backplane, observability-stack and
@@ -10,12 +10,13 @@ one HTML comment naming the platform-edge commit it was copied from; that commit
 contract version. Siblings never edit their copy: change platform-edge, then re-vendor.
 `scripts/sync-conventions.sh --check <sibling-dir>` reports drift.
 
-Contract revision: 2026-09-24 (plan v2, red team v1, corrections after stages 1 to 6).
+Contract revision: 2026-09-28.
 
 ## Repository
 
 - `compose.yaml` at the root with `name:` set. Optional pieces are `profiles:`; overlay files
-  only where a profile cannot express it. `docker compose up` with no flags starts the core.
+  only where a profile cannot express it. After bootstrap has rendered the required env
+  files, Compose starts the core with the selected files and profiles.
 - Shipped image defaults are pinned inline as `image:tag@sha256`. Renovate proposes bumps;
   a human merges after the stack's smoke contract passes. Complete image references may
   override these defaults through stack-prefixed env settings for unvalidated local
@@ -44,14 +45,14 @@ differs from it is a contract change, made here first.
 | Trusted proxies | Gateway and Observability trust exactly Edge's address. Backplane has no trusted-proxy setting: Edge reaches its server directly and the server takes its browser origin from `BP_PUBLIC_URL`. Edge trusts nothing by default. Metrics allowlists stay exact IP. | `LG_TRUSTED_PROXIES`, `OB_TRUSTED_PROXIES` (default `172.30.0.2/32`); `PE_TRUSTED_PROXIES` (default empty); `PE_METRICS_ALLOW` |
 | Ingress aliases | `lg-gateway:80`, `ob-gateway:80`, `bp-server:3000`. Backplane has no internal gateway behind Edge; Edge routes `backplane.` to its server. Aliases are interfaces: renaming one needs a migration. | none |
 | Metrics interfaces | See the metrics table below. Only these endpoints join the Platform Network; datastores never do. | `OB_SCRAPE_EDGE`, `OB_SCRAPE_GATEWAY`, `OB_SCRAPE_BACKPLANE`, `PE_METRICS_ALLOW`, `LG_CHECKPOINT_ALLOW`, `LG_METRICS` (default `false`), `BP_OPERATIONS_TOKEN`, `OB_BACKPLANE_OPERATIONS_TOKEN` |
-| Hostnames | Root, `litellm.`, `langfuse.`, `s3.`, `rustfs.`, `backplane.` and `grafana.` under one public domain. Application hostnames do not change between access modes. Backplane also configures its full browser origin, which is the required input behind Edge. | `PE_PUBLIC_DOMAIN`, `LG_PUBLIC_DOMAIN`, `OB_PUBLIC_DOMAIN`, `BP_PUBLIC_DOMAIN` (standalone hostname and certificate), `BP_PUBLIC_URL` (browser origin); `PE_ROOT_HOST` (console hostname label: names the console's Tailscale node, `platform` when empty; reserved as an optional public-domain prefix when the apex is not routable, not yet implemented; default empty) |
+| Hostnames | Root, `litellm.`, `langfuse.`, `s3.`, `rustfs.`, `backplane.` and `grafana.` under one public domain. Application hostnames do not change between access modes. Backplane also configures its full browser origin, which is the required input behind Edge. | `PE_PUBLIC_DOMAIN`, `LG_PUBLIC_DOMAIN`, `OB_PUBLIC_DOMAIN`, `BP_PUBLIC_DOMAIN` (standalone hostname and certificate), `BP_PUBLIC_URL` (browser origin); `PE_ROOT_HOST` (console Tailscale node label, `platform` when empty; the public console stays at the domain apex) |
 | Bundle ports | Behind Edge, each stack listens on loopback HTTP: 18080 Gateway, 18180 Observability, 3000 Backplane. Edge `bootstrap.py --with <stack>` writes these ports into the sibling's `.env` together with `proxy` mode, the public domain, scheme and an empty port suffix (Gateway, Observability), the Platform Network allocation, the Gateway and Observability trusted proxy `PE_EDGE_IP/32`, `LG_METRICS=true` when Observability is also selected, and the browser-origin keys, then runs the sibling's `python3 scripts/bootstrap.py`. Every selected stack receives `*_PLATFORM_URL`: the console Tailnet Origin when its node is selected, otherwise the public Edge console origin. Local Mode includes a nondefault listener port; Public and Proxy modes use the external origin without Edge's internal bind port. Retired `BP_TRUSTED_PROXIES`, `OB_GATEWAY_HEALTH_HOST`, `OB_GATEWAY_URL` and `OB_BACKPLANE_URL` are not generated. | `*_BIND_HOST` (default `127.0.0.1`), `LG_HTTP_PORT=18080`, `OB_HTTP_PORT=18180`, `BP_PORT=3000`, `LG_PUBLIC_PORT_SUFFIX` and `OB_PUBLIC_PORT_SUFFIX` (empty), `LG_PLATFORM_URL`, `OB_PLATFORM_URL`, `BP_PLATFORM_URL` |
 | Access modes | `local`: HTTP and internal-CA HTTPS on loopback, no redirect, no HSTS. `public`: trusted HTTPS with HTTP redirect; the bind address is chosen explicitly. `proxy`: HTTP only, behind Edge or another gateway that handles HTTPS. Every stack keeps standalone `public`. The canonical application scheme is a separate setting. | `*_ACCESS_MODE` (default `local`), `*_SCHEME` (`LG_`, `OB_`, `PE_`; Backplane derives it from `BP_PUBLIC_URL`) |
 | Tailnet Origins | Optional. Edge runs one `tailscale/tailscale` node per routed hostname (`compose.tailscale.yaml`, profiles `ts-<name>`, external volume `${PE_VOLUME_PREFIX}_ts-<name>`); each serves `https://<name>.<tailnet>.ts.net` with a Tailscale certificate and proxies to `pe-edge:80` with the original Host. Edge sets `X-Forwarded-Proto: https` for requests from the Platform Network's dynamic range and trusts no forwarded header. `bootstrap.py --tailscale` records the selection and the tailnet domain in `.env`; the bundle writes selected application origins into `LG_CONSOLE_URL`, `LG_LITELLM_URL`, `LG_LANGFUSE_URL`, `LG_S3_URL`, `LG_RUSTFS_URL`, `OB_GRAFANA_URL` and `BP_PUBLIC_URL`, and the selected console origin into every `*_PLATFORM_URL`. All nodes form one authorization domain. | `PE_TS_AUTHKEY` (secret), `PE_TS_TAG` (template `tag:platform`), `PE_TS_APPS` (default all seven), `PE_TAILNET_DOMAIN` (recorded by bootstrap) |
-| TLS issuers | `internal`: the stack Caddy's own CA (default in `local`). `acme`: an ACME directory (default in `public`; Let's Encrypt when no directory is set). `files`: an operator directory mounted read-only at `/certs` containing `tls.crt` and `tls.key`; bootstrap validates that the SAN list covers every configured hostname; replacement is swap files then `docker compose exec caddy caddy reload`; a stack Caddy with `admin off` has no reload, so it replaces certificates by `docker compose restart caddy` followed by bootstrap. Bootstrap's own HTTPS readiness probe trusts the CA file when one is given. Public ACME needs TCP 80 and 443 reachable; DNS-01 is not offered. | `*_TLS_ISSUER` (`internal`, `acme`, `files`), `*_ACME_EMAIL`, `*_ACME_CA` (directory URL), `*_ACME_CA_ROOT` (trust file for a private ACME server), `*_ACME_EAB_KEY_ID`, `*_ACME_EAB_HMAC`, `*_TLS_DIR`, `*_TLS_CA` |
+| TLS issuers | `internal`: the stack Caddy's own CA (default in `local`). `acme`: an ACME directory (default in `public`; Let's Encrypt when no directory is set). `files`: an operator directory mounted read-only at `/certs` containing `tls.crt` and `tls.key`; bootstrap validates that the SAN list covers every configured hostname; after swapping files, Edge needs `docker compose exec caddy caddy reload --force --config /etc/caddy/Caddyfile` and `python3 scripts/bootstrap.py --probe-only`; a stack Caddy with `admin off` instead needs `docker compose restart caddy` followed by bootstrap. Bootstrap's own HTTPS readiness probe trusts the CA file when one is given. Public ACME needs TCP 80 and 443 reachable; DNS-01 is not offered. | `*_TLS_ISSUER` (`internal`, `acme`, `files`), `*_ACME_EMAIL`, `*_ACME_CA` (directory URL), `*_ACME_CA_ROOT` (trust file for a private ACME server), `*_ACME_EAB_KEY_ID`, `*_ACME_EAB_HMAC`, `*_TLS_DIR`, `*_TLS_CA` |
 | Status v2 | Each stack serves `GET /status.json` (schema in "Status v2") and `GET /health/<component>` (status only, empty body publicly). Gateway, Observability and Edge write a static file at bootstrap; Backplane serves it from the server through an explicit public projection. Consumers show tags as configured, never running. No host observers, timers or `docker exec`. | none |
 | Secrets | Each bootstrap generates its missing secrets once into `.env`: mode 0600, atomic write, unrelated lines preserved byte for byte, present values never rewritten, and a refusal when installation state exists but a secret is missing. Secrets never appear in argv, container labels or world-readable rendered files; a password a service would otherwise take on its command line is injected as a Compose config file (Gateway's Valkey). No secret manager; `sops` or `infisical run` are documented options for off-host storage. | none |
-| Bootstrap | `python3 scripts/bootstrap.py` in every repo, standard library only. Required flags: `--dry-run` (render and validate, write nothing) and `--env-file <path>` (default `.env`). Exit codes: 0 ready, 1 refused, 2 usage, 3 not ready. Errors are one JSON line on stderr. Once `.env` exists, plain `docker compose up` starts the stack. Backplane's bootstrap also takes `--capability-file <path>` on a fresh installation, exports the pending enrollment capability there and prints the enrollment command, which runs in a container from the server image (`compose.enroll.yaml`), so the host needs only Docker and Python. | none |
+| Bootstrap | `python3 scripts/bootstrap.py` in every repo, standard library only. Required flags: `--env-file <path>` (default `.env`). Edge and Backplane offer `--dry-run` to validate without writing. Gateway `--render-only` writes the selected env file; Observability `--render-only` writes that env file and `data/derived.env` beside it. Both render-only modes start no services. Exit codes: 0 ready, 1 refused, 2 usage, 3 not ready. Errors are one JSON line on stderr. Direct Compose commands need each stack's selected overlays; Observability also requires the generated `data/derived.env` next to its selected env file as a second env file. Run bootstrap after changing settings so these files stay current. Backplane's bootstrap also takes `--capability-file <path>` on a fresh installation, exports the pending enrollment capability there and prints the enrollment command, which runs in a container from the server image (`compose.enroll.yaml`), so the host needs only Docker and Python. | none |
 | UI kit | `platform-ui`: `platform.css` (tokens plus header, card, badge and endpoint components) and `docs/ui-kit.md`, canonical in platform-edge, vendored with the source revision and a checksum. Layout and application styles stay local. | none |
 
 ### Metrics interfaces
@@ -62,7 +63,7 @@ differs from it is a contract change, made here first.
 | `lg-gateway:8081/metrics` | Gateway checkpoint metrics | exact-IP allowlist `LG_CHECKPOINT_ALLOW` (template default loopback only; add the scraper's address) | scraped when `OB_SCRAPE_GATEWAY=true` |
 | `lg-gateway:8081/metrics/litellm` | LiteLLM metrics | exact-IP allowlist `LG_CHECKPOINT_ALLOW`, as above | scraped when `OB_SCRAPE_GATEWAY=true`; the only LiteLLM scrape path, since LiteLLM is not on the Platform Network |
 | `lg-valkey-exporter:9121`, `lg-postgres-exporter:9187` | Gateway datastore exporters | Platform Network only | Compose profile `metrics`, recorded by bootstrap when `LG_METRICS=true`; the bundle sets it when Observability is selected |
-| `bp-server:3000/metrics` | Backplane metrics | bearer token `BP_OPERATIONS_TOKEN`, held by Observability as `OB_BACKPLANE_OPERATIONS_TOKEN` | scraped when `OB_SCRAPE_BACKPLANE=true` (O0); the token value never appears in a label |
+| `bp-server:3000/metrics` | Backplane metrics | bearer token `BP_OPERATIONS_TOKEN`, held by Observability as `OB_BACKPLANE_OPERATIONS_TOKEN` | scraped when `OB_SCRAPE_BACKPLANE=true`; the token value never appears in a label |
 | `ob-*` | Observability backends | not scraped externally | Observability observes itself |
 
 ## Status v2
@@ -101,9 +102,9 @@ Rules:
   component's documented bounded probe passes, 503 when it fails, 404 for an unknown or
   disabled component, with an empty body publicly.
 - `version` is the release version from the configured image tag, keeping a leading `v`
-  where the tag has one (a variant suffix such as `-alpine` is dropped), null when the tag is
-  not a recognized release. Consumers label it "configured", never "running". `image` is the
-  configured reference without digest.
+  where the tag has one. A producer may drop a known packaging suffix or return null when
+  that tag is not a recognized release for its component. Consumers label it "configured",
+  never "running". `image` is the configured reference without digest.
 - An absent or unreachable producer means unknown, never unhealthy, and never blocks another
   stack's card or the console.
 - Edge proxies each stack's document and health paths same-origin at
@@ -111,7 +112,7 @@ Rules:
   request credentials and cookies stripped, four-second deadline, 64 KiB and 32-component
   limits, `Cache-Control: no-store`, no upstream error body.
 - Accepted loss versus version 1: worker, task and restart states and observed image
-  digests are no longer reported (red team finding 7, Owner decision D6).
+  digests are no longer reported.
 
 ## Per-repo verification gates
 
@@ -120,19 +121,21 @@ them unshimmed. A failed or skipped gate is reported as such, never as a pass.
 
 | Repo | Commands |
 | --- | --- |
-| platform-edge | `scripts/validate.sh`; `python3 -m unittest discover -s tests`; `node --test tests/status*.test.cjs`; `scripts/smoke.sh` when `compose.yaml`, the image pin, `Caddyfile`, `routes.d/` or `scripts/bootstrap.py` change |
+| platform-edge | `scripts/validate.sh`; `python3 -m unittest discover -s tests`; `node --test tests/status*.test.cjs`; `npm ci`; `node node_modules/playwright/cli.js install --with-deps chromium`; `node tests/console-browser.cjs` in CI; `scripts/smoke.sh` when `compose*.yaml`, `Caddyfile`, `routes.d/`, `docker/`, `scripts/bootstrap.py`, `scripts/bundle.py` or `scripts/tailnet.py` change |
 | llm-gateway-stack | `scripts/validate.sh`; `python3 -m unittest discover -s tests`; `scripts/smoke.sh` when Compose, an image pin, the Caddyfile or bootstrap change |
 | observability-stack | `scripts/validate.sh`; `python3 -m unittest discover -s tests`; `scripts/smoke.sh` when Compose, an image pin, the Caddyfile, Alloy config or bootstrap change |
-| agent-backplane | After `bun install --frozen-lockfile`: `bun run check`; `python3 -m unittest discover -s tests`; `bun run test` (the `bun test` preload wrapper); `bun tests/acceptance/storage-startup.ts`; `bun tests/acceptance/storage-identity.ts`; `bun tests/acceptance/storage-migration.ts`; `python3 scripts/backup-drill.py --offline`; `python3 scripts/backup-drill.py --s3`; `python3 scripts/storage-migration-drill.py`. When the server or compute image changes, also `docker build -f infra/compose/server.Dockerfile .`, the workerd image build, `bun tests/acceptance/workerd-image.ts <image> --lifecycle` and `python3 tests/acceptance/workerd-gate.py <image>`. A brief may narrow this list to the gates its change can affect; CI runs all of them. |
+| agent-backplane | After `bun install --frozen-lockfile`: `bun run check`; `python3 -m unittest discover -s tests`; `bun run test` (the `bun test` preload wrapper); `bun tests/acceptance/storage-startup.ts`; `bun tests/acceptance/storage-identity.ts`; `python3 scripts/backup-drill.py --offline`; `python3 scripts/backup-drill.py --s3`. When the server or compute image changes, also `docker build -f infra/compose/server.Dockerfile .`, the workerd image build, `bun tests/acceptance/workerd-image.ts <image> --lifecycle` and `python3 tests/acceptance/workerd-gate.py <image>`. A brief may narrow this list to the gates its change can affect; CI runs all of them. |
 
 ## Bootstrap contract
 
-One command from clone to running stack. It locks the env file, generates missing secrets
+Bootstrap takes a fresh checkout to a running stack. It locks the env file, generates missing secrets
 (mode 0600, never rewrites a present value, keeps unmanaged lines byte for byte), refuses to
 start when installation state exists and secrets are missing, creates or validates the
 Platform Network, runs `docker compose up --wait`, probes readiness, and prints the next step
 as JSON. Errors are one JSON line on stderr. Exit codes: 0 ready, 1 refused, 2 usage, 3 not
-ready. `--dry-run` and `--env-file` are accepted everywhere (see "Platform contract").
+ready. Use Edge or Backplane `--dry-run` for a non-writing check. Gateway `--render-only`
+writes the selected env file. Observability `--render-only` also writes `data/derived.env`
+beside it. Neither starts services. All four accept `--env-file` (see "Platform contract").
 A fresh clone needs no edits before the first run: Observability starts `degraded` with a
 placeholder alert contact point when no delivery is configured, and Gateway in `local`
 mode records a default Langfuse login with a generated password.

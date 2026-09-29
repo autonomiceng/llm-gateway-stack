@@ -35,6 +35,9 @@ const withFeatures = {...valid, features: {
   alerts: {configured: false},
 }};
 assert.deepEqual(c.parseStatus(withFeatures).features, withFeatures.features);
+for (const url of ['https://litellm.example.test', 'http://litellm.example.test/'])
+  assert.equal(c.parseStatus({...valid, components: [{...component('litellm'), url}]})
+    .components.has('litellm'), true, url);
 assert.equal(c.backupsText(c.parseStatus(valid).features.backups), 'Configured · no checkpoint recorded');
 assert.equal(c.backupsText(c.parseStatus(withFeatures).features.backups),
   'Configured · last checkpoint 2026-09-22 03:00 UTC');
@@ -70,9 +73,107 @@ assert.deepEqual([
     {id: 'rustfs', health: ['rustfs', 'rustfs-console']},
   ];
   let probed = [];
+  let result;
   const answers = {litellm: 'healthy', rustfs: 'healthy', 'rustfs-console': 'unreachable'};
   const probe = async (id) => { probed.push(id); return answers[id]; };
-  let result = await c.load(async () => valid, probe, cards);
+  const encoder = new TextEncoder();
+  let cancelled = 0;
+  const response = (body, {type = 'application/json', length, status = 200, fail} = {}) => {
+    const bytes = encoder.encode(body);
+    const headers = new Headers({'Content-Type': type});
+    if (length !== undefined) headers.set('Content-Length', String(length));
+    let offset = 0;
+    return {
+      status, headers,
+      body: new ReadableStream({
+        pull(controller) {
+          if (fail) return controller.error(fail);
+          if (offset === bytes.length) return controller.close();
+          const end = Math.min(offset + Math.ceil(bytes.length / 2), bytes.length);
+          controller.enqueue(bytes.slice(offset, end));
+          offset = end;
+        },
+        cancel() { cancelled++; },
+      }, {highWaterMark: 0}),
+    };
+  };
+  const fakeFetch = (reply) => (path, options) => {
+    assert.equal(path, '/status.json');
+    assert.equal(options.cache, 'no-store');
+    assert.equal(options.credentials, 'omit');
+    assert.equal(options.redirect, 'error');
+    assert.ok(options.signal instanceof AbortSignal);
+    return reply(options);
+  };
+  const fromResponse = (body, options) => () => c.getStatus(fakeFetch(() => response(body, options)));
+  const validBody = JSON.stringify(valid);
+  const transportCases = [
+    ['wrong type', fromResponse(validBody, {type: 'text/html'})],
+    ['HTTP error', fromResponse(validBody, {status: 204})],
+    ['declared oversize', fromResponse(validBody, {length: 65537})],
+    ['streamed oversize', fromResponse(validBody + ' '.repeat(65537))],
+    ['misleading length', fromResponse(validBody + ' '.repeat(65537), {length: 1})],
+    ['invalid JSON', fromResponse('{')],
+    ['invalid UTF-8', () => c.getStatus(fakeFetch(() => ({
+      status: 200,
+      headers: new Headers({'Content-Type': 'application/json'}),
+      body: new ReadableStream({start(controller) { controller.enqueue(Uint8Array.of(255)); controller.close(); }}),
+    })))],
+    ['read failure', fromResponse(validBody, {fail: new Error('read failed')})],
+    ['timeout', fromResponse(validBody, {fail: new DOMException('deadline', 'TimeoutError')})],
+  ];
+  for (const [name, getStatus] of transportCases) {
+    const cancelledBefore = cancelled;
+    probed = [];
+    result = await c.load(getStatus, probe, cards);
+    assert.deepEqual([result.status, result.health, probed], [null, {}, []], name);
+    if (name === 'declared oversize')
+      assert.equal(cancelled, cancelledBefore + 1, 'declared oversized body is cancelled');
+    result = await c.load(fromResponse(validBody, {type: 'Application/JSON; charset=utf-8'}), probe, cards);
+    assert.ok(result.status, name + ' then valid');
+    assert.deepEqual(result.health, answers, name + ' then valid');
+    probed = [];
+    result = await c.load(getStatus, probe, cards);
+    assert.deepEqual([result.status, result.health, probed], [null, {}, []], 'valid then ' + name);
+  }
+  const multibyte = JSON.stringify({...valid, components: valid.components.map((item) =>
+    item.id === 'litellm' ? {...item, name: 'é'} : item)});
+  const exact = multibyte + ' '.repeat(65536 - encoder.encode(multibyte).length);
+  assert.equal(encoder.encode(exact).length, 65536);
+  result = await c.load(fromResponse(exact, {length: 65536}), probe, cards);
+  assert.ok(result.status, 'exact 65536-byte document');
+  const overLimit = exact + ' ';
+  assert.equal(encoder.encode(overLimit).length, 65537);
+  assert.equal(overLimit.length, 65536);
+  assert.deepEqual(JSON.parse(overLimit), JSON.parse(multibyte));
+  for (const [name, options] of [['no length', {}], ['understated length', {length: 1}]]) {
+    const cancelledBefore = cancelled;
+    probed = [];
+    result = await c.load(fromResponse(overLimit, options), probe, cards);
+    assert.deepEqual([result.status, result.health, probed], [null, {}, []], name);
+    assert.equal(cancelled, cancelledBefore + 1, name + ' cancels oversized stream');
+  }
+  const originalTimeout = AbortSignal.timeout;
+  const deadline = new AbortController();
+  AbortSignal.timeout = (ms) => { assert.equal(ms, 4000); return deadline.signal; };
+  try {
+    probed = [];
+    const waiting = c.load(() => c.getStatus(fakeFetch(({signal}) => ({
+      status: 200,
+      headers: new Headers({'Content-Type': 'application/json'}),
+      body: new ReadableStream({start(controller) {
+        controller.enqueue(encoder.encode(validBody.slice(0, 20)));
+        signal.addEventListener('abort', () => controller.error(new DOMException('deadline', 'TimeoutError')));
+      }}),
+    }))), probe, cards);
+    setTimeout(() => deadline.abort(), 0);
+    result = await waiting;
+    assert.equal(deadline.signal.aborted, true);
+    assert.deepEqual([result.status, result.health, probed], [null, {}, []], 'body deadline clears status');
+  } finally {
+    AbortSignal.timeout = originalTimeout;
+  }
+  result = await c.load(async () => valid, probe, cards);
   assert.deepEqual(probed, ['litellm', 'rustfs', 'rustfs-console']);
   assert.deepEqual(result.health, answers);
   assert.equal(c.appState(result.status.components.get('litellm'), [result.health.litellm]), 'healthy');
@@ -112,6 +213,11 @@ assert.deepEqual([
     omit(component('litellm'), 'health'),
     {...component('litellm'), health: '/health/postgres'},
     {...component('litellm'), url: 'javascript:alert(1)'},
+    {...component('litellm'), url: 'https://litellm.example.test/console'},
+    {...component('litellm'), url: 'https://litellm.example.test/%2f'},
+    {...component('litellm'), url: 'https://user:pass@litellm.example.test/'},
+    {...component('litellm'), url: 'https://litellm.example.test/?'},
+    {...component('litellm'), url: 'https://litellm.example.test/#'},
   ]) {
     result = await c.load(async () => valid, probe, cards);
     assert.equal(c.appState(result.status.components.get('litellm'), [result.health.litellm]), 'healthy');
@@ -140,8 +246,10 @@ assert.deepEqual([
       'unknown');
     assert.equal(c.summaryText(result.status, []), 'Status unavailable');
   }
+  console.log('GATEWAY_CONSOLE_NODE_ASSERTIONS_COMPLETE');
 })().catch((error) => { console.error(error); process.exit(1); });
 '''
         result = subprocess.run(["node", "-e", script, str(ROOT / "docker/caddy/console/console.js")],
-                                input=json.dumps(document), text=True, capture_output=True)
+                                input=json.dumps(document), text=True, capture_output=True, timeout=10)
         self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("GATEWAY_CONSOLE_NODE_ASSERTIONS_COMPLETE", result.stdout)
