@@ -1,5 +1,4 @@
 import json
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -12,7 +11,6 @@ import bootstrap
 
 
 class ConsoleTests(unittest.TestCase):
-    @unittest.skipUnless(shutil.which("node"), "Node.js required for the static console check")
     def test_status_validation_and_refresh(self):
         available = {id: f"example/{id}:1.0" for id, *_ in bootstrap.COMPONENTS}
         selected = {id: image for id, image in available.items()

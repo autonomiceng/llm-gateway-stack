@@ -29,7 +29,7 @@ It runs on one machine and is built to stay up: pinned images, backups with a re
 
 ## Quick start
 
-You need a Linux Docker host with journald, Compose 2.24.4 or newer, Python 3.11 or newer, and about 6 GB of disk for images. [mise](https://mise.jdx.dev) installs the pinned tools if you use it. See [logging](docs/operations/logging.md) for hosts without journald.
+You need a Linux Docker host with journald, Compose 2.24.4 or newer, Python 3.11 or newer, and about 6 GB of disk for images. Node.js is only a developer test tool. See [logging](docs/operations/logging.md) for hosts without journald.
 
 ```sh
 git clone https://github.com/autonomiceng/llm-gateway-stack.git && cd llm-gateway-stack
@@ -65,9 +65,9 @@ Log in to Langfuse with `LANGFUSE_INIT_USER_EMAIL` and `LANGFUSE_INIT_USER_PASSW
 | You want | Settings | Read |
 | --- | --- | --- |
 | Localhost only (default) | `LG_ACCESS_MODE=local`; HTTP and self-signed HTTPS on loopback, no redirects | [Local Mode](docs/operations/ingress.md#local-mode-default) |
-| Private access from your devices over Tailscale | `LG_ACCESS_MODE=proxy`, one `LG_*_URL` per application, host `tailscale serve` | [Tailscale](docs/operations/ingress.md#tailscale) |
+| Private access from your devices over Tailscale | `LG_ACCESS_MODE=proxy`, `LG_HTTP_PORT`, all five `LG_{CONSOLE,LITELLM,LANGFUSE,S3,RUSTFS}_URL` origins, then `LG_TRUSTED_PROXIES` for the host bridge and host `tailscale serve` | [Tailscale](docs/operations/ingress.md#tailscale) |
 | Public hostname with Let's Encrypt | `LG_ACCESS_MODE=public`, `LG_PUBLIC_DOMAIN`, `LG_BIND_HOST=0.0.0.0` | [Public Mode](docs/operations/ingress.md#public-mode) |
-| Corporate CA or certificate files | `LG_TLS_ISSUER=acme` with `LG_ACME_CA`, or `LG_TLS_ISSUER=files` with `LG_TLS_DIR` | [Corporate certificates](docs/operations/ingress.md#corporate-certificates-and-private-acme) |
+| Corporate CA or certificate files | Public Mode with `LG_TLS_ISSUER=acme` and `LG_ACME_CA` (plus `LG_ACME_CA_ROOT` when needed), or Local/Public Mode with `LG_TLS_ISSUER=files` and `LG_TLS_DIR` | [Corporate certificates](docs/operations/ingress.md#corporate-certificates-and-private-acme) |
 | Behind Platform Edge on a shared host | `LG_ACCESS_MODE=proxy`, `LG_HTTP_PORT=18080`; Edge's bundle installer writes these | [Shared host](docs/operations/ingress.md#shared-host) |
 
 Runtime logs go to Linux journald; optional Alloy collection and portability are covered in [logging](docs/operations/logging.md).
@@ -88,14 +88,26 @@ Default images are pinned as `tag@sha256` in `compose.yaml`. Override any servic
 
 ## Upgrade
 
+Take a Checkpoint with `scripts/backup.sh` before the upgrade. Then run:
+
 ```sh
-scripts/backup.sh          # the rollback boundary
 git pull
-docker compose pull
+docker compose pull --policy missing
 python3 scripts/bootstrap.py
 ```
 
-`git pull` brings new pins and configuration (an installation from before the literal `COMPOSE_FILE` runs `python3 scripts/bootstrap.py --render-only` once before `docker compose pull`; see [older installations](docs/operations/maintenance.md#older-installations)); `docker compose pull` fetches the pinned images; bootstrap records any new setting, recreates what changed and waits for health. The pins in `compose.yaml` are the versions the smoke test passed. An `LG_*_IMAGE` value in `.env` is your own experiment: it replaces the pin until you remove it, and upgrades do not touch it. Read [maintenance](docs/operations/maintenance.md) before a major version of Postgres, ClickHouse or Langfuse; those are one-way for data.
+These commands use `.env`. For another env file, replace `<path>` and keep it the same throughout:
+
+```sh
+scripts/backup.sh --env-file <path>
+git pull
+docker compose --env-file <path> pull --policy missing
+python3 scripts/bootstrap.py --env-file <path>
+```
+
+An installation from before literal `COMPOSE_FILE` must run `python3 scripts/bootstrap.py --render-only` after `git pull` and before Compose pull; use `python3 scripts/bootstrap.py --env-file <path> --render-only` for another env file. Render-only writes the selected env file and records the Compose overlays; it does not start services. See [older installations](docs/operations/maintenance.md#older-installations).
+
+`git pull` brings new pins and configuration; Compose fetches selected images missing from the host, including new digest pins. An installed local-only override stays local when it has an explicit non-`latest` tag, such as `local/gateway:experiment`. [Compose still pulls `latest` under the missing policy](https://docs.docker.com/reference/compose-file/services/#pull_policy); omitting a tag selects `latest`. Bootstrap recreates changed services, waits for health, and refreshes the Status Document. The pins in `compose.yaml` passed the Smoke Contract. A complete `LG_*_IMAGE` reference in the env file or shell overrides its pin until removed, including across upgrades; an empty override selects the default. To refresh a mutable remote override already present locally, run `docker compose pull --policy always <service>` for `.env`, or `docker compose --env-file <path> pull --policy always <service>` for another env file. Read [maintenance](docs/operations/maintenance.md) before a major version of Postgres, ClickHouse or Langfuse; those are one-way for data.
 
 ## Day two
 

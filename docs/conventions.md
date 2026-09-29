@@ -1,4 +1,4 @@
-<!-- vendored from platform-edge@6dec86f ; do not edit here -->
+<!-- vendored from platform-edge@df1df93 ; do not edit here -->
 # Stack conventions
 
 How the four repos (llm-gateway-stack, agent-backplane, observability-stack and
@@ -15,8 +15,9 @@ Contract revision: 2026-09-28.
 ## Repository
 
 - `compose.yaml` at the root with `name:` set. Optional pieces are `profiles:`; overlay files
-  only where a profile cannot express it. After bootstrap has rendered the required env
-  files, Compose starts the core with the selected files and profiles.
+  only where a profile cannot express it. A fresh installation needs full bootstrap to
+  provision its network, volumes, and generated runtime files before direct Compose;
+  render-only does not make direct Compose runnable.
 - Shipped image defaults are pinned inline as `image:tag@sha256`. Renovate proposes bumps;
   a human merges after the stack's smoke contract passes. Complete image references may
   override these defaults through stack-prefixed env settings for unvalidated local
@@ -107,10 +108,14 @@ Rules:
   never "running". `image` is the configured reference without digest.
 - An absent or unreachable producer means unknown, never unhealthy, and never blocks another
   stack's card or the console.
-- Edge proxies each stack's document and health paths same-origin at
-  `/stack-status/<stack>` and `/stack-status/<stack>/health/<component>`: GET and HEAD only,
-  request credentials and cookies stripped, four-second deadline, 64 KiB and 32-component
-  limits, `Cache-Control: no-store`, no upstream error body.
+- Edge serves each stack's document same-origin at `/stack-status/<stack>` and exposes named
+  application probes at `/health/{caddy,backplane,observability,litellm,langfuse,s3,rustfs}`;
+  unknown GET and HEAD `/stack-status/*` paths return 404. Document routes accept only GET and
+  HEAD, strip request credentials and cookies, and set `Cache-Control: no-store`. Sibling proxies
+  use four-second upstream response-header and read timeouts and suppress upstream error
+  bodies. The Edge console applies a four-second request deadline, 64 KiB size limit, and
+  32-component count limit to documents; Caddy does not enforce those limits. It probes only
+  valid, enabled application entries and clears prior health for skipped entries.
 - Accepted loss versus version 1: worker, task and restart states and observed image
   digests are no longer reported.
 

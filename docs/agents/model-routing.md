@@ -1,17 +1,16 @@
 # Model routing
 
-Routing for every delegation from this repo. Decided by the Owner 2026-09-16; shared conventions for the four repos (llm-gateway-stack, agent-backplane, observability-stack and platform-edge) live in [docs/conventions.md](../conventions.md).
+Routing for every delegation from this repo. Current Owner routing; shared conventions for the four repos (llm-gateway-stack, agent-backplane, observability-stack and platform-edge) live in [docs/conventions.md](../conventions.md).
 
 | Work | Model + effort | Verified by |
 | --- | --- | --- |
-| Orchestration, design, plans, prose, UI, AGENTS.md | Claude Fable 5.1 | gpt-6 high |
-| Final review of anything that touches persistent data or migrations | Claude Fable 5.1 | none; this is the last gate |
-| Red team, design review, high-risk implementation (Compose, bootstrap, migration scripts) | gpt-6 high | Claude Fable 5.1 |
-| Routine and mechanical implementation | gpt-5.6-sol medium | gpt-6 medium or Claude Fable 5.1 |
+| Difficult planning or code | gpt-6-astra high | gpt-6-sol high |
+| Medium or small work | gpt-6-sol high | gpt-5.6-sol high |
+| UI | Claude Opus 5.5 high | gpt-6-astra high |
 
 Rules:
 
-- The verifier is from a different model family than the implementer when possible. If tokens or a service are unavailable, use the best available and say so in the report.
+- Use high effort for every delegation. If a model or service is unavailable, use the best available and say so in the report.
 - A verifier never sees the implementer's reasoning, only the diff and the brief. Refutation mandate, at most ten findings, each with an exact fix.
 - At most two concurrent workers on one host. They share one Docker daemon.
 - Launch durable jobs through `devloop agent` (skill: `codex-exec`) and wait in the background. Use the Codex plugin for quick synchronous checks only.

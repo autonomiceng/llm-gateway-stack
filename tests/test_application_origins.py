@@ -2,7 +2,6 @@
 import json
 import os
 from pathlib import Path
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -95,7 +94,6 @@ class ApplicationOriginsTests(unittest.TestCase):
                         self.assertEqual(calls[0][:3], ["env", "LG_LANGFUSE_URL=" + canonical, "docker"])
                         self.assertEqual(dict(os.environ), shell)
 
-    @unittest.skipUnless(shutil.which('node'), 'Node.js required for the static console check')
     def test_console_badges_and_origins(self):
         script = r'''
 const assert = require('node:assert/strict');

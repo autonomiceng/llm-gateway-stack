@@ -2,13 +2,13 @@
 
 Read [AGENTS.md](AGENTS.md), [CONTEXT.md](CONTEXT.md) and the [design](docs/DESIGN.md) before changing anything. [ADRs](docs/adr/) hold the decisions and why. Conventions shared by the four repos live in [docs/conventions.md](docs/conventions.md).
 
-Toolchain is pinned in `mise.toml`; run `mise install` once. Keep changes focused, use Conventional Commits, and explain the problem and resulting behavior in your pull request.
+Developer test tools (Python, ShellCheck and Node.js) are pinned in `mise.toml`; run `mise install` once. Node.js runs the static console tests and is not needed to deploy the stack. Keep changes focused, use Conventional Commits, and explain the problem and resulting behavior in your pull request.
 
 Gates, from the repository root:
 
 ```sh
 scripts/validate.sh          # env render, compose config, Caddyfile, shellcheck, py_compile
-python3 -m unittest discover -s tests
+python3 -m unittest discover -s tests  # includes Node.js console checks
 scripts/smoke.sh             # full boot on this host; needs Docker and ~6 GB of images
 ```
 
