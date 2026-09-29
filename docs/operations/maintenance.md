@@ -59,8 +59,10 @@ keep their volumes. Expect a few minutes of gateway downtime while LiteLLM and L
 restart; callers see connection errors, not wrong answers.
 
 `pull --policy missing` fetches new digest pins while keeping an installed local-only
-`LG_*_IMAGE` override. If an override names a mutable remote tag already present on the
-host, refresh that service explicitly with `docker compose pull --policy always <service>`
+`LG_*_IMAGE` override with an explicit non-`latest` tag, such as
+`local/gateway:experiment`. [Compose still pulls `latest` under the missing policy](https://docs.docker.com/reference/compose-file/services/#pull_policy),
+and an omitted tag selects `latest`. If an override names a mutable remote tag already
+present on the host, refresh that service explicitly with `docker compose pull --policy always <service>`
 for `.env`, or `docker compose --env-file <path> pull --policy always <service>` for another
 env file. A registry error during that refresh is a failed upgrade, not a reason to continue.
 
