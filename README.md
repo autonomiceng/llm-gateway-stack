@@ -96,9 +96,18 @@ docker compose pull --policy missing
 python3 scripts/bootstrap.py
 ```
 
-These commands use `.env`. If the installation uses another env file, pass `--env-file <path>` to `scripts/backup.sh`, `docker compose pull --policy missing`, and `scripts/bootstrap.py`. Keep the same path for every command. An installation from before literal `COMPOSE_FILE` must run `python3 scripts/bootstrap.py --render-only` after `git pull` and before `docker compose pull --policy missing`, with `--env-file <path>` if applicable. Render-only writes the selected env file and records the Compose overlays; it does not start services. See [older installations](docs/operations/maintenance.md#older-installations).
+These commands use `.env`. For another env file, replace `<path>` and keep it the same throughout:
 
-`git pull` brings new pins and configuration; Compose fetches selected images missing from the host, including new digest pins, while retaining installed local-only overrides. Bootstrap recreates changed services, waits for health, and refreshes the Status Document. The pins in `compose.yaml` passed the Smoke Contract. A complete `LG_*_IMAGE` reference in the env file or shell overrides its pin until removed, including across upgrades; an empty override selects the default. To refresh a mutable remote override already present locally, run `docker compose pull --policy always <service>` with the same `--env-file <path>` when applicable. Read [maintenance](docs/operations/maintenance.md) before a major version of Postgres, ClickHouse or Langfuse; those are one-way for data.
+```sh
+scripts/backup.sh --env-file <path>
+git pull
+docker compose --env-file <path> pull --policy missing
+python3 scripts/bootstrap.py --env-file <path>
+```
+
+An installation from before literal `COMPOSE_FILE` must run `python3 scripts/bootstrap.py --render-only` after `git pull` and before Compose pull; use `python3 scripts/bootstrap.py --env-file <path> --render-only` for another env file. Render-only writes the selected env file and records the Compose overlays; it does not start services. See [older installations](docs/operations/maintenance.md#older-installations).
+
+`git pull` brings new pins and configuration; Compose fetches selected images missing from the host, including new digest pins, while retaining installed local-only overrides. Bootstrap recreates changed services, waits for health, and refreshes the Status Document. The pins in `compose.yaml` passed the Smoke Contract. A complete `LG_*_IMAGE` reference in the env file or shell overrides its pin until removed, including across upgrades; an empty override selects the default. To refresh a mutable remote override already present locally, run `docker compose pull --policy always <service>` for `.env`, or `docker compose --env-file <path> pull --policy always <service>` for another env file. Read [maintenance](docs/operations/maintenance.md) before a major version of Postgres, ClickHouse or Langfuse; those are one-way for data.
 
 ## Day two
 

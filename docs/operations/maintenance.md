@@ -26,8 +26,7 @@ on a host until an operator merges and pulls.
 
 ## Applying a bump
 
-Take a Checkpoint with `scripts/backup.sh` before these commands. If you selected another
-env file, pass `--env-file <path>` to the backup command, Compose, and bootstrap.
+Take a Checkpoint with `scripts/backup.sh` before these commands:
 
 ```sh
 git pull
@@ -35,10 +34,20 @@ docker compose pull --policy missing
 python3 scripts/bootstrap.py
 ```
 
+For another env file, replace `<path>` and use it for every command:
+
+```sh
+scripts/backup.sh --env-file <path>
+git pull
+docker compose --env-file <path> pull --policy missing
+python3 scripts/bootstrap.py --env-file <path>
+```
+
 For an installation from before literal `COMPOSE_FILE`, run
 `python3 scripts/bootstrap.py --render-only` after `git pull` and before Compose pull;
-pass the selected `--env-file <path>` when applicable. Render-only writes the env file
-and records the overlays without starting services. See [older installations](#older-installations).
+use `python3 scripts/bootstrap.py --env-file <path> --render-only` for another env file.
+Render-only writes the env file and records the overlays without starting services. See
+[older installations](#older-installations).
 
 Bootstrap records any setting a release adds (the literal `COMPOSE_FILE`, `COMPOSE_PROFILES`
 for `LG_METRICS`), recreates what changed, waits for the gateway health probes and refreshes
@@ -51,9 +60,9 @@ restart; callers see connection errors, not wrong answers.
 
 `pull --policy missing` fetches new digest pins while keeping an installed local-only
 `LG_*_IMAGE` override. If an override names a mutable remote tag already present on the
-host, refresh that service explicitly with `docker compose pull --policy always <service>`;
-include the same `--env-file <path>` when one was selected. A registry error during that
-refresh is a failed upgrade, not a reason to continue.
+host, refresh that service explicitly with `docker compose pull --policy always <service>`
+for `.env`, or `docker compose --env-file <path> pull --policy always <service>` for another
+env file. A registry error during that refresh is a failed upgrade, not a reason to continue.
 
 A bump that changes what an operator or a caller sees, even with compatible interfaces, is
 an Experience Change. The pull request names it and its rollback; that paragraph goes in
